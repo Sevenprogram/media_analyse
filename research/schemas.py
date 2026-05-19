@@ -3,6 +3,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from api.schemas import LoginTypeEnum, SaveDataOptionEnum
 from research.enums import (
     AI_TASK_TYPES,
     RAW_MINIMAL,
@@ -203,3 +204,12 @@ class ExistingDataBackfillRequest(BaseModel):
             return None
         cleaned = [item.strip() for item in value if item.strip()]
         return cleaned or None
+
+
+class ResearchExecutionRequest(BaseModel):
+    login_type: LoginTypeEnum = LoginTypeEnum.QRCODE
+    save_option: SaveDataOptionEnum = SaveDataOptionEnum.POSTGRES
+    cookies: str = ""
+    headless: bool = False
+    start_page: int = Field(default=1, ge=1)
+    backfill_after_crawl: bool = True

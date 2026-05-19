@@ -55,3 +55,15 @@ def test_backfill_requires_author_hash_salt(monkeypatch):
 
     assert response.status_code == 400
     assert "RESEARCH_AUTHOR_HASH_SALT" in response.json()["detail"]
+
+
+def test_execute_requires_author_hash_salt_when_backfill_enabled(monkeypatch):
+    monkeypatch.delenv("RESEARCH_AUTHOR_HASH_SALT", raising=False)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/research/jobs/999/execute",
+        json={"backfill_after_crawl": True},
+    )
+
+    assert response.status_code in {400, 404}

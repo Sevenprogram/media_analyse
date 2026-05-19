@@ -3,10 +3,21 @@ import os
 from fastapi import APIRouter, HTTPException
 
 from research.backfill import ExistingPlatformBackfill
+from research.execution import (
+    ResearchExecutionManager,
+    ResearchExecutionOptions,
+    build_crawler_start_requests,
+    execution_plan_to_dict,
+)
 from research.repository import ResearchRepository
-from research.schemas import ExistingDataBackfillRequest, ResearchJobCreate
+from research.schemas import (
+    ExistingDataBackfillRequest,
+    ResearchExecutionRequest,
+    ResearchJobCreate,
+)
 from research.schemas import ResearchJobUpdate
 from research.service import ResearchJobService
+from api.services.crawler_manager import crawler_manager
 
 router = APIRouter(prefix="/research", tags=["research"])
 
@@ -86,6 +97,68 @@ async def get_research_config_options():
                 ],
             },
         ],
+    }
+
+
+def _execution_options_from_request(request: ResearchExecutionRequest) -> ResearchExecutionOptions:
+    return ResearchExecutionOptions(
+        login_type=request.login_type,
+        save_option=request.save_option,
+        cookies=request.cookies,
+        headless=request.headless,
+        start_page=request.start_page,
+        backfill_after_crawl=request.backfill_after_crawl,
+    )
+
+
+@router.post("/jobs/{job_id}/execution/plan")
+async def preview_research_execution_plan(job_id: int, request: ResearchExecutionRequest):
+    service = get_service()
+    job = await service.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Research job not found")
+    options = _execution_options_from_request(request)
+    try:
+        crawler_requests = build_crawler_start_requests(job, options=options)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"job_id": job_id, "steps": execution_plan_to_dict(crawler_requests)}
+
+
+@router.post("/jobs/{job_id}/execute")
+async def execute_research_job(job_id: int, request: ResearchExecutionRequest):
+    salt = os.getenv("RESEARCH_AUTHOR_HASH_SALT")
+    if request.backfill_after_crawl and not salt:
+        raise HTTPException(
+            status_code=400,
+            detail="RESEARCH_AUTHOR_HASH_SALT must be configured before execution with backfill",
+        )
+
+    service = get_service()
+    job = await service.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Research job not found")
+
+    repository = ResearchRepository()
+    backfill = (
+        ExistingPlatformBackfill(repository, author_hash_salt=salt)
+        if request.backfill_after_crawl and salt
+        else None
+    )
+    manager = ResearchExecutionManager(
+        crawler_manager=crawler_manager,
+        repository=repository,
+        backfill=backfill,
+    )
+    try:
+        manager.start_background(job=job, options=_execution_options_from_request(request))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    return {
+        "status": "accepted",
+        "job_id": job_id,
+        "message": "Research execution started in background",
     }
 
 
