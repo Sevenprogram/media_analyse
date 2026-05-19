@@ -1,9 +1,13 @@
 import os
 import asyncio
+from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 
 from research.ai_analysis import AIAnalysisRunner
+from research.ai_provider import OpenAICompatibleProvider
 from research.backfill import ExistingPlatformBackfill
 from research.execution import (
     ResearchExecutionManager,
@@ -13,6 +17,7 @@ from research.execution import (
 )
 from research.exporter import ResearchExporter
 from research.charts import build_chart_summary
+from research.platforms import BACKFILL_RESEARCH_PLATFORMS, list_research_platform_options
 from research.repository import ResearchRepository
 from research.schemas import (
     AIAnalysisJobCreate,
@@ -25,10 +30,13 @@ from research.schemas import (
 )
 from research.schemas import ResearchJobUpdate
 from research.service import ResearchJobService
+from research.setup_status import build_research_setup_status
 from api.services.crawler_manager import crawler_manager
 
 router = APIRouter(prefix="/research", tags=["research"])
 _research_execution_task: asyncio.Task | None = None
+_research_execution_job_id: int | None = None
+EXPORT_BASE_DIR = Path("exports")
 
 
 def get_service() -> ResearchJobService:
@@ -38,6 +46,11 @@ def get_service() -> ResearchJobService:
 @router.get("/health")
 async def research_health():
     return {"status": "ok", "module": "research"}
+
+
+@router.get("/setup/status")
+async def get_research_setup_status():
+    return build_research_setup_status()
 
 
 @router.post("/jobs")
@@ -88,10 +101,7 @@ async def update_research_job(job_id: int, request: ResearchJobUpdate):
 @router.get("/config/options")
 async def get_research_config_options():
     return {
-        "platforms": [
-            {"value": "wb", "label": "Weibo"},
-            {"value": "zhihu", "label": "Zhihu"},
-        ],
+        "platforms": list_research_platform_options(),
         "raw_record_modes": [
             {"value": "minimal", "label": "Minimal"},
             {"value": "full", "label": "Full"},
@@ -148,7 +158,7 @@ async def preview_research_execution_plan(job_id: int, request: ResearchExecutio
 
 @router.post("/jobs/{job_id}/execute")
 async def execute_research_job(job_id: int, request: ResearchExecutionRequest):
-    global _research_execution_task
+    global _research_execution_job_id, _research_execution_task
     if _research_execution_task and not _research_execution_task.done():
         raise HTTPException(status_code=409, detail="A research execution is already running")
 
@@ -165,6 +175,7 @@ async def execute_research_job(job_id: int, request: ResearchExecutionRequest):
         raise HTTPException(status_code=404, detail="Research job not found")
 
     options = _execution_options_from_request(request)
+    _research_execution_job_id = job_id
     _research_execution_task = asyncio.create_task(
         _run_research_execution_background(job=job, options=options, salt=salt)
     )
@@ -182,6 +193,7 @@ async def _run_research_execution_background(
     options: ResearchExecutionOptions,
     salt: str | None,
 ):
+    global _research_execution_job_id, _research_execution_task
     repository = ResearchRepository()
     backfill = (
         ExistingPlatformBackfill(repository, author_hash_salt=salt)
@@ -193,7 +205,12 @@ async def _run_research_execution_background(
         repository=repository,
         backfill=backfill,
     )
-    await manager.execute(job=job, options=options)
+    try:
+        await manager.execute(job=job, options=options)
+    finally:
+        if asyncio.current_task() is _research_execution_task:
+            _research_execution_task = None
+            _research_execution_job_id = None
 
 
 @router.get("/charts/kinds")
@@ -239,6 +256,25 @@ async def create_ai_provider(request: AIProviderConfigCreate):
 async def list_ai_providers():
     repository = ResearchRepository()
     return {"providers": await repository.list_ai_providers()}
+
+
+@router.post("/ai/providers/{provider_id}/test")
+async def test_ai_provider(provider_id: int):
+    repository = ResearchRepository()
+    provider = await repository.get_ai_provider(provider_id, include_secret=True)
+    if provider is None:
+        raise HTTPException(status_code=404, detail="AI provider not found")
+    client = OpenAICompatibleProvider(
+        base_url=provider["base_url"],
+        api_key=provider["api_key"],
+        model=provider["model"],
+        timeout=provider["timeout"],
+    )
+    try:
+        result = await client.test_connection()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"AI provider test failed: {exc}") from exc
+    return {"ok": True, "provider_id": provider_id, "model": provider["model"], "result": result}
 
 
 @router.post("/ai/prompts")
@@ -312,7 +348,7 @@ async def export_research_job(job_id: int):
     raw_records = await repository.list_raw_records(job_id)
     chart_summary = build_chart_summary(posts=posts, comments=comments, ai_results=ai_results)
     exporter = ResearchExporter()
-    return exporter.export_job(
+    result = exporter.export_job(
         job_id=job_id,
         job_summary=job,
         posts=posts,
@@ -323,16 +359,51 @@ async def export_research_job(job_id: int):
         charts=[],
         chart_summary=chart_summary,
     )
+    result["files_url"] = f"/api/research/exports/{job_id}/files"
+    return result
+
+
+@router.get("/exports/{job_id}/files")
+async def list_research_export_files(job_id: int):
+    export_dir = _resolve_export_dir(job_id)
+    if not export_dir.exists():
+        raise HTTPException(status_code=404, detail="Export directory not found")
+    files = []
+    for path in sorted(item for item in export_dir.rglob("*") if item.is_file()):
+        relative_path = path.relative_to(export_dir).as_posix()
+        files.append(
+            {
+                "path": relative_path,
+                "size": path.stat().st_size,
+                "download_url": (
+                    f"/api/research/exports/{job_id}/download/{quote(relative_path)}"
+                ),
+            }
+        )
+    return {"job_id": job_id, "files": files}
+
+
+@router.get("/exports/{job_id}/download/{file_path:path}")
+async def download_research_export_file(job_id: int, file_path: str):
+    export_dir = _resolve_export_dir(job_id)
+    target = (export_dir / file_path).resolve()
+    try:
+        target.relative_to(export_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid export path") from exc
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Export file not found")
+    return FileResponse(target, filename=target.name)
 
 
 @router.get("/execution/status")
 async def get_research_execution_status():
     crawler_status = crawler_manager.get_status()
+    running = bool(_research_execution_task and not _research_execution_task.done())
     return {
         **crawler_status,
-        "research_execution_running": bool(
-            _research_execution_task and not _research_execution_task.done()
-        ),
+        "research_execution_running": running,
+        "research_execution_job_id": _research_execution_job_id if running else None,
     }
 
 
@@ -342,8 +413,11 @@ async def stop_research_execution():
     stopped_crawler = await crawler_manager.stop()
     if _research_execution_task and not _research_execution_task.done():
         _research_execution_task.cancel()
-        _research_execution_task = None
-        return {"status": "stopped", "crawler_stopped": stopped_crawler}
+        return {
+            "status": "stopping",
+            "job_id": _research_execution_job_id,
+            "crawler_stopped": stopped_crawler,
+        }
     return {"status": "idle", "crawler_stopped": stopped_crawler}
 
 
@@ -369,3 +443,28 @@ async def backfill_zhihu_existing_data(job_id: int, request: ExistingDataBackfil
         )
     runner = ExistingPlatformBackfill(ResearchRepository(), author_hash_salt=salt)
     return await runner.backfill_zhihu(job_id=job_id, keywords=request.keywords, limit=request.limit)
+
+
+@router.post("/jobs/{job_id}/backfill/{platform}")
+async def backfill_existing_platform_data(
+    job_id: int, platform: str, request: ExistingDataBackfillRequest
+):
+    if platform not in BACKFILL_RESEARCH_PLATFORMS:
+        raise HTTPException(status_code=400, detail=f"Unsupported backfill platform: {platform}")
+    salt = os.getenv("RESEARCH_AUTHOR_HASH_SALT")
+    if not salt:
+        raise HTTPException(
+            status_code=400,
+            detail="RESEARCH_AUTHOR_HASH_SALT must be configured before backfill",
+        )
+    runner = ExistingPlatformBackfill(ResearchRepository(), author_hash_salt=salt)
+    return await runner.backfill_platform(
+        platform,
+        job_id=job_id,
+        keywords=request.keywords,
+        limit=request.limit,
+    )
+
+
+def _resolve_export_dir(job_id: int) -> Path:
+    return (EXPORT_BASE_DIR / f"research_job_{job_id}").resolve()

@@ -1,8 +1,12 @@
 from datetime import datetime, timezone
 
 from research.normalizer import (
+    normalize_bilibili_video,
+    normalize_douyin_aweme,
+    normalize_kuaishou_video,
     normalize_weibo_comment,
     normalize_weibo_note,
+    normalize_xhs_note,
     normalize_zhihu_content,
     parse_timestamp,
 )
@@ -80,3 +84,70 @@ def test_normalize_zhihu_content_maps_question_metadata():
     assert result["platform_post_id"] == "answer1"
     assert result["title"] == "Question"
     assert result["engagement_json"]["question_id"] == "q1"
+
+
+def test_normalize_xhs_note_maps_note_metadata():
+    result = normalize_xhs_note(
+        {
+            "note_id": "x1",
+            "user_id": "u1",
+            "title": "note title",
+            "desc": "note body",
+            "note_url": "https://xhs.example/x1",
+            "time": 1704067200,
+            "liked_count": "8",
+            "source_keyword": "topic",
+        },
+        job_id=9,
+        salt="salt",
+    )
+
+    assert result["platform"] == "xhs"
+    assert result["platform_post_id"] == "x1"
+    assert result["engagement_json"]["source_keyword"] == "topic"
+
+
+def test_normalize_short_video_platforms_map_engagement_fields():
+    douyin = normalize_douyin_aweme(
+        {
+            "aweme_id": 1,
+            "user_id": "u1",
+            "title": "dy",
+            "desc": "body",
+            "aweme_url": "https://dy.example/1",
+            "create_time": 1704067200,
+            "share_count": "3",
+        },
+        job_id=10,
+        salt="salt",
+    )
+    kuaishou = normalize_kuaishou_video(
+        {
+            "video_id": "k1",
+            "user_id": "u2",
+            "title": "ks",
+            "desc": "body",
+            "video_url": "https://ks.example/k1",
+            "create_time": 1704067200,
+            "viewd_count": "12",
+        },
+        job_id=10,
+        salt="salt",
+    )
+    bilibili = normalize_bilibili_video(
+        {
+            "video_id": 2,
+            "user_id": 3,
+            "title": "bili",
+            "desc": "body",
+            "video_url": "https://bili.example/2",
+            "create_time": 1704067200,
+            "video_danmaku": "22",
+        },
+        job_id=10,
+        salt="salt",
+    )
+
+    assert douyin["platform"] == "dy"
+    assert kuaishou["engagement_json"]["viewd_count"] == "12"
+    assert bilibili["engagement_json"]["danmaku_count"] == "22"

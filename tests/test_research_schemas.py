@@ -25,12 +25,26 @@ def test_research_job_rejects_unsupported_platform():
         ResearchJobCreate(
             name="Bad platform",
             topic="topic",
-            platforms=["bili"],
+            platforms=["unknown"],
             keywords=["topic"],
             start_date=date(2026, 1, 1),
             end_date=date(2026, 1, 31),
             comment_policy=CommentPolicy.default(),
         )
+
+
+def test_research_job_accepts_video_platforms():
+    request = ResearchJobCreate(
+        name="Video platforms",
+        topic="topic",
+        platforms=["xhs", "dy", "ks", "bili"],
+        keywords=["topic"],
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 31),
+        comment_policy=CommentPolicy.default(),
+    )
+
+    assert request.platforms == ["xhs", "dy", "ks", "bili"]
 
 
 def test_research_job_rejects_reversed_time_window():

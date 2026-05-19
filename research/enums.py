@@ -1,6 +1,6 @@
 from typing import Final
 
-SUPPORTED_RESEARCH_PLATFORMS: Final[set[str]] = {"wb", "zhihu"}
+from research.platforms import SUPPORTED_RESEARCH_PLATFORMS
 
 JOB_PENDING: Final[str] = "pending"
 JOB_RUNNING: Final[str] = "running"

@@ -1,13 +1,15 @@
 const state = {
   jobs: [],
   selectedJob: null,
+  configOptions: { platforms: [] },
+  lastProviderId: null,
 };
 
 const $ = (id) => document.getElementById(id);
 
 function splitKeywords(value) {
   return value
-    .split(/[\n,，]/)
+    .split(/[\n,，]+/)
     .map((item) => item.trim())
     .filter(Boolean);
 }
@@ -22,6 +24,49 @@ async function api(path, options = {}) {
     throw new Error(body.detail || `HTTP ${response.status}`);
   }
   return response.json();
+}
+
+async function loadConfigOptions() {
+  const data = await api("/api/research/config/options");
+  state.configOptions = data;
+  renderPlatformChecks();
+}
+
+async function loadSetupStatus() {
+  const data = await api("/api/research/setup/status");
+  $("setupStatus").textContent = JSON.stringify(data, null, 2);
+  $("setupSummary").innerHTML = [
+    summaryItem("存储", data.database.save_data_option),
+    summaryItem("PostgreSQL", data.database.postgres.password_set ? "已配置密码" : "缺少密码"),
+    summaryItem("脱敏盐", data.environment.author_hash_salt_set ? "已设置" : "未设置"),
+    summaryItem("研究表", data.database.research_tables_registered ? "已注册" : "缺失"),
+  ].join("");
+}
+
+function summaryItem(label, value) {
+  return `<div class="stat"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
+}
+
+function renderPlatformChecks(selectedValues) {
+  const selected = new Set(selectedValues || state.selectedJob?.platforms || ["wb", "zhihu"]);
+  const platforms = state.configOptions.platforms?.length
+    ? state.configOptions.platforms
+    : [
+        { value: "wb", label: "Weibo", backfill_supported: true },
+        { value: "zhihu", label: "Zhihu", backfill_supported: true },
+      ];
+  $("platformChecks").innerHTML = platforms
+    .map(
+      (platform) => `
+      <label class="check">
+        <input type="checkbox" name="platform" value="${escapeHtml(platform.value)}" ${
+          selected.has(platform.value) ? "checked" : ""
+        } />
+        ${escapeHtml(platform.label)}
+        <span class="badge">${platform.backfill_supported ? "回填" : "仅采集"}</span>
+      </label>`
+    )
+    .join("");
 }
 
 function readJobForm() {
@@ -71,10 +116,7 @@ function writeJobForm(job) {
   $("endDate").value = job?.end_date || "";
   $("rawRecordMode").value = job?.raw_record_mode || "minimal";
   $("anonymizeAuthors").checked = job?.anonymize_authors ?? true;
-  const platforms = new Set(job?.platforms || ["wb", "zhihu"]);
-  document.querySelectorAll("input[name='platform']").forEach((item) => {
-    item.checked = platforms.has(item.value);
-  });
+  renderPlatformChecks(job?.platforms);
   const policy = job?.comment_policy || {};
   $("commentMode").value = policy.full_comment_crawl ? "full" : "limited";
   $("commentLimit").value = policy.comment_limit_per_post || 100;
@@ -92,8 +134,8 @@ function renderJobs() {
       (job) => `
       <div class="job-item ${state.selectedJob?.id === job.id ? "selected" : ""}" data-id="${job.id}">
         <strong>${escapeHtml(job.name)}</strong>
-        <div class="muted">${job.platforms.join(", ")} · ${job.keywords.join(" / ")}</div>
-        <div class="muted">${job.start_date} 到 ${job.end_date} · ${job.status}</div>
+        <div class="muted">${escapeHtml(job.platforms.join(", "))} · ${escapeHtml(job.keywords.join(" / "))}</div>
+        <div class="muted">${escapeHtml(job.start_date)} 至 ${escapeHtml(job.end_date)} · ${escapeHtml(job.status)}</div>
       </div>`
     )
     .join("");
@@ -107,7 +149,7 @@ function selectJob(id) {
   writeJobForm(state.selectedJob);
   $("statusText").textContent = `当前任务 #${id}`;
   renderJobs();
-  loadAnalysisJobs().catch(() => {});
+  refreshSelectedJobViews().catch(() => {});
 }
 
 async function saveJob() {
@@ -139,11 +181,13 @@ async function executeJob() {
     body: JSON.stringify({ backfill_after_crawl: true }),
   });
   $("executionPlan").textContent = JSON.stringify(result, null, 2);
+  await loadExecutionStatus();
 }
 
 async function loadExecutionStatus() {
   const result = await api("/api/research/execution/status");
   $("executionPlan").textContent = JSON.stringify(result, null, 2);
+  if (state.selectedJob) await loadJobs();
 }
 
 async function stopExecution() {
@@ -168,7 +212,7 @@ async function loadEvents() {
       <div class="event-item">
         <strong>${escapeHtml(event.event_type)}</strong>
         <div>${escapeHtml(event.message)}</div>
-        <div class="muted">${event.platform || "job"} · ${event.created_at || ""}</div>
+        <div class="muted">${escapeHtml(event.platform || "job")} · ${escapeHtml(event.created_at || "")}</div>
       </div>`
     )
     .join("");
@@ -190,8 +234,20 @@ async function saveProvider() {
     api_key: $("providerApiKey").value,
     model: $("providerModel").value.trim(),
   };
-  await api("/api/research/ai/providers", { method: "POST", body: JSON.stringify(payload) });
+  const provider = await api("/api/research/ai/providers", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  state.lastProviderId = provider.id;
+  $("analysisProviderId").value = provider.id;
   await loadProviders();
+}
+
+async function testProvider() {
+  const providerId = Number($("analysisProviderId").value || state.lastProviderId);
+  if (!providerId) throw new Error("请先保存或填写 Provider ID");
+  const result = await api(`/api/research/ai/providers/${providerId}/test`, { method: "POST" });
+  $("executionPlan").textContent = JSON.stringify(result, null, 2);
 }
 
 async function savePrompt() {
@@ -241,13 +297,16 @@ async function loadProviders() {
     .map(
       (provider) => `
         <div class="provider-item">
-          <strong>${escapeHtml(provider.name)}</strong>
+          <strong>#${provider.id} ${escapeHtml(provider.name)}</strong>
           <div class="muted">${escapeHtml(provider.model)} · ${escapeHtml(provider.base_url)}</div>
         </div>`
     )
     .join("");
   const first = (data.providers || [])[0];
-  if (first && !$("analysisProviderId").value) $("analysisProviderId").value = first.id;
+  if (first) {
+    state.lastProviderId = first.id;
+    if (!$("analysisProviderId").value) $("analysisProviderId").value = first.id;
+  }
 }
 
 async function loadPrompts() {
@@ -279,10 +338,50 @@ async function loadAnalysisJobs() {
     .join("");
 }
 
+async function loadAiResults() {
+  ensureSelected();
+  const data = await api(`/api/research/jobs/${state.selectedJob.id}/ai/results`);
+  $("aiResultList").innerHTML = (data.results || [])
+    .slice(0, 20)
+    .map(
+      (result) => `
+        <div class="provider-item">
+          <strong>${escapeHtml(result.target_type)} ${escapeHtml(result.target_id)}</strong>
+          <pre>${escapeHtml(JSON.stringify(result.result_json, null, 2))}</pre>
+        </div>`
+    )
+    .join("");
+}
+
 async function exportJob() {
   ensureSelected();
   const result = await api(`/api/research/jobs/${state.selectedJob.id}/export`, { method: "POST" });
   $("exportResult").textContent = JSON.stringify(result, null, 2);
+  await loadExportFiles();
+}
+
+async function loadExportFiles() {
+  ensureSelected();
+  const data = await api(`/api/research/exports/${state.selectedJob.id}/files`);
+  $("exportFiles").innerHTML = (data.files || [])
+    .map(
+      (file) => `
+      <a class="file-item" href="${escapeHtml(file.download_url)}" target="_blank" rel="noreferrer">
+        <span>${escapeHtml(file.path)}</span>
+        <small>${formatBytes(file.size)}</small>
+      </a>`
+    )
+    .join("");
+}
+
+async function refreshSelectedJobViews() {
+  if (!state.selectedJob) return;
+  await Promise.allSettled([
+    loadStats(),
+    loadEvents(),
+    loadAnalysisJobs(),
+    loadAiResults(),
+  ]);
 }
 
 function drawBarChart(canvas, title, rows, labelKey, valueKey) {
@@ -314,6 +413,12 @@ function ensureSelected() {
   if (!state.selectedJob) throw new Error("请先选择或保存任务");
 }
 
+function formatBytes(size) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -323,7 +428,8 @@ function escapeHtml(value) {
 }
 
 function bindEvents() {
-  $("refreshBtn").addEventListener("click", loadJobs);
+  $("refreshBtn").addEventListener("click", () => loadJobs().catch(alert));
+  $("setupStatusBtn").addEventListener("click", () => loadSetupStatus().catch(alert));
   $("newJobBtn").addEventListener("click", () => {
     state.selectedJob = null;
     writeJobForm(null);
@@ -338,12 +444,21 @@ function bindEvents() {
   $("loadEventsBtn").addEventListener("click", () => loadEvents().catch(alert));
   $("loadChartsBtn").addEventListener("click", () => loadCharts().catch(alert));
   $("saveProviderBtn").addEventListener("click", () => saveProvider().catch(alert));
+  $("testProviderBtn").addEventListener("click", () => testProvider().catch(alert));
   $("savePromptBtn").addEventListener("click", () => savePrompt().catch(alert));
   $("createAnalysisBtn").addEventListener("click", () => createAndRunAnalysis().catch(alert));
+  $("loadAiResultsBtn").addEventListener("click", () => loadAiResults().catch(alert));
   $("exportBtn").addEventListener("click", () => exportJob().catch(alert));
+  $("loadExportFilesBtn").addEventListener("click", () => loadExportFiles().catch(alert));
 }
 
 bindEvents();
+loadConfigOptions().then(() => writeJobForm(null)).catch(() => writeJobForm(null));
+loadSetupStatus().catch(() => {});
 loadJobs().catch(() => {});
 loadProviders().catch(() => {});
 loadPrompts().catch(() => {});
+setInterval(() => {
+  loadExecutionStatus().catch(() => {});
+  refreshSelectedJobViews().catch(() => {});
+}, 10000);

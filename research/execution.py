@@ -9,9 +9,14 @@ from api.schemas import (
     SaveDataOptionEnum,
 )
 from research.backfill import ExistingPlatformBackfill
+from research.enums import JOB_CANCELLED, JOB_COMPLETED, JOB_FAILED, JOB_RUNNING
+from research.platforms import get_research_platform
 
 
 class EventRepository(Protocol):
+    async def update_job_status(self, job_id: int, status: str) -> dict[str, Any] | None:
+        ...
+
     async def create_event(
         self,
         *,
@@ -129,16 +134,39 @@ class ResearchExecutionManager:
         job: dict[str, Any],
         options: ResearchExecutionOptions,
     ) -> None:
+        await self.repository.update_job_status(job["id"], JOB_RUNNING)
         requests = build_crawler_start_requests(job, options=options)
-        await self.repository.create_event(
-            job_id=job["id"],
-            platform=None,
-            event_type="execution_started",
-            message="Research job execution started",
-            stats={"platforms": [request.platform.value for request in requests]},
-        )
-        for request in requests:
-            await self._execute_platform(job=job, request=request, options=options)
+        try:
+            await self.repository.create_event(
+                job_id=job["id"],
+                platform=None,
+                event_type="execution_started",
+                message="Research job execution started",
+                stats={"platforms": [request.platform.value for request in requests]},
+            )
+            for request in requests:
+                await self._execute_platform(job=job, request=request, options=options)
+        except asyncio.CancelledError:
+            await self.repository.update_job_status(job["id"], JOB_CANCELLED)
+            await self.repository.create_event(
+                job_id=job["id"],
+                platform=None,
+                event_type="execution_cancelled",
+                message="Research job execution cancelled",
+                stats=None,
+            )
+            raise
+        except Exception as exc:
+            await self.repository.update_job_status(job["id"], JOB_FAILED)
+            await self.repository.create_event(
+                job_id=job["id"],
+                platform=None,
+                event_type="execution_failed",
+                message=str(exc),
+                stats={"error_type": type(exc).__name__},
+            )
+            raise
+        await self.repository.update_job_status(job["id"], JOB_COMPLETED)
         await self.repository.create_event(
             job_id=job["id"],
             platform=None,
@@ -183,16 +211,11 @@ class ResearchExecutionManager:
             stats=None,
         )
         if options.backfill_after_crawl and self.backfill:
-            if platform == "wb":
-                stats = await self.backfill.backfill_weibo(
-                    job_id=job["id"], keywords=job["keywords"]
-                )
-            elif platform == "zhihu":
-                stats = await self.backfill.backfill_zhihu(
-                    job_id=job["id"], keywords=job["keywords"]
-                )
-            else:
-                stats = {}
+            stats = await self.backfill.backfill_platform(
+                platform,
+                job_id=job["id"],
+                keywords=job["keywords"],
+            )
             await self.repository.create_event(
                 job_id=job["id"],
                 platform=platform,
@@ -207,8 +230,11 @@ class ResearchExecutionManager:
 
 
 def _to_platform_enum(platform: str) -> PlatformEnum:
-    if platform == "wb":
-        return PlatformEnum.WEIBO
-    if platform == "zhihu":
-        return PlatformEnum.ZHIHU
+    research_platform = get_research_platform(platform)
+    if research_platform is None or not research_platform.execution_supported:
+        raise ValueError(f"Unsupported research execution platform: {platform}")
+    enum_by_value = {item.value: item for item in PlatformEnum}
+    crawler_platform = enum_by_value.get(research_platform.crawler_platform)
+    if crawler_platform is not None:
+        return crawler_platform
     raise ValueError(f"Unsupported research execution platform: {platform}")

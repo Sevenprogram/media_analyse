@@ -26,7 +26,7 @@ def test_research_job_validation_runs_before_persistence():
         json={
             "name": "Bad platform",
             "topic": "topic",
-            "platforms": ["bili"],
+            "platforms": ["unknown"],
             "keywords": ["topic"],
             "start_date": "2026-01-01",
             "end_date": "2026-01-31",
@@ -51,8 +51,16 @@ def test_research_config_options_include_keyword_platforms():
     response = client.get("/api/research/config/options")
 
     assert response.status_code == 200
-    assert {"value": "wb", "label": "Weibo"} in response.json()["platforms"]
-    assert {"value": "zhihu", "label": "Zhihu"} in response.json()["platforms"]
+    platform_values = {item["value"] for item in response.json()["platforms"]}
+    assert {"wb", "zhihu", "xhs", "dy", "ks", "bili"}.issubset(platform_values)
+
+
+def test_research_setup_status_route():
+    client = TestClient(app)
+    response = client.get("/api/research/setup/status")
+
+    assert response.status_code == 200
+    assert response.json()["database"]["research_tables_registered"] is True
 
 
 def test_backfill_requires_author_hash_salt(monkeypatch):

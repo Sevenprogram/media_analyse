@@ -17,7 +17,8 @@
           </div>
         </div>
         <nav>
-          <a href="#jobs" class="active">任务</a>
+          <a href="#setup" class="active">环境</a>
+          <a href="#jobs">任务</a>
           <a href="#dashboard">图表</a>
           <a href="#ai">AI</a>
           <a href="#export">导出</a>
@@ -35,6 +36,15 @@
             <button id="createBtn" type="button" class="primary">保存任务</button>
           </div>
         </header>
+
+        <section id="setup" class="panel">
+          <div class="panel-head">
+            <h3>环境状态</h3>
+            <button id="setupStatusBtn" type="button">检查</button>
+          </div>
+          <div id="setupSummary" class="setup-grid"></div>
+          <pre id="setupStatus" class="code-box compact">点击检查查看 PostgreSQL、脱敏盐、研究表和平台支持状态。</pre>
+        </section>
 
         <section id="jobs" class="grid two">
           <article class="panel">
@@ -59,13 +69,12 @@
                 研究主题
                 <input id="jobTopic" name="topic" required maxlength="500" />
               </label>
-              <fieldset>
+              <fieldset class="wide">
                 <legend>平台</legend>
-                <label class="check"><input type="checkbox" name="platform" value="wb" checked /> 微博</label>
-                <label class="check"><input type="checkbox" name="platform" value="zhihu" checked /> 知乎</label>
+                <div id="platformChecks" class="checks-grid"></div>
               </fieldset>
               <label class="wide">
-                关键词
+                后台关键词
                 <textarea id="jobKeywords" rows="3" placeholder="每行一个关键词，或用逗号分隔"></textarea>
               </label>
               <label>
@@ -79,8 +88,8 @@
               <label>
                 评论策略
                 <select id="commentMode">
-                  <option value="limited">限量评论</option>
-                  <option value="full">全量评论</option>
+                  <option value="limited">默认限量采集</option>
+                  <option value="full">全量采集</option>
                 </select>
               </label>
               <label>
@@ -113,7 +122,7 @@
                 <button id="stopBtn" type="button">停止</button>
               </div>
             </div>
-            <pre id="executionPlan" class="code-box">选择任务后预览执行计划</pre>
+            <pre id="executionPlan" class="code-box">选择任务后预览执行计划。</pre>
           </article>
           <article class="panel">
             <div class="panel-head">
@@ -140,15 +149,19 @@
         <section class="grid two">
           <article class="panel">
             <div class="panel-head">
-              <h3>日志</h3>
+              <h3>任务日志</h3>
               <button id="loadEventsBtn" type="button">刷新日志</button>
             </div>
             <div id="eventList" class="event-list"></div>
           </article>
+
           <article id="ai" class="panel">
             <div class="panel-head">
               <h3>AI 配置</h3>
-              <button id="saveProviderBtn" type="button">保存 Provider</button>
+              <div class="inline-actions">
+                <button id="saveProviderBtn" type="button">保存 Provider</button>
+                <button id="testProviderBtn" type="button">测试</button>
+              </div>
             </div>
             <div class="form-grid">
               <label>名称<input id="providerName" value="default" /></label>
@@ -181,7 +194,7 @@
               </label>
               <label class="wide">
                 Prompt 模板
-                <textarea id="promptText" rows="5">请分析以下内容，返回 JSON。平台:{platform}
+                <textarea id="promptText" rows="5">请分析以下内容，并返回 JSON。平台:{platform}
 标题:{title}
 内容:{content}
 要求字段：{"stance":"support|oppose|neutral","sentiment":"positive|negative|neutral","topic_tags":["标签"]}</textarea>
@@ -191,7 +204,7 @@
               <label>
                 分析对象
                 <select id="analysisTargetType">
-                  <option value="post">帖子/回答</option>
+                  <option value="post">帖子/回答/视频</option>
                   <option value="comment">评论</option>
                 </select>
               </label>
@@ -199,15 +212,24 @@
             </div>
             <div id="promptList" class="provider-list"></div>
             <div id="analysisJobList" class="provider-list"></div>
+            <div class="panel-head subhead">
+              <h3>AI 结果</h3>
+              <button id="loadAiResultsBtn" type="button">刷新结果</button>
+            </div>
+            <div id="aiResultList" class="provider-list"></div>
           </article>
         </section>
 
         <section id="export" class="panel">
           <div class="panel-head">
             <h3>导出</h3>
-            <button id="exportBtn" type="button" class="primary">生成导出</button>
+            <div class="inline-actions">
+              <button id="exportBtn" type="button" class="primary">生成导出</button>
+              <button id="loadExportFilesBtn" type="button">刷新文件</button>
+            </div>
           </div>
-          <pre id="exportResult" class="code-box">导出结果会显示在这里</pre>
+          <pre id="exportResult" class="code-box">导出结果会显示在这里。</pre>
+          <div id="exportFiles" class="file-list"></div>
         </section>
       </section>
     </main>
