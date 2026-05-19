@@ -38,6 +38,18 @@ class ResearchRepository:
                 return None
             return self._job_to_dict(job)
 
+    async def update_job(self, job_id: int, payload: dict[str, Any]) -> dict[str, Any] | None:
+        async with get_session() as session:
+            job = await session.get(ResearchJob, job_id)
+            if job is None:
+                return None
+            for key, value in payload.items():
+                if hasattr(job, key):
+                    setattr(job, key, value)
+            await session.flush()
+            await session.refresh(job)
+            return self._job_to_dict(job)
+
     async def create_event(
         self,
         *,

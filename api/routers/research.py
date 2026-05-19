@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 from research.backfill import ExistingPlatformBackfill
 from research.repository import ResearchRepository
 from research.schemas import ExistingDataBackfillRequest, ResearchJobCreate
+from research.schemas import ResearchJobUpdate
 from research.service import ResearchJobService
 
 router = APIRouter(prefix="/research", tags=["research"])
@@ -38,6 +39,54 @@ async def get_research_job(job_id: int):
     if job is None:
         raise HTTPException(status_code=404, detail="Research job not found")
     return job
+
+
+@router.patch("/jobs/{job_id}")
+async def update_research_job(job_id: int, request: ResearchJobUpdate):
+    service = get_service()
+    try:
+        job = await service.update_job(job_id, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if job is None:
+        raise HTTPException(status_code=404, detail="Research job not found")
+    return job
+
+
+@router.get("/config/options")
+async def get_research_config_options():
+    return {
+        "platforms": [
+            {"value": "wb", "label": "Weibo"},
+            {"value": "zhihu", "label": "Zhihu"},
+        ],
+        "raw_record_modes": [
+            {"value": "minimal", "label": "Minimal"},
+            {"value": "full", "label": "Full"},
+        ],
+        "comment_presets": [
+            {
+                "value": "limited",
+                "label": "Limited comments",
+                "policy": {
+                    "enable_comments": True,
+                    "comment_limit_per_post": 100,
+                    "enable_sub_comments": False,
+                    "sub_comment_limit_per_comment": 0,
+                    "full_comment_crawl": False,
+                },
+            },
+            {
+                "value": "full",
+                "label": "Full comments with guardrails",
+                "requires": [
+                    "rate_limit_per_minute",
+                    "max_posts_per_job or stop_after_hours",
+                    "ethical_note",
+                ],
+            },
+        ],
+    }
 
 
 @router.get("/charts/kinds")

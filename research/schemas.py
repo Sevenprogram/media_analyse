@@ -103,6 +103,51 @@ class ResearchJobCreate(BaseModel):
         return self
 
 
+class ResearchJobUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    topic: str | None = Field(default=None, min_length=1, max_length=500)
+    platforms: list[str] | None = Field(default=None, min_length=1)
+    keywords: list[str] | None = Field(default=None, min_length=1)
+    start_date: date | None = None
+    end_date: date | None = None
+    comment_policy: CommentPolicy | None = None
+    raw_record_mode: Literal["minimal", "full"] | None = None
+    anonymize_authors: bool | None = None
+
+    @field_validator("platforms")
+    @classmethod
+    def validate_optional_platforms(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        unsupported = sorted(set(value) - SUPPORTED_RESEARCH_PLATFORMS)
+        if unsupported:
+            raise ValueError(f"Unsupported platform(s): {', '.join(unsupported)}")
+        return value
+
+    @field_validator("keywords")
+    @classmethod
+    def strip_optional_keywords(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        cleaned = [item.strip() for item in value if item.strip()]
+        if not cleaned:
+            raise ValueError("keywords must contain at least one non-empty value")
+        return cleaned
+
+    @field_validator("raw_record_mode")
+    @classmethod
+    def validate_optional_raw_record_mode(cls, value: str | None) -> str | None:
+        if value is not None and value not in RAW_RECORD_MODES:
+            raise ValueError(f"Unsupported raw_record_mode: {value}")
+        return value
+
+    @model_validator(mode="after")
+    def validate_partial_date_window(self) -> "ResearchJobUpdate":
+        if self.start_date and self.end_date and self.end_date < self.start_date:
+            raise ValueError("end_date must be on or after start_date")
+        return self
+
+
 class ResearchJobRead(BaseModel):
     id: int
     name: str

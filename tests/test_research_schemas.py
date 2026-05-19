@@ -3,7 +3,7 @@ from datetime import date
 import pytest
 from pydantic import ValidationError
 
-from research.schemas import CommentPolicy, ResearchJobCreate
+from research.schemas import CommentPolicy, ResearchJobCreate, ResearchJobUpdate
 
 
 def test_research_job_requires_supported_platforms():
@@ -59,3 +59,14 @@ def test_full_comment_policy_requires_guardrails():
             end_date=date(2026, 1, 31),
             comment_policy=CommentPolicy.full(rate_limit_per_minute=30),
         )
+
+
+def test_research_job_update_strips_keywords():
+    request = ResearchJobUpdate(keywords=[" 政策 ", "", "治理"])
+
+    assert request.keywords == ["政策", "治理"]
+
+
+def test_research_job_update_rejects_empty_keywords():
+    with pytest.raises(ValidationError, match="keywords must contain"):
+        ResearchJobUpdate(keywords=["", "  "])

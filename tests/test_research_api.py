@@ -38,6 +38,15 @@ def test_research_chart_kinds_route():
     assert "sentiment_distribution" in response.json()["kinds"]
 
 
+def test_research_config_options_include_keyword_platforms():
+    client = TestClient(app)
+    response = client.get("/api/research/config/options")
+
+    assert response.status_code == 200
+    assert {"value": "wb", "label": "Weibo"} in response.json()["platforms"]
+    assert {"value": "zhihu", "label": "Zhihu"} in response.json()["platforms"]
+
+
 def test_backfill_requires_author_hash_salt(monkeypatch):
     monkeypatch.delenv("RESEARCH_AUTHOR_HASH_SALT", raising=False)
     client = TestClient(app)
