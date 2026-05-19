@@ -145,3 +145,16 @@ class AIAnalysisJobCreate(BaseModel):
         if value not in AI_TASK_TYPES:
             raise ValueError(f"Unsupported AI task type: {value}")
         return value
+
+
+class ExistingDataBackfillRequest(BaseModel):
+    keywords: list[str] | None = None
+    limit: int | None = Field(default=1000, ge=1, le=100000)
+
+    @field_validator("keywords")
+    @classmethod
+    def strip_optional_keywords(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        cleaned = [item.strip() for item in value if item.strip()]
+        return cleaned or None

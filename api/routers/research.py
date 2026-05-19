@@ -1,7 +1,10 @@
+import os
+
 from fastapi import APIRouter, HTTPException
 
+from research.backfill import ExistingPlatformBackfill
 from research.repository import ResearchRepository
-from research.schemas import ResearchJobCreate
+from research.schemas import ExistingDataBackfillRequest, ResearchJobCreate
 from research.service import ResearchJobService
 
 router = APIRouter(prefix="/research", tags=["research"])
@@ -59,3 +62,27 @@ async def list_chart_kinds():
             "parse_failure_reasons",
         ]
     }
+
+
+@router.post("/jobs/{job_id}/backfill/weibo")
+async def backfill_weibo_existing_data(job_id: int, request: ExistingDataBackfillRequest):
+    salt = os.getenv("RESEARCH_AUTHOR_HASH_SALT")
+    if not salt:
+        raise HTTPException(
+            status_code=400,
+            detail="RESEARCH_AUTHOR_HASH_SALT must be configured before backfill",
+        )
+    runner = ExistingPlatformBackfill(ResearchRepository(), author_hash_salt=salt)
+    return await runner.backfill_weibo(job_id=job_id, keywords=request.keywords, limit=request.limit)
+
+
+@router.post("/jobs/{job_id}/backfill/zhihu")
+async def backfill_zhihu_existing_data(job_id: int, request: ExistingDataBackfillRequest):
+    salt = os.getenv("RESEARCH_AUTHOR_HASH_SALT")
+    if not salt:
+        raise HTTPException(
+            status_code=400,
+            detail="RESEARCH_AUTHOR_HASH_SALT must be configured before backfill",
+        )
+    runner = ExistingPlatformBackfill(ResearchRepository(), author_hash_salt=salt)
+    return await runner.backfill_zhihu(job_id=job_id, keywords=request.keywords, limit=request.limit)

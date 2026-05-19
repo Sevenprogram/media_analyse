@@ -36,3 +36,13 @@ def test_research_chart_kinds_route():
     assert response.status_code == 200
     assert "platform_counts" in response.json()["kinds"]
     assert "sentiment_distribution" in response.json()["kinds"]
+
+
+def test_backfill_requires_author_hash_salt(monkeypatch):
+    monkeypatch.delenv("RESEARCH_AUTHOR_HASH_SALT", raising=False)
+    client = TestClient(app)
+
+    response = client.post("/api/research/jobs/1/backfill/weibo", json={"limit": 10})
+
+    assert response.status_code == 400
+    assert "RESEARCH_AUTHOR_HASH_SALT" in response.json()["detail"]
