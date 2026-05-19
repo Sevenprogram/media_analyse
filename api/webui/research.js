@@ -1,14 +1,15 @@
 const state = {
   jobs: [],
   selectedJob: null,
-  configOptions: { platforms: [] },
+  configOptions: { platforms: [], collection_modes: [] },
   lastProviderId: null,
+  databaseReady: null,
 };
 
 const $ = (id) => document.getElementById(id);
 
-function splitKeywords(value) {
-  return value
+function splitList(value) {
+  return String(value || "")
     .split(/[\n,，]+/)
     .map((item) => item.trim())
     .filter(Boolean);
@@ -30,21 +31,43 @@ async function loadConfigOptions() {
   const data = await api("/api/research/config/options");
   state.configOptions = data;
   renderPlatformChecks();
+  renderCollectionModes();
 }
 
 async function loadSetupStatus() {
   const data = await api("/api/research/setup/status");
+  const saveOption = data.database?.save_data_option;
+  state.databaseReady = ["sqlite", "postgres", "mysql", "db"].includes(saveOption);
   $("setupStatus").textContent = JSON.stringify(data, null, 2);
   $("setupSummary").innerHTML = [
-    summaryItem("存储", data.database.save_data_option),
-    summaryItem("PostgreSQL", data.database.postgres.password_set ? "已配置密码" : "缺少密码"),
-    summaryItem("脱敏盐", data.environment.author_hash_salt_set ? "已设置" : "未设置"),
-    summaryItem("研究表", data.database.research_tables_registered ? "已注册" : "缺失"),
+    summaryItem("存储", data.database?.save_data_option || "-"),
+    summaryItem("PostgreSQL", data.database?.postgres?.password_set ? "已配置密码" : "未配置密码"),
+    summaryItem("脱敏盐", data.environment?.author_hash_salt_set ? "已设置" : "未设置"),
+    summaryItem("研究表", data.database?.research_tables_registered ? "已注册" : "缺失"),
   ].join("");
 }
 
 function summaryItem(label, value) {
   return `<div class="stat"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
+}
+
+function renderCollectionModes() {
+  const select = $("collectionMode");
+  const current = select.value || state.selectedJob?.collection_mode || "search";
+  const modes = state.configOptions.collection_modes?.length
+    ? state.configOptions.collection_modes
+    : [
+        { value: "search", label: "关键词搜索" },
+        { value: "detail", label: "指定内容" },
+        { value: "creator", label: "作者主页" },
+      ];
+  select.innerHTML = modes
+    .map(
+      (mode) =>
+        `<option value="${escapeHtml(mode.value)}">${escapeHtml(mode.label)}</option>`
+    )
+    .join("");
+  select.value = current;
 }
 
 function renderPlatformChecks(selectedValues) {
@@ -98,7 +121,10 @@ function readJobForm() {
     name: $("jobName").value.trim(),
     topic: $("jobTopic").value.trim(),
     platforms,
-    keywords: splitKeywords($("jobKeywords").value),
+    collection_mode: $("collectionMode").value,
+    keywords: splitList($("jobKeywords").value),
+    target_ids: splitList($("targetIds").value),
+    creator_ids: splitList($("creatorIds").value),
     start_date: $("startDate").value,
     end_date: $("endDate").value,
     comment_policy: commentPolicy,
@@ -111,11 +137,15 @@ function writeJobForm(job) {
   $("selectedJobId").textContent = job ? `#${job.id}` : "未保存";
   $("jobName").value = job?.name || "";
   $("jobTopic").value = job?.topic || "";
+  $("collectionMode").value = job?.collection_mode || "search";
   $("jobKeywords").value = (job?.keywords || []).join("\n");
+  $("targetIds").value = (job?.target_ids || []).join("\n");
+  $("creatorIds").value = (job?.creator_ids || []).join("\n");
   $("startDate").value = job?.start_date || "";
   $("endDate").value = job?.end_date || "";
   $("rawRecordMode").value = job?.raw_record_mode || "minimal";
   $("anonymizeAuthors").checked = job?.anonymize_authors ?? true;
+  renderCollectionModes();
   renderPlatformChecks(job?.platforms);
   const policy = job?.comment_policy || {};
   $("commentMode").value = policy.full_comment_crawl ? "full" : "limited";
@@ -123,21 +153,41 @@ function writeJobForm(job) {
 }
 
 async function loadJobs() {
+  if (state.databaseReady === false) {
+    state.jobs = [];
+    renderJobs();
+    return;
+  }
   const data = await api("/api/research/jobs");
   state.jobs = data.jobs || [];
+  if (state.selectedJob) {
+    state.selectedJob = state.jobs.find((job) => job.id === state.selectedJob.id) || null;
+  }
   renderJobs();
 }
 
 function renderJobs() {
+  if (!state.jobs.length && state.databaseReady === false) {
+    $("jobList").innerHTML =
+      '<div class="job-item"><strong>数据库未启用</strong><div class="muted">请先将 SAVE_DATA_OPTION 设置为 sqlite、postgres、mysql 或 db。</div></div>';
+    return;
+  }
   $("jobList").innerHTML = state.jobs
-    .map(
-      (job) => `
+    .map((job) => {
+      const mode = job.collection_mode || "search";
+      const inputs =
+        mode === "detail"
+          ? job.target_ids || []
+          : mode === "creator"
+            ? job.creator_ids || []
+            : job.keywords || [];
+      return `
       <div class="job-item ${state.selectedJob?.id === job.id ? "selected" : ""}" data-id="${job.id}">
         <strong>${escapeHtml(job.name)}</strong>
-        <div class="muted">${escapeHtml(job.platforms.join(", "))} · ${escapeHtml(job.keywords.join(" / "))}</div>
-        <div class="muted">${escapeHtml(job.start_date)} 至 ${escapeHtml(job.end_date)} · ${escapeHtml(job.status)}</div>
-      </div>`
-    )
+        <div class="muted">${escapeHtml(job.platforms.join(", "))} | ${escapeHtml(mode)} | ${escapeHtml(inputs.join(" / "))}</div>
+        <div class="muted">${escapeHtml(job.start_date)} 至 ${escapeHtml(job.end_date)} | ${escapeHtml(job.status)}</div>
+      </div>`;
+    })
     .join("");
   document.querySelectorAll(".job-item").forEach((item) => {
     item.addEventListener("click", () => selectJob(Number(item.dataset.id)));
@@ -153,6 +203,7 @@ function selectJob(id) {
 }
 
 async function saveJob() {
+  ensureDatabaseReady();
   const payload = readJobForm();
   const job = state.selectedJob
     ? await api(`/api/research/jobs/${state.selectedJob.id}`, {
@@ -212,7 +263,7 @@ async function loadEvents() {
       <div class="event-item">
         <strong>${escapeHtml(event.event_type)}</strong>
         <div>${escapeHtml(event.message)}</div>
-        <div class="muted">${escapeHtml(event.platform || "job")} · ${escapeHtml(event.created_at || "")}</div>
+        <div class="muted">${escapeHtml(event.platform || "job")} | ${escapeHtml(event.created_at || "")}</div>
       </div>`
     )
     .join("");
@@ -292,13 +343,18 @@ async function createAndRunAnalysis() {
 }
 
 async function loadProviders() {
+  if (state.databaseReady === false) {
+    $("providerList").innerHTML =
+      '<div class="provider-item"><strong>数据库未启用</strong><div class="muted">AI Provider 需要 sqlite、postgres、mysql 或 db 存储。</div></div>';
+    return;
+  }
   const data = await api("/api/research/ai/providers");
   $("providerList").innerHTML = (data.providers || [])
     .map(
       (provider) => `
         <div class="provider-item">
           <strong>#${provider.id} ${escapeHtml(provider.name)}</strong>
-          <div class="muted">${escapeHtml(provider.model)} · ${escapeHtml(provider.base_url)}</div>
+          <div class="muted">${escapeHtml(provider.model)} | ${escapeHtml(provider.base_url)}</div>
         </div>`
     )
     .join("");
@@ -310,13 +366,18 @@ async function loadProviders() {
 }
 
 async function loadPrompts() {
+  if (state.databaseReady === false) {
+    $("promptList").innerHTML =
+      '<div class="provider-item"><strong>数据库未启用</strong><div class="muted">Prompt 配置需要 sqlite、postgres、mysql 或 db 存储。</div></div>';
+    return;
+  }
   const data = await api("/api/research/ai/prompts");
   $("promptList").innerHTML = (data.prompts || [])
     .map(
       (prompt) => `
         <div class="provider-item">
           <strong>#${prompt.id} ${escapeHtml(prompt.name)}</strong>
-          <div class="muted">${escapeHtml(prompt.task_type)} · ${escapeHtml(prompt.version)}</div>
+          <div class="muted">${escapeHtml(prompt.task_type)} | ${escapeHtml(prompt.version)}</div>
         </div>`
     )
     .join("");
@@ -332,7 +393,7 @@ async function loadAnalysisJobs() {
       (job) => `
         <div class="provider-item">
           <strong>#${job.id} ${escapeHtml(job.task_type)}</strong>
-          <div class="muted">${escapeHtml(job.status)} · provider ${job.provider_config_id} · prompt ${job.prompt_template_id}</div>
+          <div class="muted">${escapeHtml(job.status)} | provider ${job.provider_config_id} | prompt ${job.prompt_template_id}</div>
         </div>`
     )
     .join("");
@@ -376,12 +437,7 @@ async function loadExportFiles() {
 
 async function refreshSelectedJobViews() {
   if (!state.selectedJob) return;
-  await Promise.allSettled([
-    loadStats(),
-    loadEvents(),
-    loadAnalysisJobs(),
-    loadAiResults(),
-  ]);
+  await Promise.allSettled([loadStats(), loadEvents(), loadAnalysisJobs(), loadAiResults()]);
 }
 
 function drawBarChart(canvas, title, rows, labelKey, valueKey) {
@@ -405,12 +461,18 @@ function drawBarChart(canvas, title, rows, labelKey, valueKey) {
     ctx.fillRect(x, y, barWidth, barHeight);
     ctx.fillStyle = "#4d5a5e";
     ctx.font = "11px Segoe UI";
-    ctx.fillText(String(row[labelKey]).slice(0, 8), x, height - 12);
+    ctx.fillText(String(row[labelKey] || "").slice(0, 8), x, height - 12);
   });
 }
 
 function ensureSelected() {
   if (!state.selectedJob) throw new Error("请先选择或保存任务");
+}
+
+function ensureDatabaseReady() {
+  if (state.databaseReady === false) {
+    throw new Error("请先将 SAVE_DATA_OPTION 设置为 sqlite、postgres、mysql 或 db");
+  }
 }
 
 function formatBytes(size) {
@@ -433,6 +495,7 @@ function bindEvents() {
   $("newJobBtn").addEventListener("click", () => {
     state.selectedJob = null;
     writeJobForm(null);
+    $("statusText").textContent = "未选择任务";
     renderJobs();
   });
   $("createBtn").addEventListener("click", () => saveJob().catch(alert));
@@ -453,12 +516,17 @@ function bindEvents() {
 }
 
 bindEvents();
-loadConfigOptions().then(() => writeJobForm(null)).catch(() => writeJobForm(null));
-loadSetupStatus().catch(() => {});
-loadJobs().catch(() => {});
-loadProviders().catch(() => {});
-loadPrompts().catch(() => {});
+init().catch((error) => {
+  $("executionPlan").textContent = error.message;
+});
 setInterval(() => {
   loadExecutionStatus().catch(() => {});
   refreshSelectedJobViews().catch(() => {});
 }, 10000);
+
+async function init() {
+  await loadConfigOptions().catch(() => {});
+  writeJobForm(null);
+  await loadSetupStatus().catch(() => {});
+  await Promise.allSettled([loadJobs(), loadProviders(), loadPrompts()]);
+}

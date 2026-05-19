@@ -17,6 +17,15 @@ JOB_STATUSES: Final[set[str]] = {
     JOB_CANCELLED,
 }
 
+COLLECTION_SEARCH: Final[str] = "search"
+COLLECTION_DETAIL: Final[str] = "detail"
+COLLECTION_CREATOR: Final[str] = "creator"
+COLLECTION_MODES: Final[set[str]] = {
+    COLLECTION_SEARCH,
+    COLLECTION_DETAIL,
+    COLLECTION_CREATOR,
+}
+
 RAW_MINIMAL: Final[str] = "minimal"
 RAW_FULL: Final[str] = "full"
 RAW_RECORD_MODES: Final[set[str]] = {RAW_MINIMAL, RAW_FULL}

@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Iterable
 
 from sqlalchemy import or_, select
 
@@ -41,6 +41,8 @@ class ExistingPlatformBackfill:
         *,
         job_id: int,
         keywords: list[str] | None = None,
+        target_ids: list[str] | None = None,
+        creator_ids: list[str] | None = None,
         limit: int | None = 1000,
     ) -> dict[str, int]:
         handlers = {
@@ -55,13 +57,21 @@ class ExistingPlatformBackfill:
         handler = handlers.get(platform)
         if handler is None:
             raise ValueError(f"Unsupported research backfill platform: {platform}")
-        return await handler(job_id=job_id, keywords=keywords, limit=limit)
+        return await handler(
+            job_id=job_id,
+            keywords=keywords,
+            target_ids=target_ids,
+            creator_ids=creator_ids,
+            limit=limit,
+        )
 
     async def backfill_weibo(
         self,
         *,
         job_id: int,
         keywords: list[str] | None = None,
+        target_ids: list[str] | None = None,
+        creator_ids: list[str] | None = None,
         limit: int | None = 1000,
     ) -> dict[str, int]:
         job = await self.repository.get_job(job_id)
@@ -69,7 +79,11 @@ class ExistingPlatformBackfill:
 
         async with get_session() as session:
             note_stmt = select(WeiboNote)
-            if keywords:
+            if target_ids:
+                note_stmt = note_stmt.where(WeiboNote.note_id.in_(_numeric_values(target_ids)))
+            elif creator_ids:
+                note_stmt = note_stmt.where(WeiboNote.user_id.in_(_text_values(creator_ids)))
+            elif keywords:
                 note_stmt = note_stmt.where(WeiboNote.source_keyword.in_(keywords))
             if limit:
                 note_stmt = note_stmt.limit(limit)
@@ -100,6 +114,8 @@ class ExistingPlatformBackfill:
         *,
         job_id: int,
         keywords: list[str] | None = None,
+        target_ids: list[str] | None = None,
+        creator_ids: list[str] | None = None,
         limit: int | None = 1000,
     ) -> dict[str, int]:
         job = await self.repository.get_job(job_id)
@@ -107,7 +123,11 @@ class ExistingPlatformBackfill:
 
         async with get_session() as session:
             content_stmt = select(ZhihuContent)
-            if keywords:
+            if target_ids:
+                content_stmt = content_stmt.where(ZhihuContent.content_id.in_(_text_values(target_ids)))
+            elif creator_ids:
+                content_stmt = content_stmt.where(ZhihuContent.user_id.in_(_text_values(creator_ids)))
+            elif keywords:
                 content_stmt = content_stmt.where(ZhihuContent.source_keyword.in_(keywords))
             if limit:
                 content_stmt = content_stmt.limit(limit)
@@ -138,6 +158,8 @@ class ExistingPlatformBackfill:
         *,
         job_id: int,
         keywords: list[str] | None = None,
+        target_ids: list[str] | None = None,
+        creator_ids: list[str] | None = None,
         limit: int | None = 1000,
     ) -> dict[str, int]:
         job = await self.repository.get_job(job_id)
@@ -145,7 +167,11 @@ class ExistingPlatformBackfill:
 
         async with get_session() as session:
             note_stmt = select(XhsNote)
-            if keywords:
+            if target_ids:
+                note_stmt = note_stmt.where(XhsNote.note_id.in_(_text_values(target_ids)))
+            elif creator_ids:
+                note_stmt = note_stmt.where(XhsNote.user_id.in_(_text_values(creator_ids)))
+            elif keywords:
                 note_stmt = note_stmt.where(XhsNote.source_keyword.in_(keywords))
             if limit:
                 note_stmt = note_stmt.limit(limit)
@@ -177,6 +203,8 @@ class ExistingPlatformBackfill:
         *,
         job_id: int,
         keywords: list[str] | None = None,
+        target_ids: list[str] | None = None,
+        creator_ids: list[str] | None = None,
         limit: int | None = 1000,
     ) -> dict[str, int]:
         job = await self.repository.get_job(job_id)
@@ -184,7 +212,17 @@ class ExistingPlatformBackfill:
 
         async with get_session() as session:
             aweme_stmt = select(DouyinAweme)
-            if keywords:
+            if target_ids:
+                aweme_stmt = aweme_stmt.where(DouyinAweme.aweme_id.in_(_numeric_values(target_ids)))
+            elif creator_ids:
+                creator_values = _text_values(creator_ids)
+                aweme_stmt = aweme_stmt.where(
+                    or_(
+                        DouyinAweme.user_id.in_(creator_values),
+                        DouyinAweme.sec_uid.in_(creator_values),
+                    )
+                )
+            elif keywords:
                 aweme_stmt = aweme_stmt.where(DouyinAweme.source_keyword.in_(keywords))
             if limit:
                 aweme_stmt = aweme_stmt.limit(limit)
@@ -218,6 +256,8 @@ class ExistingPlatformBackfill:
         *,
         job_id: int,
         keywords: list[str] | None = None,
+        target_ids: list[str] | None = None,
+        creator_ids: list[str] | None = None,
         limit: int | None = 1000,
     ) -> dict[str, int]:
         job = await self.repository.get_job(job_id)
@@ -225,7 +265,11 @@ class ExistingPlatformBackfill:
 
         async with get_session() as session:
             video_stmt = select(KuaishouVideo)
-            if keywords:
+            if target_ids:
+                video_stmt = video_stmt.where(KuaishouVideo.video_id.in_(_text_values(target_ids)))
+            elif creator_ids:
+                video_stmt = video_stmt.where(KuaishouVideo.user_id.in_(_text_values(creator_ids)))
+            elif keywords:
                 video_stmt = video_stmt.where(KuaishouVideo.source_keyword.in_(keywords))
             if limit:
                 video_stmt = video_stmt.limit(limit)
@@ -255,6 +299,8 @@ class ExistingPlatformBackfill:
         *,
         job_id: int,
         keywords: list[str] | None = None,
+        target_ids: list[str] | None = None,
+        creator_ids: list[str] | None = None,
         limit: int | None = 1000,
     ) -> dict[str, int]:
         job = await self.repository.get_job(job_id)
@@ -262,7 +308,11 @@ class ExistingPlatformBackfill:
 
         async with get_session() as session:
             video_stmt = select(BilibiliVideo)
-            if keywords:
+            if target_ids:
+                video_stmt = video_stmt.where(BilibiliVideo.video_id.in_(_numeric_values(target_ids)))
+            elif creator_ids:
+                video_stmt = video_stmt.where(BilibiliVideo.user_id.in_(_numeric_values(creator_ids)))
+            elif keywords:
                 video_stmt = video_stmt.where(BilibiliVideo.source_keyword.in_(keywords))
             if limit:
                 video_stmt = video_stmt.limit(limit)
@@ -296,6 +346,8 @@ class ExistingPlatformBackfill:
         *,
         job_id: int,
         keywords: list[str] | None = None,
+        target_ids: list[str] | None = None,
+        creator_ids: list[str] | None = None,
         limit: int | None = 1000,
     ) -> dict[str, int]:
         job = await self.repository.get_job(job_id)
@@ -303,7 +355,17 @@ class ExistingPlatformBackfill:
 
         async with get_session() as session:
             note_stmt = select(TiebaNote)
-            if keywords:
+            if target_ids:
+                note_stmt = note_stmt.where(TiebaNote.note_id.in_(_text_values(target_ids)))
+            elif creator_ids:
+                creator_values = _text_values(creator_ids)
+                note_stmt = note_stmt.where(
+                    or_(
+                        TiebaNote.user_link.in_(creator_values),
+                        TiebaNote.user_nickname.in_(creator_values),
+                    )
+                )
+            elif keywords:
                 note_stmt = note_stmt.where(TiebaNote.source_keyword.in_(keywords))
             if limit:
                 note_stmt = note_stmt.limit(limit)
@@ -360,4 +422,21 @@ def _dedupe_by_key(rows: list[dict[str, Any]], *, key: str) -> list[dict[str, An
             continue
         seen.add(value)
         result.append(row)
+    return result
+
+
+def _text_values(values: Iterable[Any] | None) -> list[str]:
+    if not values:
+        return []
+    return [text for value in values if (text := str(value).strip())]
+
+
+def _numeric_values(values: Iterable[Any] | None) -> list[int]:
+    if not values:
+        return []
+    result: list[int] = []
+    for value in values:
+        text = str(value).strip()
+        if text.isdigit():
+            result.append(int(text))
     return result

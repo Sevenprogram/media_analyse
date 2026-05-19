@@ -82,6 +82,9 @@ async def create_tables(db_type: str = None):
     if engine:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            from research.schema_migration import ensure_research_schema
+
+            await ensure_research_schema(conn)
 
 
 async def close_engines():

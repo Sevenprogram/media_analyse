@@ -11,13 +11,14 @@ def test_research_job_requires_supported_platforms():
         name="Policy debate",
         topic="urban governance",
         platforms=["wb", "zhihu"],
-        keywords=["公共政策", "城市治理"],
+        keywords=["public policy", "urban governance"],
         start_date=date(2026, 1, 1),
         end_date=date(2026, 1, 31),
         comment_policy=CommentPolicy.default(),
     )
 
     assert request.platforms == ["wb", "zhihu"]
+    assert request.collection_mode == "search"
 
 
 def test_research_job_rejects_unsupported_platform():
@@ -45,6 +46,50 @@ def test_research_job_accepts_video_platforms():
     )
 
     assert request.platforms == ["xhs", "dy", "ks", "bili"]
+
+
+def test_research_job_accepts_detail_mode_without_keywords():
+    request = ResearchJobCreate(
+        name="Specific posts",
+        topic="topic",
+        platforms=["wb"],
+        collection_mode="detail",
+        target_ids=[" 1001 ", "", "1002"],
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 31),
+        comment_policy=CommentPolicy.default(),
+    )
+
+    assert request.keywords == []
+    assert request.target_ids == ["1001", "1002"]
+
+
+def test_research_job_requires_target_ids_for_detail_mode():
+    with pytest.raises(ValidationError, match="detail collection mode requires target_ids"):
+        ResearchJobCreate(
+            name="Specific posts",
+            topic="topic",
+            platforms=["wb"],
+            collection_mode="detail",
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 31),
+            comment_policy=CommentPolicy.default(),
+        )
+
+
+def test_research_job_accepts_creator_mode():
+    request = ResearchJobCreate(
+        name="Creator timeline",
+        topic="topic",
+        platforms=["zhihu"],
+        collection_mode="creator",
+        creator_ids=[" author-a ", "author-b"],
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 31),
+        comment_policy=CommentPolicy.default(),
+    )
+
+    assert request.creator_ids == ["author-a", "author-b"]
 
 
 def test_research_job_rejects_reversed_time_window():
@@ -75,12 +120,19 @@ def test_full_comment_policy_requires_guardrails():
         )
 
 
-def test_research_job_update_strips_keywords():
-    request = ResearchJobUpdate(keywords=[" 政策 ", "", "治理"])
+def test_research_job_update_strips_collection_inputs():
+    request = ResearchJobUpdate(
+        keywords=[" policy ", "", "governance"],
+        target_ids=[" 1001 "],
+        creator_ids=[" author "],
+    )
 
-    assert request.keywords == ["政策", "治理"]
+    assert request.keywords == ["policy", "governance"]
+    assert request.target_ids == ["1001"]
+    assert request.creator_ids == ["author"]
 
 
-def test_research_job_update_rejects_empty_keywords():
-    with pytest.raises(ValidationError, match="keywords must contain"):
-        ResearchJobUpdate(keywords=["", "  "])
+def test_research_job_update_allows_empty_keywords_for_partial_updates():
+    request = ResearchJobUpdate(keywords=["", "  "])
+
+    assert request.keywords == []

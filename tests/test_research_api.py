@@ -52,7 +52,9 @@ def test_research_config_options_include_keyword_platforms():
 
     assert response.status_code == 200
     platform_values = {item["value"] for item in response.json()["platforms"]}
+    collection_modes = {item["value"] for item in response.json()["collection_modes"]}
     assert {"wb", "zhihu", "xhs", "dy", "ks", "bili"}.issubset(platform_values)
+    assert collection_modes == {"search", "detail", "creator"}
 
 
 def test_research_setup_status_route():

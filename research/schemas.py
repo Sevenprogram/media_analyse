@@ -6,6 +6,10 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from api.schemas import LoginTypeEnum, SaveDataOptionEnum
 from research.enums import (
     AI_TASK_TYPES,
+    COLLECTION_CREATOR,
+    COLLECTION_DETAIL,
+    COLLECTION_MODES,
+    COLLECTION_SEARCH,
     RAW_MINIMAL,
     RAW_RECORD_MODES,
     SUPPORTED_RESEARCH_PLATFORMS,
@@ -67,7 +71,10 @@ class ResearchJobCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     topic: str = Field(min_length=1, max_length=500)
     platforms: list[str] = Field(min_length=1)
-    keywords: list[str] = Field(min_length=1)
+    collection_mode: Literal["search", "detail", "creator"] = COLLECTION_SEARCH
+    keywords: list[str] = Field(default_factory=list)
+    target_ids: list[str] = Field(default_factory=list)
+    creator_ids: list[str] = Field(default_factory=list)
     start_date: date
     end_date: date
     comment_policy: CommentPolicy = Field(default_factory=CommentPolicy.default)
@@ -85,10 +92,17 @@ class ResearchJobCreate(BaseModel):
     @field_validator("keywords")
     @classmethod
     def strip_keywords(cls, value: list[str]) -> list[str]:
-        cleaned = [item.strip() for item in value if item.strip()]
-        if not cleaned:
-            raise ValueError("keywords must contain at least one non-empty value")
-        return cleaned
+        return _strip_string_list(value)
+
+    @field_validator("target_ids")
+    @classmethod
+    def strip_target_ids(cls, value: list[str]) -> list[str]:
+        return _strip_string_list(value)
+
+    @field_validator("creator_ids")
+    @classmethod
+    def strip_creator_ids(cls, value: list[str]) -> list[str]:
+        return _strip_string_list(value)
 
     @field_validator("raw_record_mode")
     @classmethod
@@ -101,6 +115,12 @@ class ResearchJobCreate(BaseModel):
     def validate_date_window(self) -> "ResearchJobCreate":
         if self.end_date < self.start_date:
             raise ValueError("end_date must be on or after start_date")
+        validate_collection_inputs(
+            collection_mode=self.collection_mode,
+            keywords=self.keywords,
+            target_ids=self.target_ids,
+            creator_ids=self.creator_ids,
+        )
         return self
 
 
@@ -108,7 +128,10 @@ class ResearchJobUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     topic: str | None = Field(default=None, min_length=1, max_length=500)
     platforms: list[str] | None = Field(default=None, min_length=1)
-    keywords: list[str] | None = Field(default=None, min_length=1)
+    collection_mode: Literal["search", "detail", "creator"] | None = None
+    keywords: list[str] | None = None
+    target_ids: list[str] | None = None
+    creator_ids: list[str] | None = None
     start_date: date | None = None
     end_date: date | None = None
     comment_policy: CommentPolicy | None = None
@@ -130,10 +153,21 @@ class ResearchJobUpdate(BaseModel):
     def strip_optional_keywords(cls, value: list[str] | None) -> list[str] | None:
         if value is None:
             return None
-        cleaned = [item.strip() for item in value if item.strip()]
-        if not cleaned:
-            raise ValueError("keywords must contain at least one non-empty value")
-        return cleaned
+        return _strip_string_list(value)
+
+    @field_validator("target_ids")
+    @classmethod
+    def strip_optional_target_ids(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        return _strip_string_list(value)
+
+    @field_validator("creator_ids")
+    @classmethod
+    def strip_optional_creator_ids(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        return _strip_string_list(value)
 
     @field_validator("raw_record_mode")
     @classmethod
@@ -154,7 +188,10 @@ class ResearchJobRead(BaseModel):
     name: str
     topic: str
     platforms: list[str]
+    collection_mode: str
     keywords: list[str]
+    target_ids: list[str]
+    creator_ids: list[str]
     start_date: date
     end_date: date
     status: str
@@ -220,6 +257,8 @@ class AIAnalysisResultCreate(BaseModel):
 
 class ExistingDataBackfillRequest(BaseModel):
     keywords: list[str] | None = None
+    target_ids: list[str] | None = None
+    creator_ids: list[str] | None = None
     limit: int | None = Field(default=1000, ge=1, le=100000)
 
     @field_validator("keywords")
@@ -227,8 +266,21 @@ class ExistingDataBackfillRequest(BaseModel):
     def strip_optional_keywords(cls, value: list[str] | None) -> list[str] | None:
         if value is None:
             return None
-        cleaned = [item.strip() for item in value if item.strip()]
-        return cleaned or None
+        return _strip_string_list(value) or None
+
+    @field_validator("target_ids")
+    @classmethod
+    def strip_optional_backfill_target_ids(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        return _strip_string_list(value) or None
+
+    @field_validator("creator_ids")
+    @classmethod
+    def strip_optional_backfill_creator_ids(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        return _strip_string_list(value) or None
 
 
 class ResearchExecutionRequest(BaseModel):
@@ -238,3 +290,24 @@ class ResearchExecutionRequest(BaseModel):
     headless: bool = False
     start_page: int = Field(default=1, ge=1)
     backfill_after_crawl: bool = True
+
+
+def validate_collection_inputs(
+    *,
+    collection_mode: str,
+    keywords: list[str],
+    target_ids: list[str],
+    creator_ids: list[str],
+) -> None:
+    if collection_mode not in COLLECTION_MODES:
+        raise ValueError(f"Unsupported collection mode: {collection_mode}")
+    if collection_mode == COLLECTION_SEARCH and not keywords:
+        raise ValueError("search collection mode requires keywords")
+    if collection_mode == COLLECTION_DETAIL and not target_ids:
+        raise ValueError("detail collection mode requires target_ids")
+    if collection_mode == COLLECTION_CREATOR and not creator_ids:
+        raise ValueError("creator collection mode requires creator_ids")
+
+
+def _strip_string_list(value: list[str]) -> list[str]:
+    return [item.strip() for item in value if item.strip()]

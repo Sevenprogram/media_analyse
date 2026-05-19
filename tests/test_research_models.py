@@ -17,3 +17,9 @@ def test_research_tables_are_registered_with_base_metadata():
     }
 
     assert expected.issubset(set(Base.metadata.tables))
+
+
+def test_research_job_collection_mode_columns_are_registered():
+    columns = set(Base.metadata.tables["research_jobs"].columns.keys())
+
+    assert {"collection_mode", "target_ids", "creator_ids"}.issubset(columns)

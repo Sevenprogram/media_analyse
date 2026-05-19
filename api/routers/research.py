@@ -102,6 +102,11 @@ async def update_research_job(job_id: int, request: ResearchJobUpdate):
 async def get_research_config_options():
     return {
         "platforms": list_research_platform_options(),
+        "collection_modes": [
+            {"value": "search", "label": "Keyword search"},
+            {"value": "detail", "label": "Specified content"},
+            {"value": "creator", "label": "Creator timeline"},
+        ],
         "raw_record_modes": [
             {"value": "minimal", "label": "Minimal"},
             {"value": "full", "label": "Full"},
@@ -430,7 +435,13 @@ async def backfill_weibo_existing_data(job_id: int, request: ExistingDataBackfil
             detail="RESEARCH_AUTHOR_HASH_SALT must be configured before backfill",
         )
     runner = ExistingPlatformBackfill(ResearchRepository(), author_hash_salt=salt)
-    return await runner.backfill_weibo(job_id=job_id, keywords=request.keywords, limit=request.limit)
+    return await runner.backfill_weibo(
+        job_id=job_id,
+        keywords=request.keywords,
+        target_ids=request.target_ids,
+        creator_ids=request.creator_ids,
+        limit=request.limit,
+    )
 
 
 @router.post("/jobs/{job_id}/backfill/zhihu")
@@ -442,7 +453,13 @@ async def backfill_zhihu_existing_data(job_id: int, request: ExistingDataBackfil
             detail="RESEARCH_AUTHOR_HASH_SALT must be configured before backfill",
         )
     runner = ExistingPlatformBackfill(ResearchRepository(), author_hash_salt=salt)
-    return await runner.backfill_zhihu(job_id=job_id, keywords=request.keywords, limit=request.limit)
+    return await runner.backfill_zhihu(
+        job_id=job_id,
+        keywords=request.keywords,
+        target_ids=request.target_ids,
+        creator_ids=request.creator_ids,
+        limit=request.limit,
+    )
 
 
 @router.post("/jobs/{job_id}/backfill/{platform}")
@@ -462,6 +479,8 @@ async def backfill_existing_platform_data(
         platform,
         job_id=job_id,
         keywords=request.keywords,
+        target_ids=request.target_ids,
+        creator_ids=request.creator_ids,
         limit=request.limit,
     )
 

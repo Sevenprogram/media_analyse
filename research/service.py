@@ -1,7 +1,11 @@
 from typing import Any, Protocol
 
 from research.enums import JOB_PENDING
-from research.schemas import ResearchJobCreate, ResearchJobUpdate
+from research.schemas import (
+    ResearchJobCreate,
+    ResearchJobUpdate,
+    validate_collection_inputs,
+)
 
 
 class JobRepository(Protocol):
@@ -50,4 +54,12 @@ class ResearchJobService:
         end_date = payload.get("end_date", existing["end_date"])
         if end_date < start_date:
             raise ValueError("end_date must be on or after start_date")
+        validate_collection_inputs(
+            collection_mode=payload.get(
+                "collection_mode", existing.get("collection_mode", "search")
+            ),
+            keywords=payload.get("keywords", existing.get("keywords") or []),
+            target_ids=payload.get("target_ids", existing.get("target_ids") or []),
+            creator_ids=payload.get("creator_ids", existing.get("creator_ids") or []),
+        )
         return await self.repository.update_job(job_id, payload)

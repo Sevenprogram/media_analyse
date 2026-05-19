@@ -43,7 +43,7 @@
             <button id="setupStatusBtn" type="button">检查</button>
           </div>
           <div id="setupSummary" class="setup-grid"></div>
-          <pre id="setupStatus" class="code-box compact">点击检查查看 PostgreSQL、脱敏盐、研究表和平台支持状态。</pre>
+          <pre id="setupStatus" class="code-box compact">点击检查 PostgreSQL、脱敏盐、研究表和平台支持状态。</pre>
         </section>
 
         <section id="jobs" class="grid two">
@@ -62,7 +62,7 @@
             </div>
             <form id="jobForm" class="form-grid">
               <label>
-                任务名
+                任务名称
                 <input id="jobName" name="name" required maxlength="200" />
               </label>
               <label>
@@ -73,9 +73,35 @@
                 <legend>平台</legend>
                 <div id="platformChecks" class="checks-grid"></div>
               </fieldset>
+              <label>
+                采集模式
+                <select id="collectionMode">
+                  <option value="search">关键词搜索</option>
+                  <option value="detail">指定内容</option>
+                  <option value="creator">作者主页</option>
+                </select>
+              </label>
+              <label>
+                Raw Records
+                <select id="rawRecordMode">
+                  <option value="minimal">Minimal</option>
+                  <option value="full">Full</option>
+                </select>
+              </label>
               <label class="wide">
                 后台关键词
                 <textarea id="jobKeywords" rows="3" placeholder="每行一个关键词，或用逗号分隔"></textarea>
+                <span class="muted">关键词搜索模式必填。指定内容或作者主页模式可保留为空。</span>
+              </label>
+              <label class="wide">
+                指定内容 ID
+                <textarea id="targetIds" rows="3" placeholder="每行一个帖子、回答、笔记、视频 ID，或用逗号分隔"></textarea>
+                <span class="muted">指定内容模式必填，会传给底层 crawler 的 detail 模式。</span>
+              </label>
+              <label class="wide">
+                作者 ID
+                <textarea id="creatorIds" rows="3" placeholder="每行一个作者、用户、主页 ID，或用逗号分隔"></textarea>
+                <span class="muted">作者主页模式必填，会传给底层 crawler 的 creator 模式。</span>
               </label>
               <label>
                 开始日期
@@ -89,19 +115,12 @@
                 评论策略
                 <select id="commentMode">
                   <option value="limited">默认限量采集</option>
-                  <option value="full">全量采集</option>
+                  <option value="full">全部采集</option>
                 </select>
               </label>
               <label>
                 每帖评论上限
                 <input id="commentLimit" type="number" min="1" value="100" />
-              </label>
-              <label>
-                Raw Records
-                <select id="rawRecordMode">
-                  <option value="minimal">Minimal</option>
-                  <option value="full">Full</option>
-                </select>
               </label>
               <label class="check wide">
                 <input id="anonymizeAuthors" type="checkbox" checked />
@@ -194,17 +213,17 @@
               </label>
               <label class="wide">
                 Prompt 模板
-                <textarea id="promptText" rows="5">请分析以下内容，并返回 JSON。平台:{platform}
-标题:{title}
-内容:{content}
-要求字段：{"stance":"support|oppose|neutral","sentiment":"positive|negative|neutral","topic_tags":["标签"]}</textarea>
+                <textarea id="promptText" rows="5">请分析以下内容，并返回 JSON。平台: {platform}
+标题: {title}
+内容: {content}
+要求字段: {"stance":"support|oppose|neutral","sentiment":"positive|negative|neutral","topic_tags":["标签"]}</textarea>
               </label>
               <label>Provider ID<input id="analysisProviderId" type="number" min="1" /></label>
               <label>Prompt ID<input id="analysisPromptId" type="number" min="1" /></label>
               <label>
                 分析对象
                 <select id="analysisTargetType">
-                  <option value="post">帖子/回答/视频</option>
+                  <option value="post">帖子 / 回答 / 视频</option>
                   <option value="comment">评论</option>
                 </select>
               </label>

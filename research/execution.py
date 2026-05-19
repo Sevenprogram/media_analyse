@@ -9,7 +9,15 @@ from api.schemas import (
     SaveDataOptionEnum,
 )
 from research.backfill import ExistingPlatformBackfill
-from research.enums import JOB_CANCELLED, JOB_COMPLETED, JOB_FAILED, JOB_RUNNING
+from research.enums import (
+    COLLECTION_CREATOR,
+    COLLECTION_DETAIL,
+    COLLECTION_SEARCH,
+    JOB_CANCELLED,
+    JOB_COMPLETED,
+    JOB_FAILED,
+    JOB_RUNNING,
+)
 from research.platforms import get_research_platform
 
 
@@ -61,7 +69,11 @@ def build_crawler_start_requests(
     options: ResearchExecutionOptions | None = None,
 ) -> list[CrawlerStartRequest]:
     options = options or ResearchExecutionOptions()
-    keywords = ",".join(job["keywords"])
+    collection_mode = job.get("collection_mode") or COLLECTION_SEARCH
+    crawler_type = _to_crawler_type_enum(collection_mode)
+    keywords = ",".join(job.get("keywords") or [])
+    specified_ids = ",".join(job.get("target_ids") or [])
+    creator_ids = ",".join(job.get("creator_ids") or [])
     comment_policy = job.get("comment_policy") or {}
     enable_comments = bool(comment_policy.get("enable_comments", True))
     enable_sub_comments = bool(comment_policy.get("enable_sub_comments", False))
@@ -72,8 +84,10 @@ def build_crawler_start_requests(
             CrawlerStartRequest(
                 platform=_to_platform_enum(platform),
                 login_type=options.login_type,
-                crawler_type=CrawlerTypeEnum.SEARCH,
+                crawler_type=crawler_type,
                 keywords=keywords,
+                specified_ids=specified_ids,
+                creator_ids=creator_ids,
                 start_page=options.start_page,
                 enable_comments=enable_comments,
                 enable_sub_comments=enable_sub_comments,
@@ -91,6 +105,8 @@ def execution_plan_to_dict(requests: list[CrawlerStartRequest]) -> list[dict[str
             "platform": request.platform.value,
             "crawler_type": request.crawler_type.value,
             "keywords": request.keywords,
+            "specified_ids": request.specified_ids,
+            "creator_ids": request.creator_ids,
             "start_page": request.start_page,
             "enable_comments": request.enable_comments,
             "enable_sub_comments": request.enable_sub_comments,
@@ -142,7 +158,10 @@ class ResearchExecutionManager:
                 platform=None,
                 event_type="execution_started",
                 message="Research job execution started",
-                stats={"platforms": [request.platform.value for request in requests]},
+                stats={
+                    "platforms": [request.platform.value for request in requests],
+                    "collection_mode": job.get("collection_mode") or COLLECTION_SEARCH,
+                },
             )
             for request in requests:
                 await self._execute_platform(job=job, request=request, options=options)
@@ -188,7 +207,12 @@ class ResearchExecutionManager:
             platform=platform,
             event_type="crawler_started",
             message=f"Starting crawler for {platform}",
-            stats={"keywords": request.keywords},
+            stats={
+                "crawler_type": request.crawler_type.value,
+                "keywords": request.keywords,
+                "specified_ids": request.specified_ids,
+                "creator_ids": request.creator_ids,
+            },
         )
         started = await self.crawler_manager.start(request)
         if not started:
@@ -214,7 +238,15 @@ class ResearchExecutionManager:
             stats = await self.backfill.backfill_platform(
                 platform,
                 job_id=job["id"],
-                keywords=job["keywords"],
+                keywords=job.get("keywords")
+                if request.crawler_type == CrawlerTypeEnum.SEARCH
+                else None,
+                target_ids=job.get("target_ids")
+                if request.crawler_type == CrawlerTypeEnum.DETAIL
+                else None,
+                creator_ids=job.get("creator_ids")
+                if request.crawler_type == CrawlerTypeEnum.CREATOR
+                else None,
             )
             await self.repository.create_event(
                 job_id=job["id"],
@@ -238,3 +270,13 @@ def _to_platform_enum(platform: str) -> PlatformEnum:
     if crawler_platform is not None:
         return crawler_platform
     raise ValueError(f"Unsupported research execution platform: {platform}")
+
+
+def _to_crawler_type_enum(collection_mode: str) -> CrawlerTypeEnum:
+    if collection_mode == COLLECTION_SEARCH:
+        return CrawlerTypeEnum.SEARCH
+    if collection_mode == COLLECTION_DETAIL:
+        return CrawlerTypeEnum.DETAIL
+    if collection_mode == COLLECTION_CREATOR:
+        return CrawlerTypeEnum.CREATOR
+    raise ValueError(f"Unsupported research collection mode: {collection_mode}")

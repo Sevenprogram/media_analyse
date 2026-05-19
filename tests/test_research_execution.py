@@ -4,38 +4,55 @@ import pytest
 
 from research.enums import JOB_CANCELLED, JOB_COMPLETED, JOB_FAILED, JOB_RUNNING
 from research.execution import (
-    ResearchExecutionOptions,
     ResearchExecutionManager,
+    ResearchExecutionOptions,
     build_crawler_start_requests,
     execution_plan_to_dict,
 )
 
 
 def test_build_crawler_start_requests_uses_backend_keywords():
-    job = {
-        "id": 1,
-        "platforms": ["wb", "zhihu"],
-        "keywords": ["政策", "治理"],
-        "comment_policy": {
-            "enable_comments": True,
-            "enable_sub_comments": False,
-        },
-    }
+    job = _job(platforms=["wb", "zhihu"], keywords=["policy", "governance"])
 
     requests = build_crawler_start_requests(job)
 
     assert [request.platform.value for request in requests] == ["wb", "zhihu"]
-    assert requests[0].keywords == "政策,治理"
+    assert requests[0].crawler_type.value == "search"
+    assert requests[0].keywords == "policy,governance"
+    assert requests[0].specified_ids == ""
+    assert requests[0].creator_ids == ""
     assert requests[0].save_option.value == "postgres"
 
 
+def test_build_crawler_start_requests_supports_detail_mode():
+    job = _job(
+        collection_mode="detail",
+        keywords=[],
+        target_ids=["1001", "1002"],
+    )
+
+    requests = build_crawler_start_requests(job)
+
+    assert requests[0].crawler_type.value == "detail"
+    assert requests[0].keywords == ""
+    assert requests[0].specified_ids == "1001,1002"
+
+
+def test_build_crawler_start_requests_supports_creator_mode():
+    job = _job(
+        collection_mode="creator",
+        keywords=[],
+        creator_ids=["author-a", "author-b"],
+    )
+
+    requests = build_crawler_start_requests(job)
+
+    assert requests[0].crawler_type.value == "creator"
+    assert requests[0].creator_ids == "author-a,author-b"
+
+
 def test_execution_plan_to_dict_hides_cookies():
-    job = {
-        "id": 1,
-        "platforms": ["wb"],
-        "keywords": ["政策"],
-        "comment_policy": {"enable_comments": False, "enable_sub_comments": False},
-    }
+    job = _job(keywords=["policy"], comment_policy={"enable_comments": False, "enable_sub_comments": False})
     options = ResearchExecutionOptions(cookies="secret-cookie", headless=True)
 
     plan = execution_plan_to_dict(build_crawler_start_requests(job, options=options))
@@ -44,7 +61,9 @@ def test_execution_plan_to_dict_hides_cookies():
         {
             "platform": "wb",
             "crawler_type": "search",
-            "keywords": "政策",
+            "keywords": "policy",
+            "specified_ids": "",
+            "creator_ids": "",
             "start_page": 1,
             "enable_comments": False,
             "enable_sub_comments": False,
@@ -56,12 +75,7 @@ def test_execution_plan_to_dict_hides_cookies():
 
 
 def test_build_crawler_start_requests_supports_video_platforms():
-    job = {
-        "id": 1,
-        "platforms": ["xhs", "dy", "ks", "bili"],
-        "keywords": ["topic"],
-        "comment_policy": {"enable_comments": True, "enable_sub_comments": False},
-    }
+    job = _job(platforms=["xhs", "dy", "ks", "bili"])
 
     requests = build_crawler_start_requests(job)
 
@@ -85,6 +99,32 @@ async def test_execute_updates_job_status_to_completed():
         "crawler_started",
         "crawler_finished",
         "execution_completed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_execute_passes_mode_filters_to_backfill():
+    repository = FakeExecutionRepository()
+    backfill = FakeBackfill()
+    manager = ResearchExecutionManager(
+        crawler_manager=FakeCrawlerManager(),
+        repository=repository,
+        backfill=backfill,
+    )
+
+    await manager.execute(
+        job=_job(collection_mode="detail", keywords=[], target_ids=["1001"]),
+        options=ResearchExecutionOptions(backfill_after_crawl=True),
+    )
+
+    assert backfill.calls == [
+        {
+            "platform": "wb",
+            "job_id": 1,
+            "keywords": None,
+            "target_ids": ["1001"],
+            "creator_ids": None,
+        }
     ]
 
 
@@ -155,10 +195,32 @@ class CancellingCrawlerManager:
         raise asyncio.CancelledError()
 
 
-def _job():
+class FakeBackfill:
+    def __init__(self):
+        self.calls = []
+
+    async def backfill_platform(self, platform, **kwargs):
+        self.calls.append({"platform": platform, **kwargs})
+        return {"posts": 1}
+
+
+def _job(
+    *,
+    platforms=None,
+    collection_mode="search",
+    keywords=None,
+    target_ids=None,
+    creator_ids=None,
+    comment_policy=None,
+):
     return {
         "id": 1,
-        "platforms": ["wb"],
-        "keywords": ["topic"],
-        "comment_policy": {"enable_comments": True, "enable_sub_comments": False},
+        "platforms": platforms or ["wb"],
+        "collection_mode": collection_mode,
+        "keywords": keywords if keywords is not None else ["topic"],
+        "target_ids": target_ids or [],
+        "creator_ids": creator_ids or [],
+        "comment_policy": comment_policy
+        if comment_policy is not None
+        else {"enable_comments": True, "enable_sub_comments": False},
     }
