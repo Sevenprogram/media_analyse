@@ -75,3 +75,11 @@ def test_execute_requires_author_hash_salt_when_backfill_enabled(monkeypatch):
     )
 
     assert response.status_code in {400, 404}
+
+
+def test_research_execution_status_route():
+    client = TestClient(app)
+    response = client.get("/api/research/execution/status")
+
+    assert response.status_code == 200
+    assert "research_execution_running" in response.json()

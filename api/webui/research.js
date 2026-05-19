@@ -141,6 +141,16 @@ async function executeJob() {
   $("executionPlan").textContent = JSON.stringify(result, null, 2);
 }
 
+async function loadExecutionStatus() {
+  const result = await api("/api/research/execution/status");
+  $("executionPlan").textContent = JSON.stringify(result, null, 2);
+}
+
+async function stopExecution() {
+  const result = await api("/api/research/execution/stop", { method: "POST" });
+  $("executionPlan").textContent = JSON.stringify(result, null, 2);
+}
+
 async function loadStats() {
   ensureSelected();
   const stats = await api(`/api/research/jobs/${state.selectedJob.id}/stats`);
@@ -322,6 +332,8 @@ function bindEvents() {
   $("createBtn").addEventListener("click", () => saveJob().catch(alert));
   $("planBtn").addEventListener("click", () => previewPlan().catch(alert));
   $("executeBtn").addEventListener("click", () => executeJob().catch(alert));
+  $("statusBtn").addEventListener("click", () => loadExecutionStatus().catch(alert));
+  $("stopBtn").addEventListener("click", () => stopExecution().catch(alert));
   $("loadStatsBtn").addEventListener("click", () => loadStats().catch(alert));
   $("loadEventsBtn").addEventListener("click", () => loadEvents().catch(alert));
   $("loadChartsBtn").addEventListener("click", () => loadCharts().catch(alert));

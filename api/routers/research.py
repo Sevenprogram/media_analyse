@@ -28,6 +28,7 @@ from research.service import ResearchJobService
 from api.services.crawler_manager import crawler_manager
 
 router = APIRouter(prefix="/research", tags=["research"])
+_research_execution_task: asyncio.Task | None = None
 
 
 def get_service() -> ResearchJobService:
@@ -147,6 +148,10 @@ async def preview_research_execution_plan(job_id: int, request: ResearchExecutio
 
 @router.post("/jobs/{job_id}/execute")
 async def execute_research_job(job_id: int, request: ResearchExecutionRequest):
+    global _research_execution_task
+    if _research_execution_task and not _research_execution_task.done():
+        raise HTTPException(status_code=409, detail="A research execution is already running")
+
     salt = os.getenv("RESEARCH_AUTHOR_HASH_SALT")
     if request.backfill_after_crawl and not salt:
         raise HTTPException(
@@ -159,10 +164,28 @@ async def execute_research_job(job_id: int, request: ResearchExecutionRequest):
     if job is None:
         raise HTTPException(status_code=404, detail="Research job not found")
 
+    options = _execution_options_from_request(request)
+    _research_execution_task = asyncio.create_task(
+        _run_research_execution_background(job=job, options=options, salt=salt)
+    )
+
+    return {
+        "status": "accepted",
+        "job_id": job_id,
+        "message": "Research execution started in background",
+    }
+
+
+async def _run_research_execution_background(
+    *,
+    job: dict,
+    options: ResearchExecutionOptions,
+    salt: str | None,
+):
     repository = ResearchRepository()
     backfill = (
         ExistingPlatformBackfill(repository, author_hash_salt=salt)
-        if request.backfill_after_crawl and salt
+        if options.backfill_after_crawl and salt
         else None
     )
     manager = ResearchExecutionManager(
@@ -170,16 +193,7 @@ async def execute_research_job(job_id: int, request: ResearchExecutionRequest):
         repository=repository,
         backfill=backfill,
     )
-    try:
-        manager.start_background(job=job, options=_execution_options_from_request(request))
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-    return {
-        "status": "accepted",
-        "job_id": job_id,
-        "message": "Research execution started in background",
-    }
+    await manager.execute(job=job, options=options)
 
 
 @router.get("/charts/kinds")
@@ -313,7 +327,24 @@ async def export_research_job(job_id: int):
 
 @router.get("/execution/status")
 async def get_research_execution_status():
-    return crawler_manager.get_status()
+    crawler_status = crawler_manager.get_status()
+    return {
+        **crawler_status,
+        "research_execution_running": bool(
+            _research_execution_task and not _research_execution_task.done()
+        ),
+    }
+
+
+@router.post("/execution/stop")
+async def stop_research_execution():
+    global _research_execution_task
+    stopped_crawler = await crawler_manager.stop()
+    if _research_execution_task and not _research_execution_task.done():
+        _research_execution_task.cancel()
+        _research_execution_task = None
+        return {"status": "stopped", "crawler_stopped": stopped_crawler}
+    return {"status": "idle", "crawler_stopped": stopped_crawler}
 
 
 @router.post("/jobs/{job_id}/backfill/weibo")
