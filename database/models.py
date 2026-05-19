@@ -450,3 +450,7 @@ class ZhihuCreator(Base):
     get_voteup_count = Column(Integer, default=0, comment='获赞数')
     add_ts = Column(BigInteger, comment='添加时间戳')
     last_modify_ts = Column(BigInteger, comment='最后修改时间戳')
+
+
+# Import research extension models so Base.metadata includes them during init_db.
+import research.models  # noqa: E402,F401
