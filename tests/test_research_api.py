@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+import config
 from api.main import app
 
 
@@ -63,6 +64,26 @@ def test_research_setup_status_route():
 
     assert response.status_code == 200
     assert response.json()["database"]["research_tables_registered"] is True
+
+
+def test_research_database_routes_require_sql_storage(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "jsonl", raising=False)
+    client = TestClient(app)
+
+    response = client.get("/api/research/jobs")
+
+    assert response.status_code == 400
+    assert "SQL storage" in response.json()["detail"]
+
+
+def test_research_ai_routes_require_sql_storage(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "jsonl", raising=False)
+    client = TestClient(app)
+
+    response = client.get("/api/research/ai/providers")
+
+    assert response.status_code == 400
+    assert "Current value: jsonl" in response.json()["detail"]
 
 
 def test_backfill_requires_author_hash_salt(monkeypatch):

@@ -37,7 +37,8 @@ async function loadConfigOptions() {
 async function loadSetupStatus() {
   const data = await api("/api/research/setup/status");
   const saveOption = data.database?.save_data_option;
-  state.databaseReady = ["sqlite", "postgres", "mysql", "db"].includes(saveOption);
+  state.databaseReady =
+    data.database?.research_database_ready ?? ["sqlite", "postgres", "mysql", "db"].includes(saveOption);
   $("setupStatus").textContent = JSON.stringify(data, null, 2);
   $("setupSummary").innerHTML = [
     summaryItem("存储", data.database?.save_data_option || "-"),

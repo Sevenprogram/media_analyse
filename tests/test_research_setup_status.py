@@ -6,6 +6,10 @@ def test_setup_status_masks_secrets_and_reports_research_tables():
 
     assert status["database"]["postgres"]["password_set"] is True
     assert "password" not in status["database"]["postgres"]
+    assert "research_database_ready" in status["database"]
+    assert {"db", "mysql", "postgres", "sqlite"}.issubset(
+        set(status["database"]["supported_research_save_options"])
+    )
     assert status["database"]["research_tables_registered"] is True
     assert status["database"]["missing_research_tables"] == []
 

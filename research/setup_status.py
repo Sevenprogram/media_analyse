@@ -5,6 +5,7 @@ from typing import Any
 import config
 from config.db_config import postgres_db_config, sqlite_db_config
 from database.models import Base
+from research.database_guard import RESEARCH_SQL_SAVE_OPTIONS, is_research_database_enabled
 from research.platforms import list_research_platform_options
 
 
@@ -38,6 +39,8 @@ def build_research_setup_status() -> dict[str, Any]:
     return {
         "database": {
             "save_data_option": getattr(config, "SAVE_DATA_OPTION", None),
+            "research_database_ready": is_research_database_enabled(),
+            "supported_research_save_options": sorted(RESEARCH_SQL_SAVE_OPTIONS),
             "postgres": {
                 "host": postgres_db_config["host"],
                 "port": int(postgres_db_config["port"]),

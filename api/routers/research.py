@@ -17,6 +17,10 @@ from research.execution import (
 )
 from research.exporter import ResearchExporter
 from research.charts import build_chart_summary
+from research.database_guard import (
+    ResearchDatabaseNotConfigured,
+    assert_research_database_enabled,
+)
 from research.platforms import BACKFILL_RESEARCH_PLATFORMS, list_research_platform_options
 from research.repository import ResearchRepository
 from research.schemas import (
@@ -43,6 +47,13 @@ def get_service() -> ResearchJobService:
     return ResearchJobService(ResearchRepository())
 
 
+def require_research_database() -> None:
+    try:
+        assert_research_database_enabled()
+    except ResearchDatabaseNotConfigured as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/health")
 async def research_health():
     return {"status": "ok", "module": "research"}
@@ -55,18 +66,21 @@ async def get_research_setup_status():
 
 @router.post("/jobs")
 async def create_research_job(request: ResearchJobCreate):
+    require_research_database()
     service = get_service()
     return await service.create_job(request)
 
 
 @router.get("/jobs")
 async def list_research_jobs():
+    require_research_database()
     service = get_service()
     return {"jobs": await service.list_jobs()}
 
 
 @router.get("/jobs/{job_id}")
 async def get_research_job(job_id: int):
+    require_research_database()
     service = get_service()
     job = await service.get_job(job_id)
     if job is None:
@@ -76,18 +90,21 @@ async def get_research_job(job_id: int):
 
 @router.get("/jobs/{job_id}/events")
 async def list_research_job_events(job_id: int, limit: int = 200):
+    require_research_database()
     repository = ResearchRepository()
     return {"events": await repository.list_events(job_id=job_id, limit=limit)}
 
 
 @router.get("/jobs/{job_id}/stats")
 async def get_research_job_stats(job_id: int):
+    require_research_database()
     repository = ResearchRepository()
     return await repository.get_job_stats(job_id)
 
 
 @router.patch("/jobs/{job_id}")
 async def update_research_job(job_id: int, request: ResearchJobUpdate):
+    require_research_database()
     service = get_service()
     try:
         job = await service.update_job(job_id, request)
@@ -149,6 +166,7 @@ def _execution_options_from_request(request: ResearchExecutionRequest) -> Resear
 
 @router.post("/jobs/{job_id}/execution/plan")
 async def preview_research_execution_plan(job_id: int, request: ResearchExecutionRequest):
+    require_research_database()
     service = get_service()
     job = await service.get_job(job_id)
     if job is None:
@@ -174,6 +192,7 @@ async def execute_research_job(job_id: int, request: ResearchExecutionRequest):
             detail="RESEARCH_AUTHOR_HASH_SALT must be configured before execution with backfill",
         )
 
+    require_research_database()
     service = get_service()
     job = await service.get_job(job_id)
     if job is None:
@@ -244,6 +263,7 @@ async def list_chart_kinds():
 
 @router.get("/jobs/{job_id}/charts/summary")
 async def get_research_chart_summary(job_id: int):
+    require_research_database()
     repository = ResearchRepository()
     posts = await repository.list_posts(job_id)
     comments = await repository.list_comments(job_id)
@@ -253,18 +273,21 @@ async def get_research_chart_summary(job_id: int):
 
 @router.post("/ai/providers")
 async def create_ai_provider(request: AIProviderConfigCreate):
+    require_research_database()
     repository = ResearchRepository()
     return await repository.create_ai_provider(request.model_dump(mode="python"))
 
 
 @router.get("/ai/providers")
 async def list_ai_providers():
+    require_research_database()
     repository = ResearchRepository()
     return {"providers": await repository.list_ai_providers()}
 
 
 @router.post("/ai/providers/{provider_id}/test")
 async def test_ai_provider(provider_id: int):
+    require_research_database()
     repository = ResearchRepository()
     provider = await repository.get_ai_provider(provider_id, include_secret=True)
     if provider is None:
@@ -284,18 +307,21 @@ async def test_ai_provider(provider_id: int):
 
 @router.post("/ai/prompts")
 async def create_ai_prompt_template(request: AIPromptTemplateCreate):
+    require_research_database()
     repository = ResearchRepository()
     return await repository.create_prompt_template(request.model_dump(mode="python"))
 
 
 @router.get("/ai/prompts")
 async def list_ai_prompt_templates():
+    require_research_database()
     repository = ResearchRepository()
     return {"prompts": await repository.list_prompt_templates()}
 
 
 @router.post("/ai/analysis-jobs")
 async def create_ai_analysis_job(request: AIAnalysisJobCreate):
+    require_research_database()
     repository = ResearchRepository()
     payload = request.model_dump(mode="python")
     payload["status"] = "pending"
@@ -304,12 +330,14 @@ async def create_ai_analysis_job(request: AIAnalysisJobCreate):
 
 @router.get("/jobs/{job_id}/ai/analysis-jobs")
 async def list_research_job_ai_analysis_jobs(job_id: int):
+    require_research_database()
     repository = ResearchRepository()
     return {"jobs": await repository.list_ai_analysis_jobs(job_id)}
 
 
 @router.post("/ai/analysis-jobs/{analysis_job_id}/run")
 async def run_ai_analysis_job(analysis_job_id: int):
+    require_research_database()
     repository = ResearchRepository()
     job = await repository.get_ai_analysis_job(analysis_job_id)
     if job is None:
@@ -327,6 +355,7 @@ async def run_ai_analysis_job(analysis_job_id: int):
 async def create_ai_analysis_result(
     analysis_job_id: int, request: AIAnalysisResultCreate
 ):
+    require_research_database()
     repository = ResearchRepository()
     return await repository.create_ai_analysis_result(
         analysis_job_id=analysis_job_id,
@@ -336,12 +365,14 @@ async def create_ai_analysis_result(
 
 @router.get("/jobs/{job_id}/ai/results")
 async def list_research_job_ai_results(job_id: int):
+    require_research_database()
     repository = ResearchRepository()
     return {"results": await repository.list_ai_results(job_id)}
 
 
 @router.post("/jobs/{job_id}/export")
 async def export_research_job(job_id: int):
+    require_research_database()
     repository = ResearchRepository()
     job = await repository.get_job(job_id)
     if job is None:
@@ -434,6 +465,7 @@ async def backfill_weibo_existing_data(job_id: int, request: ExistingDataBackfil
             status_code=400,
             detail="RESEARCH_AUTHOR_HASH_SALT must be configured before backfill",
         )
+    require_research_database()
     runner = ExistingPlatformBackfill(ResearchRepository(), author_hash_salt=salt)
     return await runner.backfill_weibo(
         job_id=job_id,
@@ -452,6 +484,7 @@ async def backfill_zhihu_existing_data(job_id: int, request: ExistingDataBackfil
             status_code=400,
             detail="RESEARCH_AUTHOR_HASH_SALT must be configured before backfill",
         )
+    require_research_database()
     runner = ExistingPlatformBackfill(ResearchRepository(), author_hash_salt=salt)
     return await runner.backfill_zhihu(
         job_id=job_id,
@@ -474,6 +507,7 @@ async def backfill_existing_platform_data(
             status_code=400,
             detail="RESEARCH_AUTHOR_HASH_SALT must be configured before backfill",
         )
+    require_research_database()
     runner = ExistingPlatformBackfill(ResearchRepository(), author_hash_salt=salt)
     return await runner.backfill_platform(
         platform,
