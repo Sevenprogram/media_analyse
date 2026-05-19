@@ -30,7 +30,7 @@ if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 from tools import utils
-from database.db_session import create_tables
+from database.db_session import close_engines, create_tables
 
 async def init_table_schema(db_type: str):
     """
@@ -47,7 +47,4 @@ async def init_db(db_type: str = None):
     await init_table_schema(db_type)
 
 async def close():
-    """
-    Placeholder for closing database connections if needed in the future.
-    """
-    pass
+    await close_engines()

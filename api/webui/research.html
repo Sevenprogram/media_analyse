@@ -155,6 +155,48 @@
               <label>模型<input id="providerModel" placeholder="gpt-4o-mini" /></label>
             </div>
             <div id="providerList" class="provider-list"></div>
+            <hr />
+            <div class="panel-head">
+              <h3>Prompt 与分析</h3>
+              <div class="inline-actions">
+                <button id="savePromptBtn" type="button">保存 Prompt</button>
+                <button id="createAnalysisBtn" type="button" class="primary">创建并运行</button>
+              </div>
+            </div>
+            <div class="form-grid">
+              <label>Prompt 名称<input id="promptName" value="stance-default" /></label>
+              <label>
+                任务类型
+                <select id="promptTaskType">
+                  <option value="stance">立场分类</option>
+                  <option value="sentiment">情绪分析</option>
+                  <option value="topic_tags">主题标签</option>
+                  <option value="summary">摘要</option>
+                  <option value="controversy_points">争议点</option>
+                  <option value="argument_structure">论证结构</option>
+                  <option value="comment_digest">评论总结</option>
+                </select>
+              </label>
+              <label class="wide">
+                Prompt 模板
+                <textarea id="promptText" rows="5">请分析以下内容，返回 JSON。平台:{platform}
+标题:{title}
+内容:{content}
+要求字段：{"stance":"support|oppose|neutral","sentiment":"positive|negative|neutral","topic_tags":["标签"]}</textarea>
+              </label>
+              <label>Provider ID<input id="analysisProviderId" type="number" min="1" /></label>
+              <label>Prompt ID<input id="analysisPromptId" type="number" min="1" /></label>
+              <label>
+                分析对象
+                <select id="analysisTargetType">
+                  <option value="post">帖子/回答</option>
+                  <option value="comment">评论</option>
+                </select>
+              </label>
+              <label>数量上限<input id="analysisLimit" type="number" min="1" value="50" /></label>
+            </div>
+            <div id="promptList" class="provider-list"></div>
+            <div id="analysisJobList" class="provider-list"></div>
           </article>
         </section>
 

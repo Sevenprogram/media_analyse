@@ -151,6 +151,16 @@ class ResearchRepository:
             result = await session.execute(select(AIProviderConfig).order_by(AIProviderConfig.id.desc()))
             return [self._ai_provider_to_dict(item) for item in result.scalars().all()]
 
+    async def get_ai_provider(self, provider_id: int, *, include_secret: bool = False) -> dict[str, Any] | None:
+        async with get_session() as session:
+            provider = await session.get(AIProviderConfig, provider_id)
+            if provider is None:
+                return None
+            result = self._ai_provider_to_dict(provider)
+            if include_secret:
+                result["api_key"] = provider.api_key_encrypted
+            return result
+
     async def create_prompt_template(self, payload: dict[str, Any]) -> dict[str, Any]:
         prompt_payload = {
             "name": payload["name"],
@@ -173,10 +183,44 @@ class ResearchRepository:
             result = await session.execute(select(AIPromptTemplate).order_by(AIPromptTemplate.id.desc()))
             return [self._prompt_template_to_dict(item) for item in result.scalars().all()]
 
+    async def get_prompt_template(self, prompt_id: int) -> dict[str, Any] | None:
+        async with get_session() as session:
+            prompt = await session.get(AIPromptTemplate, prompt_id)
+            if prompt is None:
+                return None
+            return self._prompt_template_to_dict(prompt)
+
     async def create_ai_analysis_job(self, payload: dict[str, Any]) -> dict[str, Any]:
         async with get_session() as session:
             job = AIAnalysisJob(**payload)
             session.add(job)
+            await session.flush()
+            await session.refresh(job)
+            return self._ai_analysis_job_to_dict(job)
+
+    async def get_ai_analysis_job(self, analysis_job_id: int) -> dict[str, Any] | None:
+        async with get_session() as session:
+            job = await session.get(AIAnalysisJob, analysis_job_id)
+            if job is None:
+                return None
+            return self._ai_analysis_job_to_dict(job)
+
+    async def list_ai_analysis_jobs(self, research_job_id: int | None = None) -> list[dict[str, Any]]:
+        async with get_session() as session:
+            stmt = select(AIAnalysisJob)
+            if research_job_id is not None:
+                stmt = stmt.where(AIAnalysisJob.research_job_id == research_job_id)
+            result = await session.execute(stmt.order_by(AIAnalysisJob.created_at.desc()))
+            return [self._ai_analysis_job_to_dict(item) for item in result.scalars().all()]
+
+    async def update_ai_analysis_job_status(
+        self, analysis_job_id: int, status: str
+    ) -> dict[str, Any] | None:
+        async with get_session() as session:
+            job = await session.get(AIAnalysisJob, analysis_job_id)
+            if job is None:
+                return None
+            job.status = status
             await session.flush()
             await session.refresh(job)
             return self._ai_analysis_job_to_dict(job)

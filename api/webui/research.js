@@ -107,6 +107,7 @@ function selectJob(id) {
   writeJobForm(state.selectedJob);
   $("statusText").textContent = `当前任务 #${id}`;
   renderJobs();
+  loadAnalysisJobs().catch(() => {});
 }
 
 async function saveJob() {
@@ -183,6 +184,47 @@ async function saveProvider() {
   await loadProviders();
 }
 
+async function savePrompt() {
+  const payload = {
+    name: $("promptName").value.trim(),
+    task_type: $("promptTaskType").value,
+    platform: "all",
+    prompt_text: $("promptText").value,
+    output_schema: {},
+    version: "v1",
+    enabled: true,
+  };
+  const prompt = await api("/api/research/ai/prompts", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  $("analysisPromptId").value = prompt.id;
+  await loadPrompts();
+}
+
+async function createAndRunAnalysis() {
+  ensureSelected();
+  const payload = {
+    research_job_id: state.selectedJob.id,
+    task_type: $("promptTaskType").value,
+    scope: {
+      target_type: $("analysisTargetType").value,
+      limit: Number($("analysisLimit").value || 50),
+    },
+    provider_config_id: Number($("analysisProviderId").value),
+    prompt_template_id: Number($("analysisPromptId").value),
+  };
+  const job = await api("/api/research/ai/analysis-jobs", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  const result = await api(`/api/research/ai/analysis-jobs/${job.id}/run`, {
+    method: "POST",
+  });
+  $("executionPlan").textContent = JSON.stringify(result, null, 2);
+  await loadAnalysisJobs();
+}
+
 async function loadProviders() {
   const data = await api("/api/research/ai/providers");
   $("providerList").innerHTML = (data.providers || [])
@@ -191,6 +233,37 @@ async function loadProviders() {
         <div class="provider-item">
           <strong>${escapeHtml(provider.name)}</strong>
           <div class="muted">${escapeHtml(provider.model)} · ${escapeHtml(provider.base_url)}</div>
+        </div>`
+    )
+    .join("");
+  const first = (data.providers || [])[0];
+  if (first && !$("analysisProviderId").value) $("analysisProviderId").value = first.id;
+}
+
+async function loadPrompts() {
+  const data = await api("/api/research/ai/prompts");
+  $("promptList").innerHTML = (data.prompts || [])
+    .map(
+      (prompt) => `
+        <div class="provider-item">
+          <strong>#${prompt.id} ${escapeHtml(prompt.name)}</strong>
+          <div class="muted">${escapeHtml(prompt.task_type)} · ${escapeHtml(prompt.version)}</div>
+        </div>`
+    )
+    .join("");
+  const first = (data.prompts || [])[0];
+  if (first && !$("analysisPromptId").value) $("analysisPromptId").value = first.id;
+}
+
+async function loadAnalysisJobs() {
+  if (!state.selectedJob) return;
+  const data = await api(`/api/research/jobs/${state.selectedJob.id}/ai/analysis-jobs`);
+  $("analysisJobList").innerHTML = (data.jobs || [])
+    .map(
+      (job) => `
+        <div class="provider-item">
+          <strong>#${job.id} ${escapeHtml(job.task_type)}</strong>
+          <div class="muted">${escapeHtml(job.status)} · provider ${job.provider_config_id} · prompt ${job.prompt_template_id}</div>
         </div>`
     )
     .join("");
@@ -253,9 +326,12 @@ function bindEvents() {
   $("loadEventsBtn").addEventListener("click", () => loadEvents().catch(alert));
   $("loadChartsBtn").addEventListener("click", () => loadCharts().catch(alert));
   $("saveProviderBtn").addEventListener("click", () => saveProvider().catch(alert));
+  $("savePromptBtn").addEventListener("click", () => savePrompt().catch(alert));
+  $("createAnalysisBtn").addEventListener("click", () => createAndRunAnalysis().catch(alert));
   $("exportBtn").addEventListener("click", () => exportJob().catch(alert));
 }
 
 bindEvents();
 loadJobs().catch(() => {});
 loadProviders().catch(() => {});
+loadPrompts().catch(() => {});

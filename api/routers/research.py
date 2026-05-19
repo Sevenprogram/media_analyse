@@ -1,7 +1,9 @@
 import os
+import asyncio
 
 from fastapi import APIRouter, HTTPException
 
+from research.ai_analysis import AIAnalysisRunner
 from research.backfill import ExistingPlatformBackfill
 from research.execution import (
     ResearchExecutionManager,
@@ -243,6 +245,27 @@ async def create_ai_analysis_job(request: AIAnalysisJobCreate):
     payload = request.model_dump(mode="python")
     payload["status"] = "pending"
     return await repository.create_ai_analysis_job(payload)
+
+
+@router.get("/jobs/{job_id}/ai/analysis-jobs")
+async def list_research_job_ai_analysis_jobs(job_id: int):
+    repository = ResearchRepository()
+    return {"jobs": await repository.list_ai_analysis_jobs(job_id)}
+
+
+@router.post("/ai/analysis-jobs/{analysis_job_id}/run")
+async def run_ai_analysis_job(analysis_job_id: int):
+    repository = ResearchRepository()
+    job = await repository.get_ai_analysis_job(analysis_job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="AI analysis job not found")
+    runner = AIAnalysisRunner(repository)
+    asyncio.create_task(runner.run(analysis_job_id))
+    return {
+        "status": "accepted",
+        "analysis_job_id": analysis_job_id,
+        "message": "AI analysis job started in background",
+    }
 
 
 @router.post("/ai/analysis-jobs/{analysis_job_id}/results")
