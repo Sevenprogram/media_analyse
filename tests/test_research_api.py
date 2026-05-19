@@ -11,6 +11,14 @@ def test_research_health_route():
     assert response.json() == {"status": "ok", "module": "research"}
 
 
+def test_research_console_page_is_served():
+    client = TestClient(app)
+    response = client.get("/research")
+
+    assert response.status_code == 200
+    assert "Research Console" in response.text
+
+
 def test_research_job_validation_runs_before_persistence():
     client = TestClient(app)
     response = client.post(

@@ -178,6 +178,23 @@ class AIProviderConfigCreate(BaseModel):
     enabled: bool = True
 
 
+class AIPromptTemplateCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    task_type: str
+    platform: str = Field(default="all", max_length=32)
+    prompt_text: str = Field(min_length=1)
+    output_schema: dict[str, Any] = Field(default_factory=dict)
+    version: str = Field(default="v1", min_length=1, max_length=64)
+    enabled: bool = True
+
+    @field_validator("task_type")
+    @classmethod
+    def validate_prompt_task_type(cls, value: str) -> str:
+        if value not in AI_TASK_TYPES:
+            raise ValueError(f"Unsupported AI task type: {value}")
+        return value
+
+
 class AIAnalysisJobCreate(BaseModel):
     research_job_id: int
     task_type: str
@@ -191,6 +208,14 @@ class AIAnalysisJobCreate(BaseModel):
         if value not in AI_TASK_TYPES:
             raise ValueError(f"Unsupported AI task type: {value}")
         return value
+
+
+class AIAnalysisResultCreate(BaseModel):
+    target_type: str = Field(min_length=1, max_length=32)
+    target_id: str = Field(min_length=1, max_length=255)
+    result: dict[str, Any]
+    model: str = Field(min_length=1, max_length=200)
+    prompt_version: str = Field(min_length=1, max_length=64)
 
 
 class ExistingDataBackfillRequest(BaseModel):

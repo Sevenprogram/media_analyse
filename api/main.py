@@ -77,6 +77,15 @@ async def serve_frontend():
     }
 
 
+@app.get("/research")
+async def serve_research_console():
+    """Return research console page"""
+    research_path = os.path.join(WEBUI_DIR, "research.html")
+    if os.path.exists(research_path):
+        return FileResponse(research_path)
+    return {"message": "Research console not found"}
+
+
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok"}

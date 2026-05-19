@@ -13,6 +13,7 @@ from database.models import (
 )
 from research.repository import ResearchRepository
 from research.runner import ResearchJobRunner
+from research.time_window import TimeWindow
 
 
 class ExistingPlatformBackfill:
@@ -27,6 +28,9 @@ class ExistingPlatformBackfill:
         keywords: list[str] | None = None,
         limit: int | None = 1000,
     ) -> dict[str, int]:
+        job = await self.repository.get_job(job_id)
+        time_window = TimeWindow.from_dates(job["start_date"], job["end_date"]) if job else None
+
         async with get_session() as session:
             note_stmt = select(WeiboNote)
             if keywords:
@@ -52,6 +56,7 @@ class ExistingPlatformBackfill:
             notes=[model_to_dict(item) for item in notes],
             comments=[model_to_dict(item) for item in comments],
             authors=[model_to_dict(item) for item in creators],
+            time_window=time_window,
         )
 
     async def backfill_zhihu(
@@ -61,6 +66,9 @@ class ExistingPlatformBackfill:
         keywords: list[str] | None = None,
         limit: int | None = 1000,
     ) -> dict[str, int]:
+        job = await self.repository.get_job(job_id)
+        time_window = TimeWindow.from_dates(job["start_date"], job["end_date"]) if job else None
+
         async with get_session() as session:
             content_stmt = select(ZhihuContent)
             if keywords:
@@ -86,6 +94,7 @@ class ExistingPlatformBackfill:
             contents=[model_to_dict(item) for item in contents],
             comments=[model_to_dict(item) for item in comments],
             authors=[model_to_dict(item) for item in creators],
+            time_window=time_window,
         )
 
 

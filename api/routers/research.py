@@ -9,8 +9,14 @@ from research.execution import (
     build_crawler_start_requests,
     execution_plan_to_dict,
 )
+from research.exporter import ResearchExporter
+from research.charts import build_chart_summary
 from research.repository import ResearchRepository
 from research.schemas import (
+    AIAnalysisJobCreate,
+    AIAnalysisResultCreate,
+    AIProviderConfigCreate,
+    AIPromptTemplateCreate,
     ExistingDataBackfillRequest,
     ResearchExecutionRequest,
     ResearchJobCreate,
@@ -50,6 +56,18 @@ async def get_research_job(job_id: int):
     if job is None:
         raise HTTPException(status_code=404, detail="Research job not found")
     return job
+
+
+@router.get("/jobs/{job_id}/events")
+async def list_research_job_events(job_id: int, limit: int = 200):
+    repository = ResearchRepository()
+    return {"events": await repository.list_events(job_id=job_id, limit=limit)}
+
+
+@router.get("/jobs/{job_id}/stats")
+async def get_research_job_stats(job_id: int):
+    repository = ResearchRepository()
+    return await repository.get_job_stats(job_id)
 
 
 @router.patch("/jobs/{job_id}")
@@ -184,6 +202,95 @@ async def list_chart_kinds():
             "parse_failure_reasons",
         ]
     }
+
+
+@router.get("/jobs/{job_id}/charts/summary")
+async def get_research_chart_summary(job_id: int):
+    repository = ResearchRepository()
+    posts = await repository.list_posts(job_id)
+    comments = await repository.list_comments(job_id)
+    ai_results = await repository.list_ai_results(job_id)
+    return build_chart_summary(posts=posts, comments=comments, ai_results=ai_results)
+
+
+@router.post("/ai/providers")
+async def create_ai_provider(request: AIProviderConfigCreate):
+    repository = ResearchRepository()
+    return await repository.create_ai_provider(request.model_dump(mode="python"))
+
+
+@router.get("/ai/providers")
+async def list_ai_providers():
+    repository = ResearchRepository()
+    return {"providers": await repository.list_ai_providers()}
+
+
+@router.post("/ai/prompts")
+async def create_ai_prompt_template(request: AIPromptTemplateCreate):
+    repository = ResearchRepository()
+    return await repository.create_prompt_template(request.model_dump(mode="python"))
+
+
+@router.get("/ai/prompts")
+async def list_ai_prompt_templates():
+    repository = ResearchRepository()
+    return {"prompts": await repository.list_prompt_templates()}
+
+
+@router.post("/ai/analysis-jobs")
+async def create_ai_analysis_job(request: AIAnalysisJobCreate):
+    repository = ResearchRepository()
+    payload = request.model_dump(mode="python")
+    payload["status"] = "pending"
+    return await repository.create_ai_analysis_job(payload)
+
+
+@router.post("/ai/analysis-jobs/{analysis_job_id}/results")
+async def create_ai_analysis_result(
+    analysis_job_id: int, request: AIAnalysisResultCreate
+):
+    repository = ResearchRepository()
+    return await repository.create_ai_analysis_result(
+        analysis_job_id=analysis_job_id,
+        payload=request.model_dump(mode="python"),
+    )
+
+
+@router.get("/jobs/{job_id}/ai/results")
+async def list_research_job_ai_results(job_id: int):
+    repository = ResearchRepository()
+    return {"results": await repository.list_ai_results(job_id)}
+
+
+@router.post("/jobs/{job_id}/export")
+async def export_research_job(job_id: int):
+    repository = ResearchRepository()
+    job = await repository.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Research job not found")
+    posts = await repository.list_posts(job_id)
+    comments = await repository.list_comments(job_id)
+    authors = await repository.list_authors(job_id)
+    ai_results = await repository.list_ai_results(job_id)
+    raw_records = await repository.list_raw_records(job_id)
+    chart_summary = build_chart_summary(posts=posts, comments=comments, ai_results=ai_results)
+    exporter = ResearchExporter()
+    return exporter.export_job(
+        job_id=job_id,
+        job_summary=job,
+        posts=posts,
+        comments=comments,
+        authors=authors,
+        ai_results=ai_results,
+        raw_records=raw_records,
+        charts=[],
+        chart_summary=chart_summary,
+    )
+
+
+@router.get("/execution/status")
+async def get_research_execution_status():
+    return crawler_manager.get_status()
 
 
 @router.post("/jobs/{job_id}/backfill/weibo")

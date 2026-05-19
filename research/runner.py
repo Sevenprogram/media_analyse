@@ -9,6 +9,7 @@ from research.normalizer import (
     normalize_zhihu_comment,
     normalize_zhihu_content,
 )
+from research.time_window import TimeWindow, filter_by_time_window
 
 
 class ResearchWriteRepository(Protocol):
@@ -60,6 +61,7 @@ class ResearchJobRunner:
         notes: list[dict[str, Any]],
         comments: list[dict[str, Any]],
         authors: list[dict[str, Any]],
+        time_window: TimeWindow | None = None,
     ) -> dict[str, int]:
         return await self._ingest_batch(
             job_id=job_id,
@@ -74,6 +76,7 @@ class ResearchJobRunner:
             post_url_key="note_url",
             comment_id_key="comment_id",
             author_id_key="user_id",
+            time_window=time_window,
         )
 
     async def ingest_zhihu_batch(
@@ -83,6 +86,7 @@ class ResearchJobRunner:
         contents: list[dict[str, Any]],
         comments: list[dict[str, Any]],
         authors: list[dict[str, Any]],
+        time_window: TimeWindow | None = None,
     ) -> dict[str, int]:
         return await self._ingest_batch(
             job_id=job_id,
@@ -97,6 +101,7 @@ class ResearchJobRunner:
             post_url_key="content_url",
             comment_id_key="comment_id",
             author_id_key="user_id",
+            time_window=time_window,
         )
 
     async def _ingest_batch(
@@ -114,8 +119,18 @@ class ResearchJobRunner:
         post_url_key: str,
         comment_id_key: str,
         author_id_key: str,
+        time_window: TimeWindow | None,
     ) -> dict[str, int]:
-        stats = {"posts": 0, "comments": 0, "authors": 0, "raw_records": 0}
+        stats = {
+            "posts": 0,
+            "comments": 0,
+            "authors": 0,
+            "raw_records": 0,
+            "filtered_posts_outside_window": 0,
+            "filtered_posts_missing_time": 0,
+            "filtered_comments_outside_window": 0,
+            "filtered_comments_missing_time": 0,
+        }
 
         for author in authors:
             if author.get(author_id_key) in (None, ""):
@@ -126,7 +141,20 @@ class ResearchJobRunner:
             await self.repository.upsert_author(normalized_author)
             stats["authors"] += 1
 
+        normalized_posts: list[tuple[dict[str, Any], dict[str, Any]]] = []
         for post in posts:
+            normalized_post = post_normalizer(post, job_id=job_id, salt=self.author_hash_salt)
+            normalized_posts.append((post, normalized_post))
+        accepted_posts, outside_posts, missing_post_times = filter_by_time_window(
+            [item[1] for item in normalized_posts], window=time_window
+        )
+        accepted_post_ids = {id(item) for item in accepted_posts}
+        stats["filtered_posts_outside_window"] = outside_posts
+        stats["filtered_posts_missing_time"] = missing_post_times
+
+        for post, normalized_post in normalized_posts:
+            if time_window is not None and id(normalized_post) not in accepted_post_ids:
+                continue
             raw = await self.repository.create_raw_record(
                 job_id=job_id,
                 platform=platform,
@@ -135,13 +163,27 @@ class ResearchJobRunner:
                 source_url=post.get(post_url_key),
                 payload=post,
             )
-            normalized_post = post_normalizer(post, job_id=job_id, salt=self.author_hash_salt)
             normalized_post["raw_record_id"] = raw["id"]
             await self.repository.upsert_post(normalized_post)
             stats["posts"] += 1
             stats["raw_records"] += 1
 
+        normalized_comments: list[tuple[dict[str, Any], dict[str, Any]]] = []
         for comment in comments:
+            normalized_comment = comment_normalizer(
+                comment, job_id=job_id, salt=self.author_hash_salt
+            )
+            normalized_comments.append((comment, normalized_comment))
+        accepted_comments, outside_comments, missing_comment_times = filter_by_time_window(
+            [item[1] for item in normalized_comments], window=time_window
+        )
+        accepted_comment_ids = {id(item) for item in accepted_comments}
+        stats["filtered_comments_outside_window"] = outside_comments
+        stats["filtered_comments_missing_time"] = missing_comment_times
+
+        for comment, normalized_comment in normalized_comments:
+            if time_window is not None and id(normalized_comment) not in accepted_comment_ids:
+                continue
             raw = await self.repository.create_raw_record(
                 job_id=job_id,
                 platform=platform,
@@ -149,9 +191,6 @@ class ResearchJobRunner:
                 source_id=_string_or_none(comment.get(comment_id_key)),
                 source_url=None,
                 payload=comment,
-            )
-            normalized_comment = comment_normalizer(
-                comment, job_id=job_id, salt=self.author_hash_salt
             )
             normalized_comment["raw_record_id"] = raw["id"]
             await self.repository.upsert_comment(normalized_comment)

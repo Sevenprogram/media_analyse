@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Research Console</title>
+    <link rel="stylesheet" href="/static/research.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <img src="/logos/my_logo.png" alt="" />
+          <div>
+            <h1>Research Console</h1>
+            <p>MediaCrawler</p>
+          </div>
+        </div>
+        <nav>
+          <a href="#jobs" class="active">任务</a>
+          <a href="#dashboard">图表</a>
+          <a href="#ai">AI</a>
+          <a href="#export">导出</a>
+        </nav>
+      </aside>
+
+      <section class="content">
+        <header class="topbar">
+          <div>
+            <h2>政治传播研究采集</h2>
+            <p id="statusText">未选择任务</p>
+          </div>
+          <div class="actions">
+            <button id="refreshBtn" type="button">刷新</button>
+            <button id="createBtn" type="button" class="primary">保存任务</button>
+          </div>
+        </header>
+
+        <section id="jobs" class="grid two">
+          <article class="panel">
+            <div class="panel-head">
+              <h3>研究任务</h3>
+              <button id="newJobBtn" type="button">新建</button>
+            </div>
+            <div id="jobList" class="job-list"></div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <h3>任务配置</h3>
+              <span id="selectedJobId" class="muted">未保存</span>
+            </div>
+            <form id="jobForm" class="form-grid">
+              <label>
+                任务名
+                <input id="jobName" name="name" required maxlength="200" />
+              </label>
+              <label>
+                研究主题
+                <input id="jobTopic" name="topic" required maxlength="500" />
+              </label>
+              <fieldset>
+                <legend>平台</legend>
+                <label class="check"><input type="checkbox" name="platform" value="wb" checked /> 微博</label>
+                <label class="check"><input type="checkbox" name="platform" value="zhihu" checked /> 知乎</label>
+              </fieldset>
+              <label class="wide">
+                关键词
+                <textarea id="jobKeywords" rows="3" placeholder="每行一个关键词，或用逗号分隔"></textarea>
+              </label>
+              <label>
+                开始日期
+                <input id="startDate" type="date" required />
+              </label>
+              <label>
+                结束日期
+                <input id="endDate" type="date" required />
+              </label>
+              <label>
+                评论策略
+                <select id="commentMode">
+                  <option value="limited">限量评论</option>
+                  <option value="full">全量评论</option>
+                </select>
+              </label>
+              <label>
+                每帖评论上限
+                <input id="commentLimit" type="number" min="1" value="100" />
+              </label>
+              <label>
+                Raw Records
+                <select id="rawRecordMode">
+                  <option value="minimal">Minimal</option>
+                  <option value="full">Full</option>
+                </select>
+              </label>
+              <label class="check wide">
+                <input id="anonymizeAuthors" type="checkbox" checked />
+                默认脱敏作者信息
+              </label>
+            </form>
+          </article>
+        </section>
+
+        <section class="grid two">
+          <article class="panel">
+            <div class="panel-head">
+              <h3>执行</h3>
+              <div class="inline-actions">
+                <button id="planBtn" type="button">预览</button>
+                <button id="executeBtn" type="button" class="primary">启动</button>
+              </div>
+            </div>
+            <pre id="executionPlan" class="code-box">选择任务后预览执行计划</pre>
+          </article>
+          <article class="panel">
+            <div class="panel-head">
+              <h3>统计</h3>
+              <button id="loadStatsBtn" type="button">加载</button>
+            </div>
+            <div id="statsGrid" class="stats-grid"></div>
+          </article>
+        </section>
+
+        <section id="dashboard" class="panel">
+          <div class="panel-head">
+            <h3>图表</h3>
+            <button id="loadChartsBtn" type="button">刷新图表</button>
+          </div>
+          <div class="chart-grid">
+            <canvas id="platformChart" width="420" height="240"></canvas>
+            <canvas id="postTrendChart" width="420" height="240"></canvas>
+            <canvas id="keywordChart" width="420" height="240"></canvas>
+            <canvas id="sentimentChart" width="420" height="240"></canvas>
+          </div>
+        </section>
+
+        <section class="grid two">
+          <article class="panel">
+            <div class="panel-head">
+              <h3>日志</h3>
+              <button id="loadEventsBtn" type="button">刷新日志</button>
+            </div>
+            <div id="eventList" class="event-list"></div>
+          </article>
+          <article id="ai" class="panel">
+            <div class="panel-head">
+              <h3>AI 配置</h3>
+              <button id="saveProviderBtn" type="button">保存 Provider</button>
+            </div>
+            <div class="form-grid">
+              <label>名称<input id="providerName" value="default" /></label>
+              <label>Base URL<input id="providerBaseUrl" placeholder="https://example.com" /></label>
+              <label>API Key<input id="providerApiKey" type="password" /></label>
+              <label>模型<input id="providerModel" placeholder="gpt-4o-mini" /></label>
+            </div>
+            <div id="providerList" class="provider-list"></div>
+          </article>
+        </section>
+
+        <section id="export" class="panel">
+          <div class="panel-head">
+            <h3>导出</h3>
+            <button id="exportBtn" type="button" class="primary">生成导出</button>
+          </div>
+          <pre id="exportResult" class="code-box">导出结果会显示在这里</pre>
+        </section>
+      </section>
+    </main>
+    <script src="/static/research.js"></script>
+  </body>
+</html>

@@ -19,6 +19,8 @@ def test_exporter_creates_report_and_csv_files(tmp_path: Path):
         authors=[{"platform": "wb", "author_hash": "wb_abc"}],
         ai_results=[{"target_id": "p1", "result_json": {"stance": "support"}}],
         charts=[],
+        raw_records=[{"source_id": "p1", "payload_json": {"content": "hello"}}],
+        chart_summary={"platform_counts": [{"platform": "wb", "posts": 1, "comments": 1}]},
     )
 
     export_dir = tmp_path / "research_job_7"
@@ -27,4 +29,7 @@ def test_exporter_creates_report_and_csv_files(tmp_path: Path):
     assert (export_dir / "comments.csv").exists()
     assert (export_dir / "authors.csv").exists()
     assert (export_dir / "ai_results.jsonl").exists()
+    assert (export_dir / "raw_records.jsonl").exists()
+    assert (export_dir / "research_export.xlsx").exists()
+    assert (export_dir / "charts" / "platform_counts.png").exists()
     assert (export_dir / "job_report.md").exists()

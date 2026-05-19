@@ -1,6 +1,8 @@
 import pytest
+from datetime import date
 
 from research.runner import ResearchJobRunner
+from research.time_window import TimeWindow
 
 
 class FakeRepository:
@@ -61,7 +63,10 @@ async def test_ingest_weibo_batch_writes_raw_and_normalized_records():
         authors=[{"user_id": "u1", "nickname": "name"}],
     )
 
-    assert stats == {"posts": 1, "comments": 1, "authors": 1, "raw_records": 2}
+    assert stats["posts"] == 1
+    assert stats["comments"] == 1
+    assert stats["authors"] == 1
+    assert stats["raw_records"] == 2
     assert repo.posts[0]["raw_record_id"] == 1
     assert repo.comments[0]["raw_record_id"] == 2
     assert repo.events[0]["event_type"] == "ingest_batch"
@@ -96,3 +101,35 @@ async def test_ingest_zhihu_batch_writes_platform_specific_ids():
     assert repo.posts[0]["platform"] == "zhihu"
     assert repo.posts[0]["platform_post_id"] == "answer1"
     assert repo.comments[0]["platform_comment_id"] == "comment1"
+
+
+@pytest.mark.asyncio
+async def test_ingest_weibo_batch_filters_posts_outside_time_window():
+    repo = FakeRepository()
+    runner = ResearchJobRunner(repo, author_hash_salt="salt")
+    window = TimeWindow.from_dates(date(2024, 1, 1), date(2024, 1, 1))
+
+    stats = await runner.ingest_weibo_batch(
+        job_id=7,
+        notes=[
+            {
+                "note_id": 123,
+                "user_id": "u1",
+                "content": "inside",
+                "create_time": 1704067200,
+            },
+            {
+                "note_id": 124,
+                "user_id": "u1",
+                "content": "outside",
+                "create_time": 1704153600,
+            },
+        ],
+        comments=[],
+        authors=[],
+        time_window=window,
+    )
+
+    assert stats["posts"] == 1
+    assert stats["filtered_posts_outside_window"] == 1
+    assert repo.posts[0]["platform_post_id"] == "123"
