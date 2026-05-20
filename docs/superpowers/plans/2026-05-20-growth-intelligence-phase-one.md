@@ -22,6 +22,369 @@ The design covers four related business modules. They share the same data model,
 
 Each task below should be committed separately. Do not start a later task until tests for the current task pass.
 
+## Execution Rules For Agents
+
+- Do not trigger a real crawler run in tests. Unit tests must use fake repositories or fake execution callbacks.
+- Do not call live AI providers in tests. AI keyword expansion tests must monkeypatch the provider call and return deterministic suggestions.
+- Keep new scoring models deterministic first. AI may summarize evidence, but initial scores must be reproducible from stored data.
+- Preserve `/research` as the primary UI and `/crawler` as the legacy direct crawler page.
+- Preserve existing `/api/research/*` behavior unless a task explicitly extends it.
+- Do not hard-code 4Router API keys or model names. 4Router is configured through AI Provider with `base_url=https://4router.net/v1`.
+- Show explicit user-facing switches for real-time discovery. Local-first search must work without starting a crawler.
+- Treat low sample counts as low confidence instead of overclaiming push/cooldown.
+
+## Field Ownership Matrix
+
+Use this field mapping to avoid ambiguous JSON blobs:
+
+| Business Field | Storage Location | Notes |
+| --- | --- | --- |
+| Vertical name | `research_verticals.name` | Already exists; do not duplicate in scene packs. |
+| Scene pack name | `research_scene_packs.name` | Example: `单亲妈妈`, `鸡娃家庭`. |
+| Primary/secondary/synonym/negative/platform terms | `research_scene_pack_keywords.keyword` + `keyword_type` | `platform` is nullable; platform-specific term uses `platform`. |
+| Keyword monitoring reason | `research_scene_pack_keywords.reason` | Also copied from AI suggestion when user confirms. |
+| Keyword usage flags | `research_scene_pack_keywords.usage_flags_json` | Values: `creator_discovery`, `content_tracking`, `keyword_heat`, `competitor_analysis`. |
+| AI generated suggestions | `research_ai_keyword_suggestion_sessions.suggestions_json` | Suggestions are not official terms until user confirms. |
+| Creator region | `research_creator_profiles` existing field if present, else `tag_summary_json.region` or profile metadata JSON | Do not add a second region field until repository shape is checked. |
+| Creator bio | `research_creator_profiles.bio` | Existing model includes this field in current code. |
+| Creator verified status | `research_creator_profiles` metadata JSON or `tag_summary_json.verified` | Keep boolean value in API response as `verified`. |
+| Creator contact clues | derived field in creator discovery API response | Store later in candidate `evidence`/`source_json`; do not store raw private data beyond collected public text. |
+| Monitor pool frequency | `research_monitor_pools.schedule_interval_minutes` | Default `720`. |
+| Monitor pool comment policy | `research_monitor_pools.comment_policy_json` | `{"enable_comments": true, "enable_sub_comments": false}` by default. |
+| Monitor pool task link | `research_monitor_pools.research_job_id` | Points to creator-mode research job. |
+| Content input text | `research_content_samples.content_text` | Text, title, OCR, captions, transcript, or pasted sample. |
+| Content source URL | `research_content_samples.url` | Nullable. |
+| Extracted keyword evidence | `research_extracted_content_keywords.evidence_text` | Source span/snippet. |
+| Similar content score | `research_similar_content_candidates.similarity_score` | Deterministic score. |
+| Content tracker task link | `research_content_trackers.research_job_id` | Points to search/detail research job. |
+| Keyword heat label/scores | `research_keyword_heat_snapshots` | Stores label, heat, push, cooldown, confidence, evidence. |
+| Competitor composition | `research_competitor_composition_snapshots` | Keyword/tag/type/time distributions and hot rate. |
+
+## Core API Contracts
+
+The implementation must keep these request/response shapes stable.
+
+### Keyword Library
+
+`POST /api/keyword-library/scene-packs`
+
+Request:
+
+```json
+{
+  "vertical_id": 1,
+  "name": "单亲妈妈",
+  "description": "K12教育下的单亲妈妈人群",
+  "weight": 1.5,
+  "enabled": true
+}
+```
+
+Response:
+
+```json
+{
+  "id": 1,
+  "vertical_id": 1,
+  "name": "单亲妈妈",
+  "description": "K12教育下的单亲妈妈人群",
+  "weight": 1.5,
+  "enabled": true
+}
+```
+
+`POST /api/keyword-library/keywords`
+
+Request:
+
+```json
+{
+  "scene_pack_id": 1,
+  "keyword": "陪读",
+  "keyword_type": "secondary",
+  "platform": "xhs",
+  "weight": 1.2,
+  "reason": "小红书中常用于表达K12陪伴学习场景",
+  "usage_flags": ["creator_discovery", "content_tracking", "keyword_heat"],
+  "enabled": true
+}
+```
+
+Response includes the same fields plus `id`.
+
+`POST /api/keyword-library/ai/expand`
+
+Request:
+
+```json
+{
+  "input_text": "K12教育",
+  "vertical_id": 1,
+  "scene_pack_id": null,
+  "target_platforms": ["xhs", "dy", "wb"],
+  "provider_config_id": 1
+}
+```
+
+Response:
+
+```json
+{
+  "id": 1,
+  "status": "completed",
+  "suggestions_json": [
+    {
+      "keyword": "鸡娃",
+      "keyword_type": "secondary",
+      "platform": "xhs",
+      "reason": "小红书常见家庭教育讨论词",
+      "weight": 1.4,
+      "usage_flags": ["creator_discovery", "content_tracking", "keyword_heat"]
+    }
+  ]
+}
+```
+
+### Creator Discovery And Monitor Pools
+
+`POST /api/creator-search/discover/realtime`
+
+Request:
+
+```json
+{
+  "keywords": ["K12教育", "单亲妈妈"],
+  "platforms": ["xhs", "dy"],
+  "realtime": true,
+  "wait": false
+}
+```
+
+Response:
+
+```json
+{
+  "status": "queued",
+  "job_id": 123
+}
+```
+
+`POST /api/creator-search/monitor-pools`
+
+Request:
+
+```json
+{
+  "name": "K12教育达人池",
+  "description": "单亲妈妈和家庭教育相关达人",
+  "vertical_id": 1,
+  "scene_pack_ids": [1, 2],
+  "schedule_interval_minutes": 720,
+  "comment_policy": {"enable_comments": true, "enable_sub_comments": false},
+  "enabled": true
+}
+```
+
+Response includes `id`, `research_job_id`, and saved schedule/comment policy.
+
+`POST /api/creator-search/monitor-pools/{pool_id}/creators`
+
+Request:
+
+```json
+{
+  "crawl_now": true,
+  "creators": [
+    {
+      "platform": "xhs",
+      "creator_id": "u123",
+      "display_name": "陪读妈妈A",
+      "match_score": 88.5,
+      "matched_tags": [],
+      "evidence": {"primary_hits": ["K12教育"], "secondary_hits": ["单亲妈妈"]}
+    }
+  ]
+}
+```
+
+Response:
+
+```json
+{
+  "pool": {"id": 1, "name": "K12教育达人池"},
+  "added": [{"platform": "xhs", "creator_id": "u123"}],
+  "job": {"id": 77, "collection_mode": "creator", "creator_ids": ["u123"]},
+  "executed": null
+}
+```
+
+### Content Tracking
+
+`POST /api/content-tracking/extract-keywords`
+
+Request:
+
+```json
+{
+  "title": "单亲妈妈聊K12陪读",
+  "text": "孩子升学压力很大，陪读过程中最难的是时间管理",
+  "platform": "xhs",
+  "vertical_id": 1,
+  "scene_pack_ids": [1],
+  "use_ai": false
+}
+```
+
+Response:
+
+```json
+{
+  "keywords": [
+    {
+      "keyword": "K12",
+      "keyword_type": "primary",
+      "confidence": 0.95,
+      "evidence_text": "单亲妈妈聊K12陪读",
+      "scene_pack_id": 1,
+      "query_variants": ["K12"]
+    }
+  ]
+}
+```
+
+`POST /api/content-tracking/search-similar`
+
+Request:
+
+```json
+{
+  "keywords": ["K12", "陪读"],
+  "platforms": ["xhs"],
+  "vertical_id": 1,
+  "scene_pack_ids": [1],
+  "realtime": false,
+  "exclude_tracked": true,
+  "limit": 50
+}
+```
+
+Response:
+
+```json
+{
+  "candidates": [
+    {
+      "platform": "xhs",
+      "platform_post_id": "note-1",
+      "title": "陪读妈妈经验",
+      "author_id": "creator-1",
+      "similarity_score": 82.4,
+      "matched_keywords": [{"term": "陪读", "count": 2, "context": "陪读妈妈经验"}],
+      "evidence": {"source": "local"}
+    }
+  ]
+}
+```
+
+`POST /api/content-tracking/trackers`
+
+Request:
+
+```json
+{
+  "name": "K12陪读内容追踪",
+  "vertical_id": 1,
+  "scene_pack_ids": [1],
+  "platforms": ["xhs", "dy"],
+  "included_keywords": ["K12", "陪读"],
+  "excluded_keywords": ["招商"],
+  "seed_refs": [{"platform": "xhs", "post_id": "note-1"}],
+  "schedule_interval_minutes": 720,
+  "comment_policy": {"enable_comments": true, "enable_sub_comments": false},
+  "enabled": true
+}
+```
+
+Response includes `id` and `research_job_id`.
+
+### Keyword Heat
+
+`POST /api/keyword-opportunities/heat/signal`
+
+Request:
+
+```json
+{
+  "keyword": "K12教育",
+  "current_24h": {"content_count": 30, "engagement_total": 900, "hot_post_count": 6, "creator_count": 12},
+  "avg_7d": {"content_count": 10, "engagement_total": 200, "hot_post_count": 1, "creator_count": 5},
+  "avg_30d": {"content_count": 8, "engagement_total": 150, "hot_post_count": 1, "creator_count": 4}
+}
+```
+
+Response:
+
+```json
+{
+  "keyword": "K12教育",
+  "label": "推流中",
+  "heat_score": 86.5,
+  "push_score": 78.2,
+  "cooldown_risk": 12.0,
+  "confidence": "medium",
+  "evidence": ["近 24 小时内容量是 7 日均值的 3.00 倍"]
+}
+```
+
+## Frontend Acceptance Criteria
+
+### 赛道词库 Page
+
+- Has vertical selector or vertical ID input.
+- Can create scene pack.
+- Can add keyword row with keyword type, platform, weight, reason, and usage flags.
+- Can export CSV.
+- AI expansion panel has provider dropdown, platform checkboxes, input text, run button, suggestions table, and manual save action.
+- AI suggestions are never auto-saved.
+
+### 达人筛选 Page
+
+- Can search local creator candidates without enabling real-time discovery.
+- Real-time discovery switch defaults off.
+- If real-time is on and no platform/default platform exists, shows a blocking error.
+- Candidate table includes platform, display name, region, bio, verified, follower count, recent post count, engagement rate, hot post rate, latest post time, contact clues, match score, monitored status, and evidence action.
+- Supports selecting rows, add selected, add Top N, automation mode switch, and add-and-crawl-now.
+- Monitor pool picker supports existing pool and create-new flow.
+
+### 内容追踪 Page
+
+- Accepts text, title, URL/content ID, or selected existing post.
+- Extracted keyword table shows keyword, type, confidence, evidence text, matched scene pack, and query variants.
+- Similar content search supports local-only and real-time modes.
+- Candidate table shows title, platform, author, publish time, similarity score, matched keywords, engagement, URL, and tracking status.
+- Tracker creation panel supports platforms, included/excluded keywords, schedule, comment policy, and immediate tracking.
+- Analysis section shows keyword trend, platform distribution, hot content, creator overlap, and evidence.
+
+### 监控池 Page
+
+- Lists pools with enabled status, frequency, comment policy, member count, and linked research job.
+- Shows pool creators with platform, creator ID, display name, match score, and enabled status.
+- Can edit frequency and comment policy.
+- Has immediate crawl action that uses the linked long-term job.
+
+### 友商监控 Page
+
+- Can add competitor account.
+- Shows daily snapshot metrics.
+- Shows keyword distribution, tag distribution, content type distribution, posting time distribution, hot post rate, and Top content.
+- Empty state says which action creates data.
+
+### 关键词热度 Page
+
+- Shows short-term signal and medium-term trend.
+- Shows label, Heat Score, Push Score, Cooldown Risk, confidence, and evidence.
+- Low sample count must display low confidence.
+
 ## File Structure
 
 Create or modify these files:
@@ -1719,7 +2082,7 @@ git add research\keyword_heat.py research\competitors.py api\routers\keyword_opp
 git commit -m "feat: add keyword heat and competitor composition"
 ```
 
-### Task 7: React UI Integration
+### Task 7A: React Shell, Types, And Navigation
 
 **Files:**
 - Modify: `api/webui/src/main.tsx`
@@ -1754,7 +2117,79 @@ Add sidebar entries:
 { id: "monitor_pools", label: "监控池", icon: <ShieldCheck size={18} /> },
 ```
 
-- [ ] **Step 3: Add keyword library page**
+- [ ] **Step 3: Add shared loaders**
+
+Add shared state and loaders before building specific pages:
+
+```ts
+const [scenePacks, setScenePacks] = React.useState<ScenePack[]>([]);
+const [scenePackKeywords, setScenePackKeywords] = React.useState<ScenePackKeyword[]>([]);
+const [monitorPools, setMonitorPools] = React.useState<MonitorPool[]>([]);
+
+async function loadKeywordLibrary() {
+  const [packsResult, keywordsResult] = await Promise.allSettled([
+    api<{ scene_packs: ScenePack[] }>("/api/keyword-library/scene-packs"),
+    api<{ keywords: ScenePackKeyword[] }>("/api/keyword-library/keywords"),
+  ]);
+  if (packsResult.status === "fulfilled") setScenePacks(packsResult.value.scene_packs || []);
+  if (keywordsResult.status === "fulfilled") setScenePackKeywords(keywordsResult.value.keywords || []);
+}
+
+async function loadMonitorPools() {
+  const result = await api<{ pools: MonitorPool[] }>("/api/creator-search/monitor-pools");
+  setMonitorPools(result.pools || []);
+}
+```
+
+Call `loadKeywordLibrary()` and `loadMonitorPools()` from the existing initial load and refresh flow.
+
+- [ ] **Step 4: Build shell**
+
+Run:
+
+```powershell
+npm.cmd run build
+```
+
+Expected: PASS.
+
+- [ ] **Step 5: Commit shell**
+
+Run:
+
+```powershell
+git add api\webui\src\main.tsx api\webui\src\styles.css
+git commit -m "feat: add growth intelligence frontend shell"
+```
+
+### Task 7B: Keyword Library React Page
+
+**Files:**
+- Modify: `api/webui/src/main.tsx`
+- Modify: `api/webui/src/styles.css`
+- Test: `npm.cmd run build`
+
+- [ ] **Step 1: Add keyword library API actions**
+
+Add actions in `App`:
+
+```ts
+async function createScenePack(payload: { vertical_id: number; name: string; description?: string; weight: number; enabled: boolean }) {
+  await api<ScenePack>("/api/keyword-library/scene-packs", { method: "POST", body: JSON.stringify(payload) });
+  await loadKeywordLibrary();
+}
+
+async function createScenePackKeyword(payload: Omit<ScenePackKeyword, "id">) {
+  await api<ScenePackKeyword>("/api/keyword-library/keywords", { method: "POST", body: JSON.stringify(payload) });
+  await loadKeywordLibrary();
+}
+
+async function expandKeywordSuggestions(payload: { input_text: string; provider_config_id?: number; target_platforms: string[] }) {
+  return api<Record<string, unknown>>("/api/keyword-library/ai/expand", { method: "POST", body: JSON.stringify(payload) });
+}
+```
+
+- [ ] **Step 2: Add keyword library page**
 
 Create a `KeywordLibraryPage` component in `main.tsx` that:
 
@@ -1782,7 +2217,33 @@ function KeywordLibraryPage(props: {
 
 Use existing `panel`, `form-grid`, `table-wrap`, and `checks-grid` classes. Do not put nested cards inside cards.
 
-- [ ] **Step 4: Expand content tracking page**
+- [ ] **Step 3: Build keyword library page**
+
+Run:
+
+```powershell
+npm.cmd run build
+```
+
+Expected: PASS.
+
+- [ ] **Step 4: Commit keyword library page**
+
+Run:
+
+```powershell
+git add api\webui\src\main.tsx api\webui\src\styles.css
+git commit -m "feat: add keyword library console page"
+```
+
+### Task 7C: Content Tracking React Page
+
+**Files:**
+- Modify: `api/webui/src/main.tsx`
+- Modify: `api/webui/src/styles.css`
+- Test: `npm.cmd run build`
+
+- [ ] **Step 1: Expand content tracking page**
 
 Replace the current `ContentPage` lightweight panel with a full content tracking workflow:
 
@@ -1806,7 +2267,55 @@ async function searchSimilarContent(payload: Record<string, unknown>) {
 }
 ```
 
-- [ ] **Step 5: Expand creator discovery page**
+- [ ] **Step 2: Build content tracking page**
+
+Run:
+
+```powershell
+npm.cmd run build
+```
+
+Expected: PASS.
+
+- [ ] **Step 3: Commit content tracking page**
+
+Run:
+
+```powershell
+git add api\webui\src\main.tsx api\webui\src\styles.css
+git commit -m "feat: add content tracking console workflow"
+```
+
+### Task 7D: Creator Discovery And Monitor Pools React Pages
+
+**Files:**
+- Modify: `api/webui/src/main.tsx`
+- Modify: `api/webui/src/styles.css`
+- Test: `npm.cmd run build`
+
+- [ ] **Step 1: Add creator discovery and monitor pool API helpers**
+
+Add:
+
+```ts
+async function startCreatorRealtimeDiscovery(payload: Record<string, unknown>) {
+  return api<Record<string, unknown>>("/api/creator-search/discover/realtime", { method: "POST", body: JSON.stringify(payload) });
+}
+
+async function createMonitorPool(payload: Record<string, unknown>) {
+  const result = await api<MonitorPool>("/api/creator-search/monitor-pools", { method: "POST", body: JSON.stringify(payload) });
+  await loadMonitorPools();
+  return result;
+}
+
+async function addCreatorsToMonitorPool(poolId: number, payload: Record<string, unknown>) {
+  const result = await api<Record<string, unknown>>(`/api/creator-search/monitor-pools/${poolId}/creators`, { method: "POST", body: JSON.stringify(payload) });
+  await loadMonitorPools();
+  return result;
+}
+```
+
+- [ ] **Step 2: Expand creator discovery page**
 
 Extend `AudiencePage` to show:
 
@@ -1830,7 +2339,43 @@ Create `MonitorPoolsPage`:
 - Immediate crawl button.
 - Linked research job status.
 
-- [ ] **Step 7: Expand keyword heat page**
+- [ ] **Step 4: Build creator discovery and monitor pools**
+
+Run:
+
+```powershell
+npm.cmd run build
+```
+
+Expected: PASS.
+
+- [ ] **Step 5: Commit creator discovery and monitor pools**
+
+Run:
+
+```powershell
+git add api\webui\src\main.tsx api\webui\src\styles.css
+git commit -m "feat: add creator discovery and monitor pool console"
+```
+
+### Task 7E: Keyword Heat And Competitor Composition React Pages
+
+**Files:**
+- Modify: `api/webui/src/main.tsx`
+- Modify: `api/webui/src/styles.css`
+- Test: `npm.cmd run build`
+
+- [ ] **Step 1: Add heat API helper**
+
+Add:
+
+```ts
+async function calculateKeywordHeat(payload: Record<string, unknown>) {
+  return api<KeywordHeatSignal>("/api/keyword-opportunities/heat/signal", { method: "POST", body: JSON.stringify(payload) });
+}
+```
+
+- [ ] **Step 2: Expand keyword heat page**
 
 Update `KeywordPage` to call `/api/keyword-opportunities/heat/signal` for selected keyword and show:
 
@@ -1842,7 +2387,7 @@ Update `KeywordPage` to call `/api/keyword-opportunities/heat/signal` for select
 - Evidence list.
 - Existing trend chart.
 
-- [ ] **Step 8: Expand competitor page**
+- [ ] **Step 3: Expand competitor page**
 
 Update `CompetitorsPage` to show composition sections:
 
@@ -1854,7 +2399,7 @@ Update `CompetitorsPage` to show composition sections:
 
 If backend data is empty, render a clear empty state with the next action.
 
-- [ ] **Step 9: Add responsive CSS**
+- [ ] **Step 4: Add responsive CSS**
 
 In `api/webui/src/styles.css`, add:
 
@@ -1895,7 +2440,7 @@ In `api/webui/src/styles.css`, add:
 }
 ```
 
-- [ ] **Step 10: Build**
+- [ ] **Step 5: Build heat and competitor pages**
 
 Run:
 
@@ -1905,13 +2450,13 @@ npm.cmd run build
 
 Expected: PASS. Vite chunk-size warning is acceptable.
 
-- [ ] **Step 11: Commit**
+- [ ] **Step 6: Commit heat and competitor pages**
 
 Run:
 
 ```powershell
 git add api\webui\src\main.tsx api\webui\src\styles.css api\webui\dist
-git commit -m "feat: add growth intelligence console workflows"
+git commit -m "feat: add heat and competitor composition console"
 ```
 
 ### Task 8: End-To-End Regression And Documentation
