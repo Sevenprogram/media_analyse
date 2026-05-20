@@ -4,11 +4,12 @@ Date: 2026-05-20
 
 ## Summary
 
-This design defines the first deliverable phase for the research console as a growth intelligence system. The phase prioritizes three business goals:
+This design defines the first deliverable phase for the research console as a growth intelligence system. The phase prioritizes four business goals:
 
 1. Discover creators from configured keyword groups, such as `K12教育 + 单亲妈妈`, and move selected creators into monitor pools.
-2. Monitor selected competitor accounts daily and split their traffic composition by keyword, tag, content type, posting time, and hit rate.
-3. Calculate keyword heat and platform push/cooldown signals with scores and evidence.
+2. Locate keywords from text, video metadata, post links, or content samples, then search similar content and track it over time.
+3. Monitor selected competitor accounts daily and split their traffic composition by keyword, tag, content type, posting time, and hit rate.
+4. Calculate keyword heat and platform push/cooldown signals with scores and evidence.
 
 The system must stay configurable. Keywords, verticals, scene packs, AI provider settings, crawler platform choices, monitor cadence, and automation rules must be managed in the UI rather than hard-coded.
 
@@ -78,10 +79,10 @@ The system must stay configurable. Keywords, verticals, scene packs, AI provider
 
 ### 老板四类目标的一期取舍
 
-- A：关键词筛选达人，作为一期主闭环。
+- A：关键词筛选达人，作为一期主闭环之一。
+- B：内容追踪进入一期完整闭环，支持输入文字内容/视频内容/链接，定位关键词、搜索同类内容、创建追踪任务并持续分析。
 - C：友商监控做结构拆分版，包含关键词、标签、内容类型、发布时间、爆款率。
 - D：关键词热度与推流/限流判断由我们定义，输出标签 + 分数 + 证据解释，并同时展示 24 小时 vs 7 日均值、7 日 vs 30 日均值。
-- B：内容追踪保留设计入口，但不作为一期最高优先级。
 
 ## Product Scope
 
@@ -93,6 +94,9 @@ Phase one includes:
 - Candidate creator scoring, evidence, and confirmation workflow.
 - Monitor pools grouped by business goal.
 - Add to monitor and add-and-crawl-now actions.
+- Content keyword extraction from text, video metadata, post links, or manually pasted content samples.
+- Similar content search and recurring content tracking tasks.
+- Content tracking analysis for keyword hits, similar-content clusters, engagement trends, creator overlap, and AI summaries.
 - Advanced automation options with manual review or direct monitoring modes.
 - Competitor monitoring with traffic composition breakdown.
 - Keyword heat and push/cooldown model with label, score, and evidence.
@@ -101,7 +105,7 @@ Phase one does not include:
 
 - Deep comparison between competitor accounts and owned creator pools.
 - Fully automatic recurring discovery without human-configured thresholds.
-- Video frame/audio analysis beyond metadata, text, captions, OCR, or transcript data already available through crawler sources.
+- Heavy video frame/audio analysis beyond metadata, captions, OCR, transcript, or text available through crawler sources. Phase one can store these text-derived fields when available, but does not require a full media-processing pipeline.
 
 ## Existing Foundation
 
@@ -268,6 +272,201 @@ Rules:
 
 The UI must clearly show how many creators will be affected before applying automation.
 
+## Content Tracking Flow
+
+Content tracking is the full phase-one implementation for business goal B: locate keywords from content, find similar content, and monitor the trend over time.
+
+### Content Inputs
+
+The content tracking page supports multiple input types:
+
+- Plain text pasted by the user.
+- Video title, description, caption, OCR text, or transcript when available.
+- Post or video URL.
+- Platform content ID.
+- Uploaded CSV/Excel rows containing titles, descriptions, URLs, or content IDs.
+- Existing collected post selected from the data browser.
+
+The UI should clearly label which fields are user-provided and which fields are collected from a platform. Video media itself is not required for phase one unless text metadata, OCR, captions, or transcripts are already available.
+
+### Keyword Location
+
+After content input, the system extracts and ranks keywords:
+
+- Exact keyword hits against the vertical and scene-pack keyword library.
+- Synonym and platform-adapted keyword hits.
+- AI-assisted keyword suggestions when an AI Provider is configured.
+- Negative keyword warnings.
+- Named entities, product names, audience terms, pain points, and scenario terms.
+- Confidence score for each extracted keyword.
+
+The result must show:
+
+- extracted keyword
+- source span or evidence text
+- keyword type: primary, secondary, synonym, platform-adapted, negative, AI-suggested
+- matched vertical and scene pack
+- confidence
+- monitoring reason
+- recommended search query variants
+
+AI suggestions must be inspectable and editable. They should not silently enter the official keyword library unless the user saves them through the keyword library confirmation workflow.
+
+### Similar Content Search
+
+After keyword extraction, the user can search similar content.
+
+Search inputs:
+
+- selected extracted keywords
+- selected vertical and scene packs
+- platform list
+- date range
+- content type
+- minimum engagement threshold
+- exclude already tracked content
+- real-time search switch
+
+Search behavior:
+
+- Local-first: search existing collected posts and raw records.
+- Optional real-time search: if enabled, create platform search crawl tasks using selected keywords.
+- Platform choice follows the same rule as creator discovery: form platforms first, global defaults second, otherwise block execution.
+- Default execution is asynchronous.
+- The page provides `等待完成并刷新`.
+
+Similar content result fields:
+
+- title or summary
+- platform
+- author/creator
+- publish time
+- content type
+- matched keywords
+- similarity score
+- engagement metrics
+- URL
+- tracking status
+- evidence snippets
+
+Similarity scoring starts as a rule-based model:
+
+- keyword overlap
+- scene-pack overlap
+- title/description text similarity
+- author/topic overlap
+- engagement quality
+- recency
+
+AI can summarize why content is similar, but the initial score should be deterministic and inspectable.
+
+### Tracking Objects
+
+Users can save selected keywords and similar-content criteria as a tracking object.
+
+Tracking object fields:
+
+- name
+- description
+- vertical ID
+- scene-pack IDs
+- platforms
+- included keywords
+- excluded keywords
+- seed content IDs or URLs
+- search query variants
+- schedule interval
+- comment policy
+- raw record mode
+- enabled status
+
+Default frequency:
+
+- Content tracking defaults to every 12 hours, matching monitor pool defaults.
+- Users can change it to 1 hour, 6 hours, 12 hours, 24 hours, or a custom minute value.
+
+Tracking execution:
+
+- The system creates or updates a `collection_mode="search"` research job for the tracking object.
+- Selected keywords become `keywords`.
+- If the tracking object is URL/ID based, the system can also create `collection_mode="detail"` jobs for seed content.
+- `立即追踪` executes the same long-term tracking job immediately.
+- The system should not create a separate one-off task for immediate tracking unless implementation constraints require it.
+
+### Content Analysis Outputs
+
+Each tracking object has an analysis page with:
+
+- new similar content count
+- total tracked content count
+- platform distribution
+- keyword hit trend
+- engagement trend
+- hot content list
+- creator overlap
+- repeated content patterns
+- sentiment or stance distribution when AI analysis results exist
+- comment themes when comments are collected
+- AI summary and recommended actions
+
+Required evidence:
+
+- why a content item matched
+- which keywords matched
+- which scene packs matched
+- whether the item came from local data or real-time search
+- whether the sample size is enough for reliable judgment
+
+### Content Tracking Automation
+
+Automation is optional and off by default.
+
+Rules:
+
+- Automatically add similar content to tracking candidates.
+- Automatically create tracking objects from high-confidence keyword extraction.
+- Minimum similarity score threshold, default 75.
+- Minimum engagement threshold, optional.
+- Exclude already tracked content by default.
+- Mode switch:
+  - pending confirmation queue
+  - direct tracking
+- Default mode is pending confirmation queue.
+
+The UI must show affected content count before applying automation.
+
+### Content Tracking APIs
+
+New or enhanced APIs:
+
+- `POST /api/content-tracking/extract-keywords`
+- `POST /api/content-tracking/search-similar`
+- `POST /api/content-tracking/realtime-discovery`
+- `GET /api/content-tracking/discovery/{id}/status`
+- `POST /api/content-tracking/discovery/{id}/wait-refresh`
+- `POST /api/content-tracking/trackers`
+- `PATCH /api/content-tracking/trackers/{id}`
+- `GET /api/content-tracking/trackers`
+- `GET /api/content-tracking/trackers/{id}`
+- `POST /api/content-tracking/trackers/{id}/execute`
+- `GET /api/content-tracking/trackers/{id}/analysis`
+- `POST /api/content-tracking/candidates/bulk-action`
+
+These APIs should reuse `ResearchRepository`, `ResearchScheduler`, `ResearchExecutionManager`, and existing research jobs where possible.
+
+### Content Tracking Models
+
+New or enhanced models:
+
+- Content input sample.
+- Extracted keyword result.
+- Similar content candidate.
+- Content tracking object.
+- Content tracking candidate decision.
+- Content tracking analysis snapshot.
+
+The models should keep enough evidence to explain future AI summaries and scoring decisions.
+
 ## Competitor Monitoring
 
 Phase one competitor monitoring is the structure breakdown version.
@@ -365,6 +564,18 @@ New or expanded pages:
   - frequency and comment policy
   - latest crawl status
   - immediate crawl action
+- Content tracking:
+  - content input panel for text, links, content IDs, uploaded rows, or existing collected posts
+  - extracted keyword list with source spans, confidence, matched verticals, and matched scene packs
+  - AI keyword suggestions with manual confirmation
+  - similar content search controls
+  - local-first results and optional real-time discovery state
+  - wait-and-refresh action
+  - similar content candidate table
+  - evidence drawer
+  - tracking object creation dialog
+  - immediate tracking action
+  - tracking analysis dashboard
 - Competitor monitoring:
   - account pool
   - daily snapshot
@@ -389,6 +600,11 @@ New or enhanced models:
 - Creator candidate enriched fields.
 - Monitor pool.
 - Monitor pool creator membership.
+- Content input sample.
+- Extracted content keyword.
+- Similar content candidate.
+- Content tracker.
+- Content tracking snapshot.
 - Keyword heat snapshot.
 - Competitor traffic composition snapshot.
 
@@ -406,6 +622,12 @@ New or enhanced APIs:
 - Add selected creators to pool.
 - Add Top N creators to pool.
 - Add and crawl now.
+- Content keyword extraction.
+- Similar content search.
+- Real-time similar-content discovery.
+- Content tracker CRUD.
+- Content tracker immediate execution.
+- Content tracker analysis.
 - Keyword heat calculation and snapshot listing.
 - Competitor composition snapshot.
 
@@ -428,6 +650,10 @@ The UI should handle:
 - Crawler process already busy.
 - AI provider missing or API key not configured.
 - AI output not valid JSON.
+- Content input cannot be parsed.
+- Post URL platform cannot be detected.
+- Similar-content search has too few results.
+- Real-time content discovery is requested without selected or default platforms.
 - Too few samples for reliable heat scoring.
 - Duplicate creator membership in a pool.
 - Platform capability disabled for search or creator crawling.
@@ -445,6 +671,12 @@ Backend tests:
 - Monitor pool creates or updates creator-mode research jobs.
 - Add-and-crawl-now calls the same monitor job execution path.
 - Automation thresholds produce pending or direct actions.
+- Content keyword extraction from text, URL metadata, and existing posts.
+- Similar content candidate scoring and evidence.
+- Content tracker creates or updates search/detail research jobs.
+- Content tracker immediate execution calls the same long-term tracking job path.
+- Content tracking automation produces pending or direct actions.
+- Content tracking analysis aggregates keyword hits, platform distribution, engagement trends, and hot content.
 - Keyword heat scoring returns label, scores, confidence, and evidence.
 - Competitor composition aggregation.
 
@@ -455,6 +687,10 @@ Frontend checks:
 - Creator discovery page handles local-only and real-time modes.
 - Add selected, add Top N, and automation flows show affected creator counts.
 - Monitor pool dialog can configure frequency and comment policy.
+- Content tracking page extracts keywords and displays editable evidence.
+- Similar content search supports local-only and real-time modes.
+- Content tracker dialog configures platforms, schedule, comment policy, and immediate tracking.
+- Content tracking analysis displays trends and evidence without layout overflow.
 - Keyword heat page displays both time windows and evidence.
 - Competitor monitoring page displays composition breakdown without layout overflow.
 
@@ -471,6 +707,8 @@ The following can be decided during implementation if no stronger requirement ap
 - Exact CSV/Excel template column names.
 - First default 4Router model name.
 - Exact heat score weights.
+- Exact text similarity weighting for similar content.
+- Whether uploaded video files should ever be accepted directly in phase one.
 - Whether contact clues should be rule-based only or optionally AI-assisted.
 - Whether monitor pool tasks should split by platform if one pool contains many platforms and creators.
 
@@ -479,5 +717,7 @@ Recommended defaults:
 - CSV/Excel template columns should mirror the scene-pack keyword item model.
 - 4Router model should be configured by user in AI Provider, not hard-coded.
 - Heat score weights should start as config constants and later move to UI config.
+- Similar content scoring should start rule-based with AI summaries as optional evidence.
+- Uploaded video files should not be required in phase one; URLs, captions, OCR, transcripts, titles, descriptions, and text rows are enough.
 - Contact clues should start rule-based and only summarize with AI.
 - Monitor pool can initially create one creator-mode research job per pool; platform splitting can be added if execution constraints require it.
