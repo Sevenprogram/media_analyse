@@ -5,7 +5,7 @@ WORKDIR /web
 COPY package.json package-lock.json tsconfig.json vite.config.ts ./
 COPY api/webui ./api/webui
 
-RUN npm ci
+RUN npm install
 RUN npm run build
 
 FROM mcr.microsoft.com/playwright/python:v1.45.0-jammy
