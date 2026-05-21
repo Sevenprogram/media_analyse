@@ -1827,10 +1827,15 @@ export function ContentTrackingPage() {
   const [running, setRunning] = React.useState<string | null>(null);
   const [message, setMessage] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  const [realtimeSearchEnabled, setRealtimeSearchEnabled] = React.useState(false);
+  const [realtimeProgress, setRealtimeProgress] = React.useState(0);
+  const [realtimeStage, setRealtimeStage] = React.useState("");
+  const [realtimeMetadata, setRealtimeMetadata] = React.useState<UnknownRecord | null>(null);
 
   const selectedTerms = [...selectedKeywords];
   const platformPayload = platform === "all" ? [] : [platform];
   const platformQuery = platform === "all" ? undefined : platform;
+  const realtimeSupportedPlatform = platform === "all" || platform === "xhs" || platform === "dy";
 
   async function runExtractKeywords() {
     setRunning("extract");
@@ -1855,6 +1860,7 @@ export function ContentTrackingPage() {
       setInsights([]);
       setAiReport(null);
       setHasSearched(false);
+      resetRealtimeProgress();
       setMessage(rows.length ? `已定位 ${rows.length} 个关键词` : "本地关键词库暂未命中，可直接用正文里的词搜索");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1863,32 +1869,71 @@ export function ContentTrackingPage() {
     }
   }
 
+  function setRealtimeStep(progress: number, stage: string) {
+    setRealtimeProgress(progress);
+    setRealtimeStage(stage);
+  }
+
+  function resetRealtimeProgress() {
+    setRealtimeProgress(0);
+    setRealtimeStage("");
+    setRealtimeMetadata(null);
+  }
+
   async function runLocalSearch() {
     const terms = selectedTerms.length ? selectedTerms : keywordFallback(sourceText);
     if (!terms.length) {
       setError("请先提取或选择至少一个关键词");
       return;
     }
+    if (realtimeSearchEnabled && !realtimeSupportedPlatform) {
+      setError("实时搜索暂只支持小红书和抖音");
+      return;
+    }
     setRunning("search");
     setError(null);
     setMessage(null);
     setHasSearched(true);
+    if (realtimeSearchEnabled) {
+      setRealtimeStep(10, "准备实时搜索");
+    } else {
+      resetRealtimeProgress();
+    }
     try {
-      const [similar, analysis] = await Promise.all([
-        api<{ candidates: UnknownRecord[] }>("/api/content-tracking/search-similar", {
-          method: "POST",
-          body: JSON.stringify({ keywords: terms, platforms: platformPayload, limit: 50 }),
+      if (realtimeSearchEnabled) {
+        setRealtimeStep(35, platform === "all" ? "正在搜索小红书和抖音" : platform === "xhs" ? "正在搜索小红书" : "正在搜索抖音");
+      }
+      const similarPromise = api<{ candidates: UnknownRecord[]; realtime?: UnknownRecord }>("/api/content-tracking/search-similar", {
+        method: "POST",
+        body: JSON.stringify({
+          keywords: terms,
+          platforms: platformPayload,
+          realtime: realtimeSearchEnabled,
+          limit: 50,
         }),
-        api<UnknownRecord>("/api/content-tracking/analyze", {
-          method: "POST",
-          body: JSON.stringify({ query: terms.join(" "), platform: platformQuery, limit: 30 }),
-        }),
-      ]);
+      });
+      if (realtimeSearchEnabled) {
+        setRealtimeStep(65, "正在写入内容库");
+      }
+      const analysisPromise = api<UnknownRecord>("/api/content-tracking/analyze", {
+        method: "POST",
+        body: JSON.stringify({ query: terms.join(" "), platform: platformQuery, limit: 30 }),
+      });
+      const [similar, analysis] = await Promise.all([similarPromise, analysisPromise]);
+      if (realtimeSearchEnabled) {
+        setRealtimeStep(85, "正在刷新本地结果");
+      }
       setCandidates(similar.candidates || []);
       setComments(array(analysis.comments));
       setLocalSummary(asRecord(analysis.summary));
       setInsights(textArray(analysis.insights));
-      setMessage(`本地库找到 ${similar.candidates?.length || 0} 条同类内容`);
+      setRealtimeMetadata(asRecord(similar.realtime));
+      if (realtimeSearchEnabled) {
+        setRealtimeStep(100, "搜索完成");
+        setMessage(`实时搜索完成，找到 ${similar.candidates?.length || 0} 条同类内容`);
+      } else {
+        setMessage(`本地库找到 ${similar.candidates?.length || 0} 条同类内容`);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1998,7 +2043,17 @@ export function ContentTrackingPage() {
             </label>
             <label>
               平台
-              <select value={platform} onChange={(event) => setPlatform(event.target.value)}>
+              <select
+                value={platform}
+                onChange={(event) => {
+                  const nextPlatform = event.target.value;
+                  setPlatform(nextPlatform);
+                  if (nextPlatform !== "all" && nextPlatform !== "xhs" && nextPlatform !== "dy") {
+                    setRealtimeSearchEnabled(false);
+                    resetRealtimeProgress();
+                  }
+                }}
+              >
                 <option value="all">全部平台</option>
                 <option value="xhs">小红书</option>
                 <option value="dy">抖音</option>
@@ -2013,17 +2068,49 @@ export function ContentTrackingPage() {
             <textarea value={sourceText} onChange={(event) => setSourceText(event.target.value)} />
           </label>
           <div className="content-source-preview">{highlightTerms(`${title}\n${sourceText}`, selectedTerms)}</div>
+          <label className={`content-realtime-toggle ${!realtimeSupportedPlatform ? "disabled" : ""}`}>
+            <input
+              type="checkbox"
+              checked={realtimeSearchEnabled}
+              disabled={!realtimeSupportedPlatform || Boolean(running)}
+              onChange={(event) => {
+                setRealtimeSearchEnabled(event.target.checked);
+                if (!event.target.checked) resetRealtimeProgress();
+              }}
+            />
+            <span>
+              <strong>是否实时搜索</strong>
+              <small>{realtimeSupportedPlatform ? "勾选后会先通过 TikHub 搜索小红书、抖音并入库" : "实时搜索暂只支持小红书和抖音"}</small>
+            </span>
+          </label>
           <div className="content-action-row">
             <Button type="button" variant="primary" onClick={() => void runExtractKeywords()} disabled={Boolean(running)}>
               {running === "extract" ? <Loader2 size={16} className="spin" /> : <KeyRound size={16} />}提取关键词
             </Button>
             <Button type="button" variant="ghost" onClick={() => void runLocalSearch()} disabled={Boolean(running)}>
-              {running === "search" ? <Loader2 size={16} className="spin" /> : <Search size={16} />}搜索同类内容
+              {running === "search" ? <Loader2 size={16} className="spin" /> : <Search size={16} />}
+              {realtimeSearchEnabled ? "实时搜索并入库" : "搜索同类内容"}
             </Button>
             <Button type="button" variant="ghost" onClick={() => void runAiAnalysis()} disabled={Boolean(running)}>
               {running === "ai" ? <Loader2 size={16} className="spin" /> : <Bot size={16} />}AI 分析
             </Button>
           </div>
+          {realtimeSearchEnabled && (running === "search" || realtimeProgress > 0) && (
+            <div className="content-realtime-progress" aria-live="polite">
+              <div className="content-realtime-progress-header">
+                <span>{realtimeStage || "等待实时搜索"}</span>
+                <strong>{realtimeProgress}%</strong>
+              </div>
+              <div className="content-realtime-progress-track">
+                <span style={{ width: `${realtimeProgress}%` }} />
+              </div>
+              {realtimeMetadata && (
+                <small>
+                  Job #{text(realtimeMetadata.job_id)} · {text(realtimeMetadata.status, "-")} · 匹配 {formatOptionalNumber(realtimeMetadata.matched_count)} 条
+                </small>
+              )}
+            </div>
+          )}
           {(message || error) && <div className={`content-status ${error ? "error" : ""}`}>{error || message}</div>}
         </Card>
 
