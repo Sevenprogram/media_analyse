@@ -120,6 +120,103 @@ def test_content_tracking_extract_search_and_tracker_routes(monkeypatch):
     assert response.json()["name"] == "K12 tracker"
 
 
+def test_content_tracking_extract_keywords_uses_ai_by_default(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+    monkeypatch.setenv("AI_GATEWAY_API_KEY", "test-key")
+    monkeypatch.setenv("AI_GATEWAY_BASE_URL", "https://gateway.example/v1")
+    monkeypatch.setenv("AI_GATEWAY_MODEL", "keyword-model")
+
+    class FakeRepository:
+        pass
+
+    class FakeProvider:
+        def __init__(self, *, base_url, api_key, model, timeout=60):
+            assert base_url == "https://gateway.example/v1"
+            assert api_key == "test-key"
+            assert model == "keyword-model"
+
+        async def complete_json(self, *, prompt, params=None):
+            assert "未成年电竞" in prompt
+            return {
+                "keywords": [
+                    {
+                        "keyword": "未成年电竞",
+                        "keyword_type": "primary",
+                        "confidence": 0.96,
+                        "evidence_text": "未成年电竞",
+                        "reason": "核心追踪主题",
+                        "query_variants": ["未成年电竞", "青少年电竞"],
+                    },
+                    {
+                        "keyword": "游戏",
+                        "keyword_type": "negative",
+                        "confidence": 0.55,
+                        "evidence_text": "电竞",
+                        "reason": "单独搜索过宽",
+                    },
+                ]
+            }
+
+    import api.routers.content_tracking as content_router
+
+    monkeypatch.setattr(content_router, "ResearchRepository", FakeRepository)
+    monkeypatch.setattr(content_router, "OpenAICompatibleProvider", FakeProvider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/content-tracking/extract-keywords",
+        json={"title": "电竞", "text": "未成年电竞", "platform": "xhs"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "ai"
+    assert body["provider"]["model"] == "keyword-model"
+    assert body["keywords"][0]["keyword"] == "未成年电竞"
+    assert body["keywords"][0]["source"] == "ai"
+    assert body["keywords"][1]["keyword_type"] == "negative"
+
+
+def test_content_tracking_extract_keywords_falls_back_to_local_when_ai_fails(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+    monkeypatch.setenv("AI_GATEWAY_API_KEY", "test-key")
+
+    class FakeRepository:
+        async def list_scene_pack_keywords(self, scene_pack_ids=None, enabled_only=False):
+            return [
+                {
+                    "scene_pack_id": 1,
+                    "keyword": "电竞",
+                    "keyword_type": "primary",
+                    "weight": 1,
+                }
+            ]
+
+    class FakeProvider:
+        def __init__(self, *, base_url, api_key, model, timeout=60):
+            pass
+
+        async def complete_json(self, *, prompt, params=None):
+            raise RuntimeError("gateway down")
+
+    import api.routers.content_tracking as content_router
+
+    monkeypatch.setattr(content_router, "ResearchRepository", FakeRepository)
+    monkeypatch.setattr(content_router, "OpenAICompatibleProvider", FakeProvider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/content-tracking/extract-keywords",
+        json={"title": "电竞", "text": "未成年电竞"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "local_fallback"
+    assert "gateway down" in body["fallback_reason"]
+    assert body["keywords"][0]["keyword"] == "电竞"
+
+
 def test_content_realtime_discovery_requires_explicit_switch(monkeypatch):
     monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
     client = TestClient(app)

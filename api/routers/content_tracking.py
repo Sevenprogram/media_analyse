@@ -13,8 +13,10 @@ from api.routers.research import (
 from research.content_tracking import (
     analyze_content_tracking,
     build_tracker_analysis,
+    build_content_keyword_ai_prompt,
     build_content_tracking_ai_prompt,
     extract_content_keywords,
+    normalize_content_keyword_ai_output,
     normalize_content_tracking_ai_output,
     search_similar_content,
 )
@@ -84,16 +86,58 @@ async def analyze_tracked_content(request: ContentTrackingRequest):
 async def extract_keywords(request: ContentKeywordExtractionRequest):
     require_research_database()
     repository = ResearchRepository()
+    text = " ".join([request.title or "", request.text])
+    if request.use_ai:
+        try:
+            provider_config = await _resolve_content_ai_provider(
+                repository,
+                provider_config_id=request.provider_config_id,
+            )
+            provider = OpenAICompatibleProvider(
+                base_url=provider_config["base_url"],
+                api_key=provider_config["api_key"],
+                model=provider_config["model"],
+                timeout=provider_config.get("timeout") or 60,
+            )
+            raw_output = await provider.complete_json(
+                prompt=build_content_keyword_ai_prompt(
+                    title=request.title,
+                    text=request.text,
+                    platform=request.platform,
+                ),
+                params={
+                    "temperature": 0.15,
+                    "max_tokens": 1200,
+                    **(provider_config.get("default_params") or {}),
+                },
+            )
+            keywords = normalize_content_keyword_ai_output(raw_output)
+            if keywords:
+                return {
+                    "keywords": keywords,
+                    "source": "ai",
+                    "provider": {
+                        "name": provider_config.get("name") or "AI Gateway",
+                        "model": provider_config["model"],
+                    },
+                }
+        except Exception as exc:
+            fallback_reason = str(exc)
+        else:
+            fallback_reason = "AI returned no keywords"
+
     scene_keywords = await repository.list_scene_pack_keywords(
         scene_pack_ids=request.scene_pack_ids or None,
         enabled_only=True,
     )
-    text = " ".join([request.title or "", request.text])
+    keywords = extract_content_keywords(
+        text=text,
+        scene_keywords=scene_keywords,
+    )
     return {
-        "keywords": extract_content_keywords(
-            text=text,
-            scene_keywords=scene_keywords,
-        )
+        "keywords": keywords,
+        "source": "local_fallback" if request.use_ai else "local",
+        **({"fallback_reason": fallback_reason} if request.use_ai else {}),
     }
 
 

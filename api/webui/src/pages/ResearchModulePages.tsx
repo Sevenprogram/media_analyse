@@ -1927,9 +1927,9 @@ export function ContentTrackingPage() {
   async function runExtractKeywords() {
     setRunning("extract");
     setError(null);
-    setMessage(null);
+    setMessage("AI 正在提取关键词");
     try {
-      const response = await api<{ keywords: UnknownRecord[] }>("/api/content-tracking/extract-keywords", {
+      const response = await api<{ keywords: UnknownRecord[]; source?: string; provider?: UnknownRecord }>("/api/content-tracking/extract-keywords", {
         method: "POST",
         body: JSON.stringify({
           title,
@@ -1940,7 +1940,7 @@ export function ContentTrackingPage() {
       });
       const rows = response.keywords || [];
       setKeywords(rows);
-      setSelectedKeywords(new Set(rows.map((item) => text(item.keyword, "")).filter(Boolean)));
+      setSelectedKeywords(new Set(rows.filter((item) => text(item.keyword_type) !== "negative").map((item) => text(item.keyword, "")).filter(Boolean)));
       setCandidates([]);
       setComments([]);
       setLocalSummary(null);
@@ -1948,7 +1948,7 @@ export function ContentTrackingPage() {
       setAiReport(null);
       setHasSearched(false);
       resetRealtimeProgress();
-      setMessage(rows.length ? `已定位 ${rows.length} 个关键词` : "本地关键词库暂未命中，可直接用正文里的词搜索");
+      setMessage(rows.length ? (response.source === "ai" ? "AI 已提取 " + rows.length + " 个关键词" : "AI 不可用，已用本地关键词库提取 " + rows.length + " 个关键词") : "AI 和本地关键词库都未提取到关键词，可直接用正文里的词搜索");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

@@ -30,6 +30,78 @@ def extract_content_keywords(
     return results
 
 
+def build_content_keyword_ai_prompt(
+    *,
+    title: str | None,
+    text: str,
+    platform: str | None,
+) -> str:
+    schema = {
+        "keywords": [
+            {
+                "keyword": "string",
+                "keyword_type": "primary|secondary|synonym|negative",
+                "confidence": 0.0,
+                "evidence_text": "string",
+                "reason": "string",
+                "query_variants": ["string"],
+            }
+        ]
+    }
+    evidence = {
+        "title": title or "",
+        "text": text[:4000],
+        "platform": platform,
+    }
+    return (
+        "你是内容增长研究员。请从输入内容中提取适合后续内容跟踪和平台搜索的关键词。\n"
+        "要求：\n"
+        "1. 只返回 JSON，不要 Markdown。\n"
+        "2. primary 放最值得直接追踪的核心词，secondary 放相关扩展词，synonym 放同义/表达变体，negative 放太泛或容易误伤的噪声词。\n"
+        "3. 关键词要适合直接用于小红书、抖音等平台搜索。\n"
+        "4. evidence_text 必须来自标题或正文，不要编造外部事实。\n"
+        "5. 最多返回 12 个关键词，按追踪价值排序。\n"
+        f"输出 JSON schema 示例：{json.dumps(schema, ensure_ascii=False)}\n"
+        f"输入内容：{json.dumps(evidence, ensure_ascii=False)}"
+    )
+
+
+def normalize_content_keyword_ai_output(output: dict[str, Any]) -> list[dict[str, Any]]:
+    if not isinstance(output, dict):
+        return []
+    rows = output.get("keywords")
+    if not isinstance(rows, list):
+        rows = output.get("items")
+    normalized = []
+    for index, item in enumerate(_list_of_dicts(rows)):
+        keyword = str(item.get("keyword") or item.get("term") or "").strip()
+        if not keyword:
+            continue
+        keyword_type = str(item.get("keyword_type") or item.get("type") or "secondary").lower()
+        if keyword_type not in {"primary", "secondary", "synonym", "negative"}:
+            keyword_type = "secondary"
+        confidence = _float_between(item.get("confidence"), default=_keyword_confidence(keyword_type))
+        variants = _string_list(item.get("query_variants") or item.get("variants"))
+        if not variants:
+            variants = [keyword]
+        normalized.append(
+            {
+                "keyword": keyword,
+                "keyword_type": keyword_type,
+                "scene_pack_id": item.get("scene_pack_id"),
+                "platform": item.get("platform"),
+                "confidence": confidence,
+                "evidence_text": str(item.get("evidence_text") or item.get("evidence") or ""),
+                "reason": str(item.get("reason") or ""),
+                "query_variants": variants,
+                "position": index,
+                "source": "ai",
+            }
+        )
+    normalized.sort(key=lambda item: (-item["confidence"], item["position"]))
+    return normalized[:12]
+
+
 def search_similar_content(
     *, keywords: list[str], posts: list[dict[str, Any]], limit: int = 50
 ) -> list[dict[str, Any]]:
@@ -347,6 +419,14 @@ def _keyword_confidence(keyword_type: str) -> float:
         "platform_adapted": 0.7,
         "negative": 0.9,
     }.get(keyword_type, 0.5)
+
+
+def _float_between(value: Any, *, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(0.0, min(1.0, parsed))
 
 
 def _post_engagement(post: dict[str, Any]) -> int:

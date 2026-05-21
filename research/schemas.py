@@ -717,7 +717,7 @@ class ContentKeywordExtractionRequest(BaseModel):
     url: str | None = None
     vertical_id: int | None = Field(default=None, ge=1)
     scene_pack_ids: list[int] = Field(default_factory=list)
-    use_ai: bool = False
+    use_ai: bool = True
     provider_config_id: int | None = Field(default=None, ge=1)
 
     @field_validator("platform")
