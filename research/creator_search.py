@@ -314,27 +314,33 @@ async def search_creators(repository, request: dict[str, Any]) -> dict[str, Any]
             score = round(min(100.0, tag_score * 0.7 + fallback["score"] * 0.3), 4)
         if query_terms and not (required_tag_ids or optional_tag_ids) and score <= 0:
             continue
+        result_item = {
+            "platform": profile["platform"],
+            "creator_id": profile["creator_id"],
+            "display_name": profile.get("display_name"),
+            "profile_url": profile.get("profile_url"),
+            "follower_count": profile.get("follower_count"),
+            "total_like_count": _profile_metric(profile, "total_like_count"),
+            "total_collect_count": _profile_metric(profile, "total_collect_count"),
+            "interaction_count": _profile_metric(profile, "interaction_count"),
+            "recent_post_count_30d": profile.get("recent_post_count_30d") or 0,
+            "avg_engagement_rate": profile.get("avg_engagement_rate"),
+            "hot_post_rate": profile.get("hot_post_rate"),
+            "match_score": score,
+            "matched_tags": tags or [
+                {"source": "query_text_fallback", "term": term}
+                for term in fallback["matched_terms"]
+            ],
+            "evidence": [tag.get("evidence_json") or {} for tag in tags] or fallback["evidence"],
+            "representative_posts": fallback["evidence"],
+        }
         results.append(
-            {
-                "platform": profile["platform"],
-                "creator_id": profile["creator_id"],
-                "display_name": profile.get("display_name"),
-                "profile_url": profile.get("profile_url"),
-                "follower_count": profile.get("follower_count"),
-                "total_like_count": _profile_metric(profile, "total_like_count"),
-                "total_collect_count": _profile_metric(profile, "total_collect_count"),
-                "interaction_count": _profile_metric(profile, "interaction_count"),
-                "recent_post_count_30d": profile.get("recent_post_count_30d") or 0,
-                "avg_engagement_rate": profile.get("avg_engagement_rate"),
-                "hot_post_rate": profile.get("hot_post_rate"),
-                "match_score": score,
-                "matched_tags": tags or [
-                    {"source": "query_text_fallback", "term": term}
-                    for term in fallback["matched_terms"]
-                ],
-                "evidence": [tag.get("evidence_json") or {} for tag in tags] or fallback["evidence"],
-                "representative_posts": fallback["evidence"],
-            }
+            _with_source_metadata(
+                result_item,
+                source_type="local",
+                labels=["Database"],
+                realtime_unverified=False,
+            )
         )
     results.sort(key=lambda item: item["match_score"], reverse=True)
     results = _dedupe_creator_results(results)
@@ -347,8 +353,41 @@ async def search_creators(repository, request: dict[str, Any]) -> dict[str, Any]
     return {
         "intent": intent,
         "diagnostics": diagnostics,
+        "realtime": _realtime_skipped_diagnostics(),
+        "progress": _complete_progress(),
         "results": results[: int(request.get("limit") or 50)],
     }
+
+
+def _with_source_metadata(
+    item: dict[str, Any],
+    *,
+    source_type: str,
+    labels: list[str],
+    realtime_unverified: bool,
+) -> dict[str, Any]:
+    return {
+        **item,
+        "source_type": source_type,
+        "source_labels": labels,
+        "realtime_unverified": realtime_unverified,
+    }
+
+
+def _realtime_skipped_diagnostics() -> dict[str, Any]:
+    return {
+        "enabled": False,
+        "status": "skipped",
+        "platforms": [],
+        "unsupported_platforms": [],
+        "created_profiles": 0,
+        "created_candidates": 0,
+        "error": None,
+    }
+
+
+def _complete_progress() -> dict[str, Any]:
+    return {"stage": "complete", "label": "Complete", "percent": 100}
 
 
 def _dedupe_creator_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:

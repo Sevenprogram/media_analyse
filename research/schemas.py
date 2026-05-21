@@ -862,6 +862,7 @@ class CreatorSearchRequest(BaseModel):
     recent_activity_min: int | None = Field(default=None, ge=0)
     engagement_rate_min: float | None = Field(default=None, ge=0)
     limit: int = Field(default=50, ge=1, le=200)
+    include_realtime: bool = False
 
     @field_validator("platforms")
     @classmethod

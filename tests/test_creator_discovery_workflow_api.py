@@ -261,6 +261,68 @@ def test_realtime_discovery_requires_explicit_switch(monkeypatch):
     assert response.json()["status"] == "skipped"
 
 
+def test_creator_search_local_only_adds_database_source(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+    import api.routers.creator_search as creator_search_router
+
+    class FakeRepository:
+        async def list_tag_definitions(self, vertical_id=None, enabled_only=True):
+            return []
+
+        async def list_verticals(self, enabled_only=True):
+            return []
+
+        async def list_creator_profiles(self, platforms=None, limit=None):
+            return [
+                {
+                    "platform": "xhs",
+                    "creator_id": "local-1",
+                    "display_name": "Local Teacher",
+                    "profile_url": "https://www.xiaohongshu.com/user/profile/local-1",
+                    "follower_count": 1200,
+                    "recent_post_count_30d": 4,
+                    "avg_engagement_rate": None,
+                    "hot_post_rate": None,
+                    "tag_summary_json": {},
+                }
+            ]
+
+        async def list_entity_tags(self, **kwargs):
+            return []
+
+        async def list_posts_by_creator(self, platform, creator_id, limit=30):
+            return [
+                {
+                    "platform": platform,
+                    "platform_post_id": "p1",
+                    "title": "K12 education note",
+                    "content": "single mom learning plan",
+                    "publish_time": None,
+                    "engagement_json": {"liked_count": 20},
+                }
+            ]
+
+    monkeypatch.setattr(creator_search_router, "ResearchRepository", FakeRepository)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/creator-search/search",
+        json={
+            "raw_query": "K12",
+            "platforms": ["xhs"],
+            "include_realtime": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["realtime"]["status"] == "skipped"
+    assert payload["progress"]["stage"] == "complete"
+    assert payload["results"][0]["source_type"] == "local"
+    assert payload["results"][0]["source_labels"] == ["Database"]
+    assert payload["results"][0]["realtime_unverified"] is False
+
+
 def test_realtime_discovery_schedules_execution(monkeypatch):
     monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
     import api.routers.creator_search as creator_router
