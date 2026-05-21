@@ -1967,28 +1967,104 @@ function CompetitorSnapshotList({ snapshots, competitors }: { snapshots: Unknown
   );
 }
 
+type ContentTrackingState = {
+  title: string;
+  sourceText: string;
+  platform: string;
+  keywords: UnknownRecord[];
+  selectedKeywords: Set<string>;
+  candidates: UnknownRecord[];
+  comments: UnknownRecord[];
+  localSummary: UnknownRecord | null;
+  insights: string[];
+  aiReport: UnknownRecord | null;
+  trackerName: string;
+  trackerAnalysis: UnknownRecord | null;
+  hasSearched: boolean;
+  running: string | null;
+  message: string | null;
+  error: string | null;
+  realtimeSearchEnabled: boolean;
+  realtimeProgress: number;
+  realtimeStage: string;
+  realtimeMetadata: UnknownRecord | null;
+};
+
+const contentTrackingState: ContentTrackingState = {
+  title: "K12教育爆款内容",
+  sourceText: "单亲妈妈如何陪伴孩子学习？这几个K12教育方法，比盲目报班更重要。",
+  platform: "all",
+  keywords: [],
+  selectedKeywords: new Set(),
+  candidates: [],
+  comments: [],
+  localSummary: null,
+  insights: [],
+  aiReport: null,
+  trackerName: "K12内容追踪",
+  trackerAnalysis: null,
+  hasSearched: false,
+  running: null,
+  message: null,
+  error: null,
+  realtimeSearchEnabled: false,
+  realtimeProgress: 0,
+  realtimeStage: "",
+  realtimeMetadata: null,
+};
+
+const contentTrackingListeners = new Set<() => void>();
+
+function notifyContentTrackingListeners() {
+  contentTrackingListeners.forEach((listener) => listener());
+}
+
+function useContentTrackingField<K extends keyof ContentTrackingState>(
+  key: K,
+): [ContentTrackingState[K], React.Dispatch<React.SetStateAction<ContentTrackingState[K]>>] {
+  const [, forceRender] = React.useState(0);
+  React.useEffect(() => {
+    const listener = () => forceRender((value) => value + 1);
+    contentTrackingListeners.add(listener);
+    return () => {
+      contentTrackingListeners.delete(listener);
+    };
+  }, []);
+  const setValue = React.useCallback<React.Dispatch<React.SetStateAction<ContentTrackingState[K]>>>(
+    (next) => {
+      const current = contentTrackingState[key];
+      contentTrackingState[key] = typeof next === "function"
+        ? (next as (value: ContentTrackingState[K]) => ContentTrackingState[K])(current)
+        : next;
+      notifyContentTrackingListeners();
+    },
+    [key],
+  );
+  return [contentTrackingState[key], setValue];
+}
+
 export function ContentTrackingPage() {
   const trackers = useEndpoint<{ trackers: UnknownRecord[] }>("/api/content-tracking/trackers", { trackers: [] });
-  const [title, setTitle] = React.useState("K12教育爆款内容");
-  const [sourceText, setSourceText] = React.useState("单亲妈妈如何陪伴孩子学习？这几个K12教育方法，比盲目报班更重要。");
-  const [platform, setPlatform] = React.useState("all");
-  const [keywords, setKeywords] = React.useState<UnknownRecord[]>([]);
-  const [selectedKeywords, setSelectedKeywords] = React.useState<Set<string>>(new Set());
-  const [candidates, setCandidates] = React.useState<UnknownRecord[]>([]);
-  const [comments, setComments] = React.useState<UnknownRecord[]>([]);
-  const [localSummary, setLocalSummary] = React.useState<UnknownRecord | null>(null);
-  const [insights, setInsights] = React.useState<string[]>([]);
-  const [aiReport, setAiReport] = React.useState<UnknownRecord | null>(null);
-  const [trackerName, setTrackerName] = React.useState("K12内容追踪");
-  const [trackerAnalysis, setTrackerAnalysis] = React.useState<UnknownRecord | null>(null);
-  const [hasSearched, setHasSearched] = React.useState(false);
-  const [running, setRunning] = React.useState<string | null>(null);
-  const [message, setMessage] = React.useState<string | null>(null);
-  const [error, setError] = React.useState<string | null>(null);
-  const [realtimeSearchEnabled, setRealtimeSearchEnabled] = React.useState(false);
-  const [realtimeProgress, setRealtimeProgress] = React.useState(0);
-  const [realtimeStage, setRealtimeStage] = React.useState("");
-  const [realtimeMetadata, setRealtimeMetadata] = React.useState<UnknownRecord | null>(null);
+  const [title, setTitle] = useContentTrackingField("title");
+  const [sourceText, setSourceText] = useContentTrackingField("sourceText");
+  const [platform, setPlatform] = useContentTrackingField("platform");
+  const [keywords, setKeywords] = useContentTrackingField("keywords");
+  const [selectedKeywords, setSelectedKeywords] = useContentTrackingField("selectedKeywords");
+  const [candidates, setCandidates] = useContentTrackingField("candidates");
+  const [comments, setComments] = useContentTrackingField("comments");
+  const [localSummary, setLocalSummary] = useContentTrackingField("localSummary");
+  const [insights, setInsights] = useContentTrackingField("insights");
+  const [aiReport, setAiReport] = useContentTrackingField("aiReport");
+  const [trackerName, setTrackerName] = useContentTrackingField("trackerName");
+  const [trackerAnalysis, setTrackerAnalysis] = useContentTrackingField("trackerAnalysis");
+  const [hasSearched, setHasSearched] = useContentTrackingField("hasSearched");
+  const [running, setRunning] = useContentTrackingField("running");
+  const [message, setMessage] = useContentTrackingField("message");
+  const [error, setError] = useContentTrackingField("error");
+  const [realtimeSearchEnabled, setRealtimeSearchEnabled] = useContentTrackingField("realtimeSearchEnabled");
+  const [realtimeProgress, setRealtimeProgress] = useContentTrackingField("realtimeProgress");
+  const [realtimeStage, setRealtimeStage] = useContentTrackingField("realtimeStage");
+  const [realtimeMetadata, setRealtimeMetadata] = useContentTrackingField("realtimeMetadata");
 
   const selectedTerms = [...selectedKeywords];
   const platformPayload = platform === "all" ? [] : [platform];
