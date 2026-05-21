@@ -46,8 +46,10 @@ REGISTRY: dict[str, dict[Capability, EndpointSpec]] = {
         ),
         Capability.CREATOR: EndpointSpec(
             "GET",
-            "/api/v1/xiaohongshu/web/get_user_notes",
+            "/api/v1/xiaohongshu/app_v2/get_user_posted_notes",
             creator_param="user_id",
+            cursor_param="cursor",
+            page_param="",
         ),
         Capability.COMMENTS: EndpointSpec(
             "GET",

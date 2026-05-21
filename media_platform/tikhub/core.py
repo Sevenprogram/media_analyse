@@ -15,6 +15,7 @@ from var import crawler_type_var, source_keyword_var
 from .client import TikHubClient
 from .endpoints import Capability, EndpointSpec, get_endpoint, supports_capability
 from .mappers import get_mapper
+from .mappers.xhs import author_from_item
 from .raw_writer import TikHubRawWriter
 
 
@@ -99,20 +100,42 @@ class TikHubCrawler:
 
     async def get_creators_and_notes(self) -> None:
         endpoint = get_endpoint(self.platform, Capability.CREATOR)
+        max_count = max(int(config.CRAWLER_MAX_NOTES_COUNT), 1)
         for creator_id in self._creator_ids():
-            data = await self.client.request(
-                endpoint.method,
-                endpoint.path,
-                params=self._creator_params(endpoint, creator_id, page=1),
-            )
-            creator_payload = self._extract_creator(data, creator_id)
-            await self._save_creator(self.mapper.map_creator(creator_payload))
+            saved_count = 0
+            page = 1
+            cursor = ""
+            creator_saved = False
+            while saved_count < max_count:
+                data = await self.client.request(
+                    endpoint.method,
+                    endpoint.path,
+                    params=self._creator_params(endpoint, creator_id, page=page, cursor=cursor),
+                )
+                items = self._extract_items(data)
+                if not creator_saved:
+                    creator_payload = self._extract_creator(data, creator_id, items)
+                    await self._save_creator(self.mapper.map_creator(creator_payload))
+                    creator_saved = True
+                if not items:
+                    break
 
-            for item in self._extract_items(data):
-                mapped = self.mapper.map_content(item, source_keyword="")
-                await self._save_content(mapped)
-                if config.ENABLE_GET_COMMENTS:
-                    await self._fetch_and_save_comments(mapped)
+                for item in items:
+                    mapped = self.mapper.map_content(item, source_keyword="")
+                    await self._save_content(mapped)
+                    saved_count += 1
+                    if config.ENABLE_GET_COMMENTS:
+                        await self._fetch_and_save_comments(mapped)
+                    if saved_count >= max_count:
+                        break
+
+                cursor = self._next_cursor(data)
+                if not cursor and items:
+                    cursor = self._next_cursor(items[-1])
+                if not cursor or not self._has_more(data):
+                    break
+                page += 1
+                await asyncio.sleep(config.CRAWLER_MAX_SLEEP_SEC)
             await asyncio.sleep(config.CRAWLER_MAX_SLEEP_SEC)
 
     async def _fetch_and_save_comments(self, mapped_content: Any) -> None:
@@ -162,17 +185,22 @@ class TikHubCrawler:
         return params
 
     def _creator_params(
-        self, endpoint: EndpointSpec, creator_id: str, page: int
+        self, endpoint: EndpointSpec, creator_id: str, page: int, cursor: str = ""
     ) -> dict[str, Any]:
         params = dict(endpoint.default_params)
         params[endpoint.creator_param] = creator_id
-        params[endpoint.page_param] = page
+        if endpoint.cursor_param and cursor:
+            params[endpoint.cursor_param] = cursor
+        elif endpoint.page_param:
+            params[endpoint.page_param] = page
         return params
 
     def _extract_items(self, data: Any) -> list[dict[str, Any]]:
         if isinstance(data, list):
             return [item for item in data if isinstance(item, dict)]
         if not isinstance(data, dict):
+            return []
+        if _looks_like_error_payload(data):
             return []
         for key in (
             "items",
@@ -217,12 +245,18 @@ class TikHubCrawler:
             return data
         return {"id": fallback_id, "raw": data}
 
-    def _extract_creator(self, data: Any, creator_id: str) -> dict[str, Any]:
+    def _extract_creator(
+        self, data: Any, creator_id: str, items: list[dict[str, Any]] | None = None
+    ) -> dict[str, Any]:
         if isinstance(data, dict):
             for key in ("user", "author", "creator", "profile"):
                 value = data.get(key)
                 if isinstance(value, dict):
                     return value
+            if items:
+                first_user = author_from_item(items[0])
+                if first_user:
+                    return first_user
             return data
         return {"id": creator_id}
 
@@ -233,12 +267,19 @@ class TikHubCrawler:
             value = data.get(key)
             if value not in (None, ""):
                 return str(value)
+        for value in data.values():
+            if isinstance(value, dict):
+                cursor = self._next_cursor(value)
+                if cursor:
+                    return cursor
         return ""
 
     def _has_more(self, data: Any) -> bool:
         if not isinstance(data, dict):
             return False
-        return bool(data.get("has_more") or data.get("hasMore"))
+        if data.get("has_more") or data.get("hasMore"):
+            return True
+        return any(self._has_more(value) for value in data.values() if isinstance(value, dict))
 
     def _specified_ids(self) -> list[str]:
         attr = {
@@ -364,3 +405,14 @@ class TikHubCrawler:
             source_keyword=source_keyword_var.get(),
             entity_id=entity_id or self._content_id(payload),
         )
+
+
+def _looks_like_error_payload(data: dict[str, Any]) -> bool:
+    keys = set(data)
+    if keys <= {"detail"} and data.get("detail"):
+        return True
+    if keys <= {"error"} and data.get("error"):
+        return True
+    if "code" in data and isinstance(data.get("code"), int) and int(data["code"]) >= 400:
+        return True
+    return False

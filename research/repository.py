@@ -34,6 +34,9 @@ from research.models import (
     ResearchCrawlUnit,
     ResearchEntityTag,
     ResearchGlobalSetting,
+    ResearchGrowthProject,
+    ResearchGrowthProjectCollectionPlan,
+    ResearchGrowthProjectKeyword,
     ResearchAIKeywordSuggestionSession,
     ResearchAIHotspot,
     ResearchAIInsightRun,
@@ -70,6 +73,18 @@ def retry_backoff_seconds(attempt_count: int) -> int:
     if attempt_count == 2:
         return 300
     return 1800
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -256,6 +271,7 @@ class ResearchRepository:
         self,
         *,
         worker_id: str,
+        job_id: int | None = None,
         statuses: tuple[str, ...] = (CRAWL_UNIT_PENDING, CRAWL_UNIT_RETRYING),
         lock_timeout_seconds: int = 1800,
     ) -> dict[str, Any] | None:
@@ -274,6 +290,8 @@ class ResearchRepository:
                 .order_by(ResearchCrawlUnit.priority.asc(), ResearchCrawlUnit.id.asc())
                 .limit(1)
             )
+            if job_id is not None:
+                stmt = stmt.where(ResearchCrawlUnit.job_id == job_id)
             if session.bind and session.bind.dialect.name == "postgresql":
                 stmt = stmt.with_for_update(skip_locked=True)
             result = await session.execute(stmt)
@@ -924,8 +942,21 @@ class ResearchRepository:
 
     async def create_scene_pack(self, payload: dict[str, Any]) -> dict[str, Any]:
         async with get_session() as session:
-            item = ResearchScenePack(**payload)
-            session.add(item)
+            result = await session.execute(
+                select(ResearchScenePack).where(
+                    ResearchScenePack.vertical_id == payload["vertical_id"],
+                    ResearchScenePack.name == payload["name"],
+                )
+            )
+            item = result.scalar_one_or_none()
+            if item is None:
+                item = ResearchScenePack(**payload)
+                session.add(item)
+            else:
+                for key, value in payload.items():
+                    if hasattr(item, key):
+                        setattr(item, key, value)
+                item.enabled = True
             await session.flush()
             await session.refresh(item)
             return self._scene_pack_to_dict(item)
@@ -947,6 +978,45 @@ class ResearchRepository:
             item = await session.get(ResearchScenePack, scene_pack_id)
             return self._scene_pack_to_dict(item) if item else None
 
+    async def update_scene_pack(
+        self, scene_pack_id: int, payload: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        async with get_session() as session:
+            item = await session.get(ResearchScenePack, scene_pack_id)
+            if item is None:
+                return None
+            for key, value in payload.items():
+                if hasattr(item, key):
+                    setattr(item, key, value)
+            await session.flush()
+            await session.refresh(item)
+            return self._scene_pack_to_dict(item)
+
+    async def delete_scene_pack(self, scene_pack_id: int) -> dict[str, Any] | None:
+        async with get_session() as session:
+            item = await session.get(ResearchScenePack, scene_pack_id)
+            if item is None:
+                return None
+            keyword_count = int(
+                (
+                    await session.execute(
+                        select(func.count())
+                        .select_from(ResearchScenePackKeyword)
+                        .where(ResearchScenePackKeyword.scene_pack_id == scene_pack_id)
+                    )
+                ).scalar()
+                or 0
+            )
+            if keyword_count:
+                return {
+                    "deleted": False,
+                    "reason": "scene_pack_has_keywords",
+                    "keyword_count": keyword_count,
+                }
+            await session.delete(item)
+            await session.flush()
+            return {"deleted": True, "id": scene_pack_id}
+
     async def create_scene_pack_keyword(self, payload: dict[str, Any]) -> dict[str, Any]:
         item_payload = {
             "scene_pack_id": payload["scene_pack_id"],
@@ -960,11 +1030,58 @@ class ResearchRepository:
             "enabled": payload.get("enabled", True),
         }
         async with get_session() as session:
-            item = ResearchScenePackKeyword(**item_payload)
-            session.add(item)
+            result = await session.execute(
+                select(ResearchScenePackKeyword).where(
+                    ResearchScenePackKeyword.scene_pack_id == item_payload["scene_pack_id"],
+                    ResearchScenePackKeyword.keyword == item_payload["keyword"],
+                    ResearchScenePackKeyword.keyword_type == item_payload["keyword_type"],
+                )
+            )
+            item = result.scalar_one_or_none()
+            if item is None:
+                item = ResearchScenePackKeyword(**item_payload)
+                session.add(item)
+            else:
+                for key, value in item_payload.items():
+                    setattr(item, key, value)
+                item.enabled = True
             await session.flush()
             await session.refresh(item)
             return self._scene_pack_keyword_to_dict(item)
+
+    async def update_scene_pack_keyword(
+        self, keyword_id: int, payload: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        mapping = {
+            "scene_pack_id": "scene_pack_id",
+            "keyword": "keyword",
+            "keyword_type": "keyword_type",
+            "platform": "platform",
+            "weight": "weight",
+            "reason": "reason",
+            "usage_flags": "usage_flags_json",
+            "platform_overrides": "platform_overrides_json",
+            "enabled": "enabled",
+        }
+        async with get_session() as session:
+            item = await session.get(ResearchScenePackKeyword, keyword_id)
+            if item is None:
+                return None
+            for source, target in mapping.items():
+                if source in payload:
+                    setattr(item, target, payload[source])
+            await session.flush()
+            await session.refresh(item)
+            return self._scene_pack_keyword_to_dict(item)
+
+    async def delete_scene_pack_keyword(self, keyword_id: int) -> dict[str, Any] | None:
+        async with get_session() as session:
+            item = await session.get(ResearchScenePackKeyword, keyword_id)
+            if item is None:
+                return None
+            await session.delete(item)
+            await session.flush()
+            return {"deleted": True, "id": keyword_id}
 
     async def list_scene_pack_keywords(
         self,
@@ -979,6 +1096,199 @@ class ResearchRepository:
                 stmt = stmt.where(ResearchScenePackKeyword.enabled.is_(True))
             result = await session.execute(stmt.order_by(ResearchScenePackKeyword.id.asc()))
             return [self._scene_pack_keyword_to_dict(item) for item in result.scalars().all()]
+
+    async def create_growth_project(self, payload: dict[str, Any]) -> dict[str, Any]:
+        async with get_session() as session:
+            result = await session.execute(
+                select(ResearchGrowthProject).where(
+                    ResearchGrowthProject.name == payload["name"]
+                )
+            )
+            item = result.scalar_one_or_none()
+            values = {
+                "primary_goal": payload.get("primary_goal") or "topic_discovery",
+                "scene_pack_id": payload.get("scene_pack_id"),
+                "platforms": payload.get("platforms") or [],
+                "project_status": payload.get("project_status") or "active",
+                "collection_status": payload.get("collection_status") or "not_started",
+                "comment_collection_enabled": payload.get("comment_collection_enabled", True),
+                "refresh_cadence": payload.get("refresh_cadence") or "off",
+                "custom_interval_value": payload.get("custom_interval_value"),
+                "custom_interval_unit": payload.get("custom_interval_unit"),
+                "sample_status": payload.get("sample_status") or "sample_insufficient",
+                "recommended_action": payload.get("recommended_action") or "start_collection",
+                "archived": payload.get("archived", False),
+            }
+            if item is None:
+                item = ResearchGrowthProject(name=payload["name"], **values)
+                session.add(item)
+            else:
+                for key, value in values.items():
+                    setattr(item, key, value)
+            await session.flush()
+            await session.refresh(item)
+            return self._growth_project_to_dict(item)
+
+    async def list_growth_project_records(
+        self, *, include_archived: bool = False
+    ) -> list[dict[str, Any]]:
+        async with get_session() as session:
+            stmt = select(ResearchGrowthProject)
+            if not include_archived:
+                stmt = stmt.where(ResearchGrowthProject.archived.is_(False))
+            result = await session.execute(stmt.order_by(ResearchGrowthProject.updated_at.desc()))
+            return [self._growth_project_to_dict(item) for item in result.scalars().all()]
+
+    async def get_growth_project_record(self, project_id: int) -> dict[str, Any] | None:
+        async with get_session() as session:
+            item = await session.get(ResearchGrowthProject, project_id)
+            return self._growth_project_to_dict(item) if item else None
+
+    async def update_growth_project(
+        self, project_id: int, payload: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        async with get_session() as session:
+            item = await session.get(ResearchGrowthProject, project_id)
+            if item is None:
+                return None
+            for key, value in payload.items():
+                if hasattr(item, key):
+                    setattr(item, key, value)
+            await session.flush()
+            await session.refresh(item)
+            return self._growth_project_to_dict(item)
+
+    async def create_growth_project_keyword(self, payload: dict[str, Any]) -> dict[str, Any]:
+        async with get_session() as session:
+            result = await session.execute(
+                select(ResearchGrowthProjectKeyword).where(
+                    ResearchGrowthProjectKeyword.project_id == payload["project_id"],
+                    ResearchGrowthProjectKeyword.keyword == payload["keyword"],
+                    ResearchGrowthProjectKeyword.keyword_type == payload["keyword_type"],
+                )
+            )
+            item = result.scalar_one_or_none()
+            values = {
+                "scene_pack_id": payload.get("scene_pack_id"),
+                "source": payload.get("source") or "scene_pack",
+                "status": payload.get("status") or "active",
+            }
+            if item is None:
+                item = ResearchGrowthProjectKeyword(
+                    project_id=payload["project_id"],
+                    keyword=payload["keyword"],
+                    keyword_type=payload["keyword_type"],
+                    **values,
+                )
+                session.add(item)
+            else:
+                for key, value in values.items():
+                    setattr(item, key, value)
+            await session.flush()
+            await session.refresh(item)
+            return self._growth_project_keyword_to_dict(item)
+
+    async def list_growth_project_keywords(
+        self, project_id: int, status: str | None = None
+    ) -> list[dict[str, Any]]:
+        async with get_session() as session:
+            stmt = select(ResearchGrowthProjectKeyword).where(
+                ResearchGrowthProjectKeyword.project_id == project_id
+            )
+            if status:
+                stmt = stmt.where(ResearchGrowthProjectKeyword.status == status)
+            result = await session.execute(stmt.order_by(ResearchGrowthProjectKeyword.id.asc()))
+            return [self._growth_project_keyword_to_dict(item) for item in result.scalars().all()]
+
+    async def update_growth_project_keyword(
+        self, keyword_id: int, payload: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        async with get_session() as session:
+            item = await session.get(ResearchGrowthProjectKeyword, keyword_id)
+            if item is None:
+                return None
+            for key, value in payload.items():
+                if hasattr(item, key):
+                    setattr(item, key, value)
+            await session.flush()
+            await session.refresh(item)
+            return self._growth_project_keyword_to_dict(item)
+
+    async def delete_growth_project_keywords(self, project_id: int) -> dict[str, Any]:
+        async with get_session() as session:
+            result = await session.execute(
+                select(ResearchGrowthProjectKeyword).where(
+                    ResearchGrowthProjectKeyword.project_id == project_id
+                )
+            )
+            items = list(result.scalars().all())
+            for item in items:
+                await session.delete(item)
+            await session.flush()
+            return {"deleted": len(items), "project_id": project_id}
+
+    async def create_growth_project_collection_plan(self, payload: dict[str, Any]) -> dict[str, Any]:
+        async with get_session() as session:
+            result = await session.execute(
+                select(ResearchGrowthProjectCollectionPlan).where(
+                    ResearchGrowthProjectCollectionPlan.project_id == payload["project_id"],
+                    ResearchGrowthProjectCollectionPlan.platform == payload["platform"],
+                    ResearchGrowthProjectCollectionPlan.collection_mode
+                    == (payload.get("collection_mode") or "search"),
+                )
+            )
+            item = result.scalar_one_or_none()
+            values = {
+                "keyword_scope": payload.get("keyword_scope") or "active",
+                "enabled": payload.get("enabled", True),
+                "schedule_mode": payload.get("schedule_mode") or "manual",
+                "schedule_interval_minutes": payload.get("schedule_interval_minutes"),
+            }
+            if item is None:
+                item = ResearchGrowthProjectCollectionPlan(
+                    project_id=payload["project_id"],
+                    platform=payload["platform"],
+                    collection_mode=payload.get("collection_mode") or "search",
+                    **values,
+                )
+                session.add(item)
+            else:
+                for key, value in values.items():
+                    setattr(item, key, value)
+            await session.flush()
+            await session.refresh(item)
+            return self._growth_project_collection_plan_to_dict(item)
+
+    async def list_growth_project_collection_plans(
+        self, project_id: int
+    ) -> list[dict[str, Any]]:
+        async with get_session() as session:
+            result = await session.execute(
+                select(ResearchGrowthProjectCollectionPlan)
+                .where(ResearchGrowthProjectCollectionPlan.project_id == project_id)
+                .order_by(ResearchGrowthProjectCollectionPlan.id.asc())
+            )
+            return [
+                self._growth_project_collection_plan_to_dict(item)
+                for item in result.scalars().all()
+            ]
+
+    async def update_growth_project_collection_plans(
+        self, project_id: int, payload: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        async with get_session() as session:
+            result = await session.execute(
+                select(ResearchGrowthProjectCollectionPlan).where(
+                    ResearchGrowthProjectCollectionPlan.project_id == project_id
+                )
+            )
+            plans = list(result.scalars().all())
+            for plan in plans:
+                for key, value in payload.items():
+                    if hasattr(plan, key):
+                        setattr(plan, key, value)
+            await session.flush()
+            return [self._growth_project_collection_plan_to_dict(item) for item in plans]
 
     async def create_ai_keyword_suggestion_session(
         self, payload: dict[str, Any]
@@ -1245,13 +1555,13 @@ class ResearchRepository:
                 tracker_id=payload["tracker_id"],
                 snapshot_date=payload["snapshot_date"],
                 platform=payload.get("platform"),
-                keyword_distribution_json=payload.get("keyword_distribution") or {},
-                tag_distribution_json=payload.get("tag_distribution") or {},
-                content_type_distribution_json=payload.get("content_type_distribution") or {},
-                publish_time_distribution_json=payload.get("publish_time_distribution") or {},
+                keyword_distribution_json=_json_safe(payload.get("keyword_distribution") or {}),
+                tag_distribution_json=_json_safe(payload.get("tag_distribution") or {}),
+                content_type_distribution_json=_json_safe(payload.get("content_type_distribution") or {}),
+                publish_time_distribution_json=_json_safe(payload.get("publish_time_distribution") or {}),
                 hot_post_rate=payload.get("hot_post_rate", 0.0),
                 total_content_count=payload.get("total_content_count", 0),
-                evidence_json=payload.get("evidence") or {},
+                evidence_json=_json_safe(payload.get("evidence") or {}),
             )
             session.add(item)
             await session.flush()
@@ -1354,12 +1664,12 @@ class ResearchRepository:
                 "snapshot_date": payload["snapshot_date"],
                 "platform": payload["platform"],
                 "total_flow_count": payload.get("total_flow_count", 0),
-                "keyword_distribution_json": payload.get("keyword_distribution") or {},
-                "tag_distribution_json": payload.get("tag_distribution") or {},
-                "content_type_distribution_json": payload.get("content_type_distribution") or {},
-                "publish_time_distribution_json": payload.get("publish_time_distribution") or {},
+                "keyword_distribution_json": _json_safe(payload.get("keyword_distribution") or {}),
+                "tag_distribution_json": _json_safe(payload.get("tag_distribution") or {}),
+                "content_type_distribution_json": _json_safe(payload.get("content_type_distribution") or {}),
+                "publish_time_distribution_json": _json_safe(payload.get("publish_time_distribution") or {}),
                 "hot_post_rate": payload.get("hot_post_rate", 0.0),
-                "evidence_json": payload.get("evidence") or {},
+                "evidence_json": _json_safe(payload.get("evidence") or {}),
             }
             if item is None:
                 item = ResearchCompetitorCompositionSnapshot(**item_payload)
@@ -2177,6 +2487,31 @@ class ResearchRepository:
             await session.refresh(prompt)
             return self._prompt_template_to_dict(prompt)
 
+    async def upsert_prompt_template_by_name(self, payload: dict[str, Any]) -> dict[str, Any]:
+        prompt_payload = {
+            "name": payload["name"],
+            "task_type": payload["task_type"],
+            "platform": payload["platform"],
+            "prompt_text": payload["prompt_text"],
+            "output_schema_json": payload.get("output_schema", {}),
+            "version": payload["version"],
+            "enabled": payload["enabled"],
+        }
+        async with get_session() as session:
+            result = await session.execute(
+                select(AIPromptTemplate).where(AIPromptTemplate.name == payload["name"])
+            )
+            prompt = result.scalar_one_or_none()
+            if prompt is None:
+                prompt = AIPromptTemplate(**prompt_payload)
+                session.add(prompt)
+            else:
+                for key, value in prompt_payload.items():
+                    setattr(prompt, key, value)
+            await session.flush()
+            await session.refresh(prompt)
+            return self._prompt_template_to_dict(prompt)
+
     async def list_prompt_templates(self) -> list[dict[str, Any]]:
         async with get_session() as session:
             result = await session.execute(select(AIPromptTemplate).order_by(AIPromptTemplate.id.desc()))
@@ -2269,7 +2604,7 @@ class ResearchRepository:
                 platform=platform,
                 event_type=event_type,
                 message=message,
-                stats_json=stats or {},
+                stats_json=_json_safe(stats or {}),
             )
             session.add(event)
             await session.flush()
@@ -2836,6 +3171,11 @@ class ResearchRepository:
             "description": item.description,
             "weight": item.weight,
             "default_platforms": item.default_platforms or [],
+            "primary_goal": item.primary_goal,
+            "default_collection_depth": item.default_collection_depth,
+            "default_ai_template": item.default_ai_template,
+            "source": item.source,
+            "archived": bool(item.archived),
             "enabled": bool(item.enabled),
             "created_at": item.created_at,
             "updated_at": item.updated_at,
@@ -2853,6 +3193,59 @@ class ResearchRepository:
             "usage_flags": item.usage_flags_json or [],
             "platform_overrides": item.platform_overrides_json or {},
             "enabled": bool(item.enabled),
+            "created_at": item.created_at,
+            "updated_at": item.updated_at,
+        }
+
+    def _growth_project_to_dict(self, item: ResearchGrowthProject) -> dict[str, Any]:
+        return {
+            "id": item.id,
+            "name": item.name,
+            "primary_goal": item.primary_goal,
+            "scene_pack_id": item.scene_pack_id,
+            "platforms": item.platforms or [],
+            "project_status": item.project_status,
+            "collection_status": item.collection_status,
+            "comment_collection_enabled": bool(item.comment_collection_enabled),
+            "refresh_cadence": item.refresh_cadence,
+            "custom_interval_value": item.custom_interval_value,
+            "custom_interval_unit": item.custom_interval_unit,
+            "sample_status": item.sample_status,
+            "recommended_action": item.recommended_action,
+            "opportunity_score": item.opportunity_score,
+            "last_collected_at": item.last_collected_at,
+            "archived": bool(item.archived),
+            "created_at": item.created_at,
+            "updated_at": item.updated_at,
+        }
+
+    def _growth_project_keyword_to_dict(self, item: ResearchGrowthProjectKeyword) -> dict[str, Any]:
+        return {
+            "id": item.id,
+            "project_id": item.project_id,
+            "scene_pack_id": item.scene_pack_id,
+            "keyword": item.keyword,
+            "keyword_type": item.keyword_type,
+            "source": item.source,
+            "status": item.status,
+            "created_at": item.created_at,
+            "updated_at": item.updated_at,
+        }
+
+    def _growth_project_collection_plan_to_dict(
+        self, item: ResearchGrowthProjectCollectionPlan
+    ) -> dict[str, Any]:
+        return {
+            "id": item.id,
+            "project_id": item.project_id,
+            "platform": item.platform,
+            "collection_mode": item.collection_mode,
+            "keyword_scope": item.keyword_scope,
+            "enabled": bool(item.enabled),
+            "schedule_mode": item.schedule_mode,
+            "schedule_interval_minutes": item.schedule_interval_minutes,
+            "last_run_at": item.last_run_at,
+            "next_run_at": item.next_run_at,
             "created_at": item.created_at,
             "updated_at": item.updated_at,
         }

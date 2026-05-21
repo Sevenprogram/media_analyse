@@ -1,5 +1,6 @@
-import os
 import asyncio
+import os
+from datetime import date
 from pathlib import Path
 from urllib.parse import quote
 
@@ -20,6 +21,20 @@ from research.execution import (
 )
 from research.exporter import ResearchExporter
 from research.charts import build_chart_summary
+from research.enums import (
+    CRAWL_UNIT_CANCELLED,
+    CRAWL_UNIT_FAILED,
+    CRAWL_UNIT_PENDING,
+    CRAWL_UNIT_RETRYING,
+    CRAWL_UNIT_RUNNING,
+    CRAWL_UNIT_SUCCEEDED,
+    JOB_CANCELLED,
+    JOB_COMPLETED,
+    JOB_FAILED,
+    JOB_PENDING,
+    JOB_QUEUED,
+    JOB_RUNNING,
+)
 from research.database_guard import (
     ResearchDatabaseNotConfigured,
     assert_research_database_enabled,
@@ -35,8 +50,11 @@ from research.schemas import (
     AIPromptTemplateCreate,
     AuthProfileCreate,
     AuthProfileUpdate,
+    CommentPolicy,
     ExistingDataBackfillRequest,
     GlobalDefaultsUpsert,
+    GrowthProjectCreate,
+    GrowthProjectUpdate,
     KeywordSetCreate,
     KeywordSetUpdate,
     PlatformCapabilityUpsert,
@@ -53,8 +71,73 @@ from api.services.crawler_manager import crawler_manager
 router = APIRouter(prefix="/research", tags=["research"])
 _research_execution_task: asyncio.Task | None = None
 _research_execution_job_id: int | None = None
+_research_execution_queue: list[dict] = []
+_research_queue_worker_task: asyncio.Task | None = None
 EXPORT_BASE_DIR = Path("exports")
 GLOBAL_DEFAULTS_KEY = "research_defaults"
+DEFAULT_AI_PROMPT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "sentiment": {"type": "string", "enum": ["positive", "neutral", "negative"]},
+        "stance": {"type": "string", "enum": ["support", "oppose", "mixed", "unknown"]},
+        "topic_tags": {"type": "array", "items": {"type": "string"}},
+        "pain_points": {"type": "array", "items": {"type": "string"}},
+        "opportunities": {"type": "array", "items": {"type": "string"}},
+        "risk_notes": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "summary",
+        "sentiment",
+        "stance",
+        "topic_tags",
+        "pain_points",
+        "opportunities",
+        "risk_notes",
+    ],
+}
+
+DEFAULT_AI_PROMPTS = [
+    {
+        "name": "default_post_understanding_v1",
+        "task_type": "summary",
+        "platform": "all",
+        "version": "v1",
+        "enabled": True,
+        "output_schema": DEFAULT_AI_PROMPT_SCHEMA,
+        "prompt_text": (
+            "You are analyzing a social media post for growth research. "
+            "Return only valid JSON matching this schema: summary, sentiment, stance, "
+            "topic_tags, pain_points, opportunities, risk_notes. "
+            "Use concise Chinese unless the source text is mostly another language.\n\n"
+            "Platform: {platform}\n"
+            "Target ID: {target_id}\n"
+            "Title: {title}\n"
+            "Content: {content}\n"
+            "Publish time: {publish_time}\n"
+            "Engagement JSON: {engagement_json}"
+        ),
+    },
+    {
+        "name": "default_comment_understanding_v1",
+        "task_type": "comment_digest",
+        "platform": "all",
+        "version": "v1",
+        "enabled": True,
+        "output_schema": DEFAULT_AI_PROMPT_SCHEMA,
+        "prompt_text": (
+            "You are analyzing a user comment for growth research. "
+            "Return only valid JSON matching this schema: summary, sentiment, stance, "
+            "topic_tags, pain_points, opportunities, risk_notes. "
+            "Focus on user demand, objection, urgency, and concrete evidence.\n\n"
+            "Platform: {platform}\n"
+            "Target ID: {target_id}\n"
+            "Content: {content}\n"
+            "Publish time: {publish_time}\n"
+            "Engagement JSON: {engagement_json}"
+        ),
+    },
+]
 
 
 def default_global_settings() -> dict:
@@ -81,6 +164,15 @@ def default_execution_options() -> ResearchExecutionOptions:
     return ResearchExecutionOptions(save_option=_save_option_from_config())
 
 
+def _execution_busy() -> bool:
+    current = asyncio.current_task()
+    return bool(
+        _research_execution_task
+        and not _research_execution_task.done()
+        and _research_execution_task is not current
+    )
+
+
 async def schedule_and_execute_research_job(
     job_id: int,
     *,
@@ -89,7 +181,7 @@ async def schedule_and_execute_research_job(
 ) -> dict:
     global _research_execution_job_id, _research_execution_task
     require_research_database()
-    if _research_execution_task and not _research_execution_task.done():
+    if _execution_busy():
         return {
             "status": "busy",
             "job_id": _research_execution_job_id,
@@ -125,6 +217,72 @@ async def schedule_and_execute_research_job(
         _research_execution_task = None
         _research_execution_job_id = None
     return {"status": "completed", "job_id": job_id, "schedule": schedule}
+
+
+async def enqueue_research_collection_job(job_id: int, *, project_id: str | None = None) -> dict:
+    global _research_queue_worker_task
+    require_research_database()
+    queued = {
+        "job_id": job_id,
+        "project_id": project_id,
+        "enqueued_at": date.today().isoformat(),
+    }
+    if not any(item["job_id"] == job_id for item in _research_execution_queue):
+        _research_execution_queue.append(queued)
+        await ResearchRepository().update_job(job_id, {"status": JOB_QUEUED})
+    if _research_queue_worker_task is None or _research_queue_worker_task.done():
+        _research_queue_worker_task = asyncio.create_task(_run_research_execution_queue())
+    return {
+        "status": "queued",
+        "job_id": job_id,
+        "queue_position": _queue_position(job_id),
+        "queue": _collection_queue_snapshot(),
+    }
+
+
+async def _run_research_execution_queue() -> None:
+    while _research_execution_queue:
+        if _execution_busy():
+            await asyncio.sleep(1)
+            continue
+        queued = _research_execution_queue.pop(0)
+        job_id = int(queued["job_id"])
+        repository = ResearchRepository()
+        await repository.update_job(job_id, {"status": JOB_RUNNING})
+        try:
+            await schedule_and_execute_research_job(job_id, background=False)
+        except Exception as exc:
+            await repository.update_job(job_id, {"status": JOB_FAILED})
+            await repository.create_event(
+                job_id=job_id,
+                platform=None,
+                event_type="queue_execution_failed",
+                message=str(exc),
+                stats={"project_id": queued.get("project_id")},
+            )
+
+
+def _collection_queue_snapshot() -> dict:
+    return {
+        "running_job_id": _research_execution_job_id if _execution_busy() else None,
+        "queued_jobs": [
+            {
+                "job_id": item["job_id"],
+                "project_id": item.get("project_id"),
+                "queue_position": index + 1,
+                "enqueued_at": item.get("enqueued_at"),
+            }
+            for index, item in enumerate(_research_execution_queue)
+        ],
+        "queue_length": len(_research_execution_queue),
+    }
+
+
+def _queue_position(job_id: int) -> int:
+    for index, item in enumerate(_research_execution_queue):
+        if int(item["job_id"]) == int(job_id):
+            return index + 1
+    return 0
 
 
 async def wait_for_research_job_status(
@@ -320,6 +478,338 @@ async def list_research_jobs():
     return {"jobs": await service.list_jobs()}
 
 
+@router.get("/collection-queue")
+async def get_collection_queue():
+    require_research_database()
+    return _collection_queue_snapshot()
+
+
+@router.get("/growth-projects")
+async def list_growth_projects():
+    require_research_database()
+    service = get_service()
+    return {"projects": await service.list_growth_projects()}
+
+
+@router.post("/growth-projects")
+async def create_growth_project(request: GrowthProjectCreate):
+    require_research_database()
+    service = get_service()
+    project_id = _project_slug(request.name)
+    repository = ResearchRepository()
+    scene_pack = None
+    scene_keywords: list[dict] = []
+    if request.scene_pack_id is not None:
+        scene_pack = await repository.get_scene_pack(request.scene_pack_id)
+        if scene_pack is None:
+            raise HTTPException(status_code=404, detail="Scene pack not found")
+        scene_keywords = await repository.list_scene_pack_keywords(
+            scene_pack_ids=[request.scene_pack_id],
+            enabled_only=True,
+        )
+        request_platforms = request.platforms or scene_pack.get("default_platforms") or []
+        request_keywords = _collection_keywords_from_scene_pack(scene_keywords)
+    else:
+        request_platforms = request.platforms
+        request_keywords = request.keywords
+    if not request_platforms:
+        raise HTTPException(status_code=400, detail="Growth project requires at least one platform")
+    if not request_keywords:
+        raise HTTPException(status_code=400, detail="Growth project requires collection keywords")
+
+    project_record = None
+    try:
+        project_record = await repository.create_growth_project(
+            {
+                "name": request.name,
+                "primary_goal": request.primary_goal,
+                "scene_pack_id": request.scene_pack_id,
+                "platforms": request_platforms,
+                "collection_status": "queued" if request.start_immediately else "not_started",
+                "comment_collection_enabled": request.collection_depth != "lightweight",
+                "refresh_cadence": request.refresh_cadence,
+                "sample_status": "sample_insufficient",
+                "recommended_action": "wait_for_collection"
+                if request.start_immediately
+                else "start_collection",
+            }
+        )
+        if scene_keywords:
+            for keyword in scene_keywords:
+                keyword_type, status = _project_keyword_type_and_status(keyword.get("keyword_type"))
+                await repository.create_growth_project_keyword(
+                    {
+                        "project_id": project_record["id"],
+                        "scene_pack_id": request.scene_pack_id,
+                        "keyword": keyword["keyword"],
+                        "keyword_type": keyword_type,
+                        "source": "scene_pack",
+                        "status": status,
+                    }
+                )
+        else:
+            for keyword in request_keywords:
+                await repository.create_growth_project_keyword(
+                    {
+                        "project_id": project_record["id"],
+                        "keyword": keyword,
+                        "keyword_type": "core",
+                        "source": "manual",
+                        "status": "active",
+                    }
+                )
+        for platform in request_platforms:
+            await repository.create_growth_project_collection_plan(
+                {
+                    "project_id": project_record["id"],
+                    "platform": platform,
+                    "collection_mode": "search",
+                    "keyword_scope": "active",
+                    "enabled": True,
+                    "schedule_mode": "interval" if request.refresh_cadence != "off" else "manual",
+                    "schedule_interval_minutes": _refresh_interval_minutes(request.refresh_cadence),
+                }
+            )
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=409, detail="Growth project already exists") from exc
+
+    enable_comments = request.collection_depth in {"standard", "deep"}
+    job = await service.create_job(
+        ResearchJobCreate(
+            name=f"{request.name} initial collection",
+            topic=project_id,
+            platforms=request_platforms,
+            keywords=request_keywords,
+            start_date=date.today(),
+            end_date=date.today(),
+            collection_mode="search",
+            comment_policy=CommentPolicy(
+                enable_comments=enable_comments,
+                comment_limit_per_post=100 if enable_comments else None,
+                enable_sub_comments=request.collection_depth == "deep",
+                sub_comment_limit_per_comment=20 if request.collection_depth == "deep" else 0,
+                full_comment_crawl=False,
+            ),
+            schedule_enabled=request.refresh_cadence != "off",
+            schedule_interval_minutes=_refresh_interval_minutes(request.refresh_cadence),
+        )
+    )
+    if project_record is not None:
+        await repository.update_growth_project(
+            project_record["id"],
+            {
+                "collection_status": "queued",
+                "recommended_action": "wait_for_collection",
+            },
+        )
+    if request.start_immediately:
+        await enqueue_research_collection_job(job["id"], project_id=project_id)
+    return {
+        "project_id": project_id,
+        "project_record_id": project_record["id"] if project_record else None,
+        "job": job,
+        "scene_pack": scene_pack,
+        "keyword_snapshot": scene_keywords,
+    }
+
+
+@router.get("/growth-projects/{project_id}")
+async def get_growth_project(project_id: str):
+    require_research_database()
+    service = get_service()
+    project = await service.get_growth_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Growth project not found")
+    return project
+
+
+@router.patch("/growth-projects/{project_id}")
+async def update_growth_project(project_id: str, request: GrowthProjectUpdate):
+    require_research_database()
+    repository = ResearchRepository()
+    record = await _ensure_growth_project_record_for_identifier(repository, project_id)
+    payload = request.model_dump(mode="python", exclude_unset=True)
+    if not payload:
+        return {"project": record}
+    scene_pack_id = payload.pop("scene_pack_id", None)
+    keyword_mode = payload.pop("scene_pack_keyword_mode", None)
+    if scene_pack_id is not None:
+        scene_pack = await repository.get_scene_pack(scene_pack_id)
+        if scene_pack is None:
+            raise HTTPException(status_code=404, detail="Scene pack not found")
+        payload["scene_pack_id"] = scene_pack_id
+        if keyword_mode in {"replace", "append"}:
+            await _apply_scene_pack_keywords_to_growth_project(
+                repository,
+                project_record_id=record["id"],
+                scene_pack_id=scene_pack_id,
+                mode=keyword_mode,
+            )
+    project = await repository.update_growth_project(record["id"], payload)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Growth project not found")
+    if "platforms" in payload or "refresh_cadence" in payload or "custom_interval_value" in payload:
+        await _sync_growth_project_collection_plans(repository, project)
+    return {"project": project}
+
+
+@router.delete("/growth-projects/{project_id}")
+async def delete_growth_project(project_id: str):
+    require_research_database()
+    repository = ResearchRepository()
+    record = await _ensure_growth_project_record_for_identifier(repository, project_id)
+    project = await repository.update_growth_project(record["id"], {"archived": True})
+    return {
+        "deleted": True,
+        "archived": True,
+        "project": project,
+        "message": "Project archived; collected samples and research jobs are preserved.",
+    }
+
+
+@router.get("/growth-projects/{project_id}/keywords")
+async def list_growth_project_keywords(project_id: int):
+    require_research_database()
+    repository = ResearchRepository()
+    project = await repository.get_growth_project_record(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Growth project not found")
+    return {"keywords": await repository.list_growth_project_keywords(project_id)}
+
+
+@router.get("/growth-projects/{project_id}/collection-plans")
+async def list_growth_project_collection_plans(project_id: int):
+    require_research_database()
+    repository = ResearchRepository()
+    project = await repository.get_growth_project_record(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Growth project not found")
+    return {"collection_plans": await repository.list_growth_project_collection_plans(project_id)}
+
+
+@router.post("/growth-projects/{project_id}/collection/start")
+async def start_growth_project_collection(project_id: str):
+    return await run_growth_project_collection_now(project_id)
+
+
+@router.post("/growth-projects/{project_id}/collection/run-now")
+async def run_growth_project_collection_now(project_id: str):
+    require_research_database()
+    service = get_service()
+    repository = ResearchRepository()
+    project = await service.get_growth_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Growth project not found")
+    summary = project["project"]
+    keywords = [item["keyword"] for item in project.get("keywords", []) if item.get("keyword")]
+    if not keywords:
+        raise HTTPException(status_code=400, detail="Growth project has no keywords to collect")
+    job = await service.create_job(
+        ResearchJobCreate(
+            name=f"{summary['name']} collection {date.today().isoformat()}",
+            topic=project_id,
+            platforms=summary["platforms"],
+            keywords=keywords,
+            start_date=date.today(),
+            end_date=date.today(),
+            collection_mode="search",
+            comment_policy=_comment_policy_for_growth_project(project),
+        )
+    )
+    record = await _growth_project_record_for_identifier(repository, project_id)
+    if record:
+        await repository.update_growth_project(
+            record["id"],
+            {"collection_status": "queued", "recommended_action": "wait_for_collection"},
+        )
+        await repository.update_growth_project_collection_plans(record["id"], {"enabled": True})
+    queue = await enqueue_research_collection_job(int(job["id"]), project_id=project_id)
+    return {"status": "queued", "job": job, **queue}
+
+
+@router.get("/growth-projects/{project_id}/collection/progress")
+async def get_growth_project_collection_progress(project_id: str):
+    require_research_database()
+    service = get_service()
+    project = await service.get_growth_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Growth project not found")
+    records = project.get("collection_records", [])
+    job_ids = [int(record["id"]) for record in records if record.get("id") is not None]
+    queued_for_project = [
+        item for item in _collection_queue_snapshot()["queued_jobs"]
+        if item.get("project_id") == project_id
+    ]
+    running_job_id = _research_execution_job_id if _research_execution_job_id in job_ids else None
+    current_job_id = running_job_id or (queued_for_project[0]["job_id"] if queued_for_project else (job_ids[0] if job_ids else None))
+    progress = await _job_progress_snapshot(current_job_id) if current_job_id else _empty_progress()
+    return {
+        "project_id": project_id,
+        "status": _project_collection_progress_status(
+            running_job_id=running_job_id,
+            queued_jobs=queued_for_project,
+            progress=progress,
+        ),
+        "current_job_id": current_job_id,
+        "running_job_id": running_job_id,
+        "queued_jobs": queued_for_project,
+        "queue": _collection_queue_snapshot(),
+        "progress": progress,
+    }
+
+
+@router.post("/growth-projects/{project_id}/collection/pause")
+async def pause_growth_project_collection(project_id: str):
+    require_research_database()
+    service = get_service()
+    repository = ResearchRepository()
+    project = await service.get_growth_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Growth project not found")
+    record = await _growth_project_record_for_identifier(repository, project_id)
+    if record:
+        await repository.update_growth_project(
+            record["id"],
+            {"collection_status": "paused", "recommended_action": "start_collection"},
+        )
+        await repository.update_growth_project_collection_plans(record["id"], {"enabled": False})
+    return {"status": "paused", "project_id": project_id}
+
+
+@router.post("/growth-projects/{project_id}/collection/stop-current-run")
+async def stop_growth_project_current_run(project_id: str):
+    require_research_database()
+    service = get_service()
+    repository = ResearchRepository()
+    project = await service.get_growth_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Growth project not found")
+    stopped = []
+    for record in project.get("collection_records", []):
+        if record.get("status") in {"pending", "queued", "running"}:
+            updated = await repository.update_job(int(record["id"]), {"status": "cancelled"})
+            if updated:
+                stopped.append(updated)
+    project_record = await _growth_project_record_for_identifier(repository, project_id)
+    if project_record:
+        await repository.update_growth_project(
+            project_record["id"],
+            {"collection_status": "stopped", "recommended_action": "start_collection"},
+        )
+    return {"status": "stopped", "project_id": project_id, "jobs": stopped}
+
+
+@router.post("/growth-projects/{project_id}/archive")
+async def archive_growth_project(project_id: str):
+    require_research_database()
+    repository = ResearchRepository()
+    record = await _growth_project_record_for_identifier(repository, project_id)
+    if record:
+        project = await repository.update_growth_project(record["id"], {"archived": True})
+        return {"status": "archived", "project": project}
+    return {"status": "archived", "project_id": project_id}
+
+
 @router.get("/jobs/{job_id}")
 async def get_research_job(job_id: int):
     require_research_database()
@@ -470,6 +960,242 @@ def _execution_options_from_request(request: ResearchExecutionRequest) -> Resear
     )
 
 
+def _project_slug(value: str) -> str:
+    return "_".join(part for part in value.lower().replace("-", " ").split() if part)
+
+
+def _empty_progress() -> dict:
+    return {
+        "percent": 0,
+        "unit_counts": {
+            CRAWL_UNIT_PENDING: 0,
+            CRAWL_UNIT_RUNNING: 0,
+            CRAWL_UNIT_RETRYING: 0,
+            CRAWL_UNIT_SUCCEEDED: 0,
+            CRAWL_UNIT_FAILED: 0,
+            CRAWL_UNIT_CANCELLED: 0,
+            "total": 0,
+        },
+        "sample_counts": {"posts": 0, "comments": 0, "raw_records": 0, "creators": 0},
+        "job": None,
+        "latest_event": None,
+    }
+
+
+async def _job_progress_snapshot(job_id: int | None) -> dict:
+    if job_id is None:
+        return _empty_progress()
+    repository = ResearchRepository()
+    job = await repository.get_job(int(job_id))
+    if job is None:
+        return _empty_progress()
+    units = await repository.list_crawl_units(int(job_id))
+    stats = await repository.get_job_stats(int(job_id))
+    events = await repository.list_events(int(job_id), limit=1)
+    unit_counts = {
+        CRAWL_UNIT_PENDING: 0,
+        CRAWL_UNIT_RUNNING: 0,
+        CRAWL_UNIT_RETRYING: 0,
+        CRAWL_UNIT_SUCCEEDED: 0,
+        CRAWL_UNIT_FAILED: 0,
+        CRAWL_UNIT_CANCELLED: 0,
+        "total": len(units),
+    }
+    for unit in units:
+        status = str(unit.get("status") or CRAWL_UNIT_PENDING)
+        unit_counts[status] = int(unit_counts.get(status, 0)) + 1
+    if units:
+        finished = (
+            unit_counts[CRAWL_UNIT_SUCCEEDED]
+            + unit_counts[CRAWL_UNIT_FAILED]
+            + unit_counts[CRAWL_UNIT_CANCELLED]
+        )
+        percent = round((finished / max(unit_counts["total"], 1)) * 100)
+    else:
+        percent = _fallback_job_percent(str(job.get("status") or JOB_PENDING))
+    return {
+        "percent": percent,
+        "unit_counts": unit_counts,
+        "sample_counts": {
+            "posts": int(stats.get("posts") or 0),
+            "comments": int(stats.get("comments") or 0),
+            "raw_records": int(stats.get("raw_records") or 0),
+            "creators": int(stats.get("authors") or stats.get("creators") or 0),
+        },
+        "job": job,
+        "latest_event": events[0] if events else None,
+    }
+
+
+def _fallback_job_percent(status: str) -> int:
+    if status == JOB_COMPLETED:
+        return 100
+    if status in {JOB_FAILED, JOB_CANCELLED}:
+        return 100
+    if status == JOB_RUNNING:
+        return 30
+    if status == JOB_QUEUED:
+        return 5
+    return 0
+
+
+def _project_collection_progress_status(
+    *,
+    running_job_id: int | None,
+    queued_jobs: list[dict],
+    progress: dict,
+) -> str:
+    if running_job_id is not None:
+        return "running"
+    if queued_jobs:
+        return "queued"
+    job = progress.get("job") or {}
+    status = str(job.get("status") or "")
+    if status in {JOB_COMPLETED, JOB_FAILED, JOB_CANCELLED}:
+        return status
+    return status or "idle"
+
+
+def _refresh_interval_minutes(refresh_cadence: str) -> int | None:
+    return {
+        "daily": 1440,
+        "three_days": 4320,
+        "weekly": 10080,
+    }.get(refresh_cadence)
+
+
+def _refresh_interval_from_project(project: dict) -> int | None:
+    cadence = str(project.get("refresh_cadence") or "off")
+    if cadence == "custom_hours":
+        return int(project.get("custom_interval_value") or 1) * 60
+    if cadence == "custom_days":
+        return int(project.get("custom_interval_value") or 1) * 1440
+    return _refresh_interval_minutes(cadence)
+
+
+def _comment_policy_for_growth_project(project_detail: dict) -> CommentPolicy:
+    settings = project_detail.get("settings") or {}
+    enabled = bool(settings.get("comment_collection_enabled", True))
+    return CommentPolicy(
+        enable_comments=enabled,
+        comment_limit_per_post=100 if enabled else None,
+        enable_sub_comments=False,
+        sub_comment_limit_per_comment=0,
+        full_comment_crawl=False,
+    )
+
+
+async def _sync_growth_project_collection_plans(
+    repository: ResearchRepository,
+    project: dict,
+) -> None:
+    interval = _refresh_interval_from_project(project)
+    platforms = project.get("platforms") or []
+    for platform in platforms:
+        await repository.create_growth_project_collection_plan(
+            {
+                "project_id": project["id"],
+                "platform": platform,
+                "collection_mode": "search",
+                "keyword_scope": "active",
+                "enabled": True,
+                "schedule_mode": "interval" if interval else "manual",
+                "schedule_interval_minutes": interval,
+            }
+        )
+
+
+async def _apply_scene_pack_keywords_to_growth_project(
+    repository: ResearchRepository,
+    *,
+    project_record_id: int,
+    scene_pack_id: int,
+    mode: str,
+) -> None:
+    if mode == "replace":
+        await repository.delete_growth_project_keywords(project_record_id)
+    scene_keywords = await repository.list_scene_pack_keywords(
+        scene_pack_ids=[scene_pack_id],
+        enabled_only=True,
+    )
+    for keyword in scene_keywords:
+        keyword_type, status = _project_keyword_type_and_status(keyword.get("keyword_type"))
+        await repository.create_growth_project_keyword(
+            {
+                "project_id": project_record_id,
+                "scene_pack_id": scene_pack_id,
+                "keyword": keyword["keyword"],
+                "keyword_type": keyword_type,
+                "source": "scene_pack",
+                "status": status,
+            }
+        )
+
+
+def _collection_keywords_from_scene_pack(keywords: list[dict]) -> list[str]:
+    collectable_types = {"primary", "secondary", "synonym", "platform_adapted", "core", "expanded"}
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in keywords:
+        keyword = str(item.get("keyword") or "").strip()
+        keyword_type = str(item.get("keyword_type") or "")
+        if not keyword or keyword_type not in collectable_types:
+            continue
+        if keyword in seen:
+            continue
+        seen.add(keyword)
+        result.append(keyword)
+    return result
+
+
+def _project_keyword_type_and_status(keyword_type: str | None) -> tuple[str, str]:
+    mapping = {
+        "primary": ("core", "active"),
+        "secondary": ("expanded", "active"),
+        "synonym": ("expanded", "active"),
+        "platform_adapted": ("expanded", "active"),
+        "ai_suggested": ("pending", "pending"),
+        "negative": ("excluded", "excluded"),
+    }
+    return mapping.get(str(keyword_type or ""), ("expanded", "active"))
+
+
+async def _growth_project_record_for_identifier(
+    repository: ResearchRepository,
+    project_id: str,
+) -> dict | None:
+    if project_id.isdigit():
+        return await repository.get_growth_project_record(int(project_id))
+    for record in await repository.list_growth_project_records(include_archived=True):
+        if _project_slug(record["name"]) == project_id:
+            return record
+    return None
+
+
+async def _ensure_growth_project_record_for_identifier(
+    repository: ResearchRepository,
+    project_id: str,
+) -> dict:
+    record = await _growth_project_record_for_identifier(repository, project_id)
+    if record:
+        return record
+    project = await get_service().get_growth_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Growth project not found")
+    summary = project["project"]
+    return await repository.create_growth_project(
+        {
+            "name": summary["name"],
+            "primary_goal": summary.get("primary_goal") or "topic_discovery",
+            "platforms": summary.get("platforms") or [],
+            "collection_status": "not_started",
+            "sample_status": summary.get("sample_status", {}).get("kind") or "sample_insufficient",
+            "recommended_action": summary.get("recommended_action", {}).get("kind") or "start_collection",
+            "archived": False,
+        }
+    )
+
+
 @router.post("/jobs/{job_id}/execution/plan")
 async def preview_research_execution_plan(job_id: int, request: ResearchExecutionRequest):
     require_research_database()
@@ -608,6 +1334,33 @@ async def bootstrap_4router_provider():
     return {"ok": True, "provider": provider, "api_key_set": True}
 
 
+@router.post("/ai/providers/gateway/bootstrap")
+async def bootstrap_gateway_provider():
+    require_research_database()
+    api_key = os.getenv("AI_GATEWAY_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="AI_GATEWAY_API_KEY is not configured in the local environment",
+        )
+    provider = await ResearchRepository().upsert_ai_provider_by_name(
+        {
+            "name": os.getenv("AI_GATEWAY_NAME", "AI Gateway"),
+            "base_url": os.getenv("AI_GATEWAY_BASE_URL", "https://4router.net/v1"),
+            "api_key": api_key,
+            "model": os.getenv("AI_GATEWAY_MODEL", "gpt-5.4-mini"),
+            "timeout": int(os.getenv("AI_GATEWAY_TIMEOUT", "60")),
+            "max_concurrency": int(os.getenv("AI_GATEWAY_MAX_CONCURRENCY", "2")),
+            "default_params": {
+                "temperature": float(os.getenv("AI_GATEWAY_TEMPERATURE", "0.2")),
+                "max_tokens": int(os.getenv("AI_GATEWAY_MAX_TOKENS", "1200")),
+            },
+            "enabled": True,
+        }
+    )
+    return {"ok": True, "provider": provider, "api_key_set": True}
+
+
 @router.get("/ai/providers")
 async def list_ai_providers():
     require_research_database()
@@ -649,6 +1402,16 @@ async def list_ai_prompt_templates():
     return {"prompts": await repository.list_prompt_templates()}
 
 
+@router.post("/ai/prompts/defaults/bootstrap")
+async def bootstrap_default_ai_prompt_templates():
+    require_research_database()
+    repository = ResearchRepository()
+    prompts = []
+    for prompt in DEFAULT_AI_PROMPTS:
+        prompts.append(await repository.upsert_prompt_template_by_name(prompt))
+    return {"ok": True, "created_or_updated": len(prompts), "prompts": prompts}
+
+
 @router.post("/ai/analysis-jobs")
 async def create_ai_analysis_job(request: AIAnalysisJobCreate):
     require_research_database()
@@ -663,6 +1426,54 @@ async def list_research_job_ai_analysis_jobs(job_id: int):
     require_research_database()
     repository = ResearchRepository()
     return {"jobs": await repository.list_ai_analysis_jobs(job_id)}
+
+
+@router.get("/jobs/{job_id}/ai/status")
+async def get_research_job_ai_status(job_id: int):
+    require_research_database()
+    repository = ResearchRepository()
+    job = await repository.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Research job not found")
+    stats = await repository.get_job_stats(job_id)
+    providers = await repository.list_ai_providers()
+    prompts = await repository.list_prompt_templates()
+    analysis_jobs = await repository.list_ai_analysis_jobs(job_id)
+    results = await repository.list_ai_results(job_id)
+    enabled_providers = [provider for provider in providers if provider.get("enabled")]
+    enabled_prompts = [prompt for prompt in prompts if prompt.get("enabled")]
+    diagnostics = []
+    if not enabled_providers:
+        diagnostics.append(
+            {
+                "code": "missing_provider",
+                "message": "No enabled AI provider is configured. Bootstrap an AI gateway provider first.",
+            }
+        )
+    if not enabled_prompts:
+        diagnostics.append(
+            {
+                "code": "missing_prompt",
+                "message": "No enabled AI prompt template is configured. Bootstrap default prompts first.",
+            }
+        )
+    if not stats["posts"] and not stats["comments"]:
+        diagnostics.append(
+            {
+                "code": "missing_targets",
+                "message": "The selected research job has no posts or comments to analyze.",
+            }
+        )
+    return {
+        "job": job,
+        "stats": stats,
+        "providers": providers,
+        "prompts": prompts,
+        "analysis_jobs": analysis_jobs,
+        "results_count": len(results),
+        "can_run": bool(enabled_providers and enabled_prompts and (stats["posts"] or stats["comments"])),
+        "diagnostics": diagnostics,
+    }
 
 
 @router.post("/ai/analysis-jobs/{analysis_job_id}/run")

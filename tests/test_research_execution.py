@@ -145,6 +145,27 @@ async def test_execute_updates_job_status_to_failed():
 
 
 @pytest.mark.asyncio
+async def test_execute_marks_job_failed_when_crawler_start_is_rejected():
+    repository = FakeExecutionRepository()
+    manager = ResearchExecutionManager(
+        crawler_manager=RejectingCrawlerManager(),
+        repository=repository,
+        backfill=None,
+    )
+
+    with pytest.raises(RuntimeError, match="Crawler manager rejected start"):
+        await manager.execute(job=_job(), options=ResearchExecutionOptions(backfill_after_crawl=False))
+
+    assert repository.statuses == [JOB_RUNNING, JOB_FAILED]
+    assert [event["event_type"] for event in repository.events] == [
+        "execution_started",
+        "crawler_started",
+        "crawler_start_failed",
+        "execution_failed",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_execute_updates_job_status_to_cancelled():
     repository = FakeExecutionRepository()
     manager = ResearchExecutionManager(
@@ -186,6 +207,13 @@ class FailingCrawlerManager:
 
     async def start(self, config):
         raise RuntimeError("crawler failed")
+
+
+class RejectingCrawlerManager:
+    process = None
+
+    async def start(self, config):
+        return False
 
 
 class CancellingCrawlerManager:

@@ -64,6 +64,7 @@ def calculate_keyword_heat_signal(
         "cooldown_risk": cooldown_risk,
         "confidence": confidence,
         "sample_quality": sample_quality,
+        "sampling_advice": build_sampling_advice(keyword=keyword, sample_quality=sample_quality),
         "short_window": {"current_24h": current_24h, "avg_7d": avg_7d},
         "medium_window": {"avg_7d": avg_7d, "avg_30d": avg_30d},
         "evidence": _evidence(
@@ -129,6 +130,16 @@ def build_keyword_heat_signal(
         "heat_score": score,
         "push_score": score if label == "boosting" else max(0.0, score - 20),
         "cooldown_risk": 100.0 - score if label in {"cooling", "limited"} else max(0.0, 40.0 - score / 3),
+        "sampling_advice": build_sampling_advice(
+            keyword=keyword,
+            sample_quality={
+                "confidence": "low" if label == "insufficient_data" else "medium",
+                "content_24h": int(volume_24h),
+                "content_7d": int(volume_7d_avg * 7),
+                "creator_7d": int(metrics.get("creator_participation") or 0),
+                "platform_count": 1 if platform and platform != "all" else 0,
+            },
+        ),
     }
 
 
@@ -163,6 +174,49 @@ def _ratio(current: float, baseline: float) -> float:
     if baseline <= 0:
         return 2.0 if current > 0 else 0.0
     return current / baseline
+
+
+def build_sampling_advice(*, keyword: str, sample_quality: dict[str, Any]) -> dict[str, Any]:
+    confidence = sample_quality.get("confidence")
+    content_7d = int(sample_quality.get("content_7d") or 0)
+    creator_7d = int(sample_quality.get("creator_7d") or 0)
+    content_24h = int(sample_quality.get("content_24h") or 0)
+    if confidence == "high":
+        return {
+            "needed": False,
+            "reason": "样本量足够，当前热度判断可直接进入运营观察。",
+            "target_content_7d": content_7d,
+            "target_creator_7d": creator_7d,
+            "suggested_keywords": [],
+        }
+    target_content_7d = 100 if confidence == "medium" else 80
+    target_creator_7d = 20 if confidence == "medium" else 8
+    suggested_keywords = _suggest_keyword_variants(keyword)
+    return {
+        "needed": True,
+        "reason": (
+            f"当前 7 天样本 {content_7d} 条、达人 {creator_7d} 个、24h 样本 {content_24h} 条，"
+            "只能作为线索，建议补采后再做确定判断。"
+        ),
+        "target_content_7d": target_content_7d,
+        "target_creator_7d": target_creator_7d,
+        "content_gap_7d": max(0, target_content_7d - content_7d),
+        "creator_gap_7d": max(0, target_creator_7d - creator_7d),
+        "suggested_keywords": suggested_keywords,
+    }
+
+
+def _suggest_keyword_variants(keyword: str) -> list[str]:
+    variants = {
+        "K12": ["小学提分", "小升初规划", "英语启蒙"],
+        "单亲": ["陪读妈妈", "一个人带娃", "离异妈妈"],
+        "妈妈": ["宝妈陪读", "家长陪伴", "亲子教育"],
+    }
+    result: list[str] = []
+    for marker, terms in variants.items():
+        if marker.lower() in keyword.lower():
+            result.extend(terms)
+    return result[:5]
 
 
 def _score_from_ratios(ratios: list[float]) -> float:

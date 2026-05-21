@@ -1,4 +1,6 @@
+import os
 from datetime import date
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -11,11 +13,16 @@ from api.routers.research import (
 from research.content_tracking import (
     analyze_content_tracking,
     build_tracker_analysis,
+    build_content_tracking_ai_prompt,
     extract_content_keywords,
+    normalize_content_tracking_ai_output,
     search_similar_content,
 )
+from research.content_fingerprint import analyze_posts_for_tracking
+from research.ai_provider import OpenAICompatibleProvider
 from research.repository import ResearchRepository
 from research.schemas import (
+    ContentTrackingAIAnalysisRequest,
     ContentKeywordExtractionRequest,
     ContentTrackerCreate,
     SimilarContentSearchRequest,
@@ -45,7 +52,7 @@ async def analyze_tracked_content(request: ContentTrackingRequest):
         vertical_id=request.vertical_id,
         enabled_only=True,
     )
-    return analyze_content_tracking(
+    result = analyze_content_tracking(
         query=request.query,
         posts=posts,
         comments=comments,
@@ -53,6 +60,8 @@ async def analyze_tracked_content(request: ContentTrackingRequest):
         tag_definitions=tag_definitions,
         limit=request.limit,
     )
+    result["fingerprints"] = analyze_posts_for_tracking(result.get("content") or [])
+    return result
 
 
 @router.post("/extract-keywords")
@@ -84,6 +93,49 @@ async def search_similar(request: SimilarContentSearchRequest):
         limit=request.limit,
     )
     return {"candidates": candidates}
+
+
+@router.post("/ai-analysis")
+async def analyze_content_with_ai(request: ContentTrackingAIAnalysisRequest):
+    require_research_database()
+    repository = ResearchRepository()
+    provider_config = await _resolve_content_ai_provider(
+        repository,
+        provider_config_id=request.provider_config_id,
+    )
+    provider = OpenAICompatibleProvider(
+        base_url=provider_config["base_url"],
+        api_key=provider_config["api_key"],
+        model=provider_config["model"],
+        timeout=provider_config.get("timeout") or 60,
+    )
+    prompt = build_content_tracking_ai_prompt(
+        title=request.title,
+        text=request.text,
+        platform=request.platform,
+        keywords=request.keywords,
+        candidates=request.candidates,
+        comments=request.comments,
+    )
+    try:
+        raw_output = await provider.complete_json(
+            prompt=prompt,
+            params={
+                "temperature": 0.2,
+                "max_tokens": 1800,
+                **(provider_config.get("default_params") or {}),
+            },
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"AI content analysis failed: {exc}") from exc
+    return {
+        "provider": {
+            "name": provider_config.get("name") or "AI Gateway",
+            "model": provider_config["model"],
+        },
+        "analysis": normalize_content_tracking_ai_output(raw_output),
+        "raw": raw_output,
+    }
 
 
 @router.post("/trackers")
@@ -189,6 +241,46 @@ async def wait_content_discovery_and_refresh(job_id: int):
         "refreshed": True,
         "candidates": candidates,
     }
+
+
+async def _resolve_content_ai_provider(
+    repository: ResearchRepository,
+    *,
+    provider_config_id: int | None,
+) -> dict[str, Any]:
+    if provider_config_id:
+        provider = await repository.get_ai_provider(provider_config_id, include_secret=True)
+        if provider is None:
+            raise HTTPException(status_code=404, detail="AI provider config not found")
+        return provider
+
+    env_api_key = os.getenv("AI_GATEWAY_API_KEY")
+    if env_api_key:
+        return {
+            "id": None,
+            "name": os.getenv("AI_GATEWAY_NAME", "AI Gateway"),
+            "base_url": os.getenv("AI_GATEWAY_BASE_URL", "https://4router.net/v1"),
+            "api_key": env_api_key,
+            "model": os.getenv("AI_GATEWAY_MODEL", "gpt-5.4-mini"),
+            "timeout": int(os.getenv("AI_GATEWAY_TIMEOUT", "60")),
+            "default_params": {
+                "temperature": float(os.getenv("AI_GATEWAY_TEMPERATURE", "0.2")),
+                "max_tokens": int(os.getenv("AI_GATEWAY_MAX_TOKENS", "1800")),
+            },
+        }
+
+    providers = await repository.list_ai_providers()
+    enabled = [item for item in providers if item.get("enabled") and item.get("api_key_set")]
+    selected = enabled[0] if enabled else None
+    if selected is None:
+        raise HTTPException(
+            status_code=400,
+            detail="AI_GATEWAY_API_KEY is not configured and no enabled AI provider exists",
+        )
+    provider = await repository.get_ai_provider(selected["id"], include_secret=True)
+    if provider is None:
+        raise HTTPException(status_code=404, detail="AI provider config not found")
+    return provider
 
 
 def _tracker_snapshot_payload(

@@ -20,6 +20,16 @@ def test_get_endpoint_returns_parameter_mapping():
     assert endpoint.default_params["filter_note_type"] == "不限"
 
 
+def test_xhs_creator_uses_current_user_notes_endpoint():
+    endpoint = get_endpoint("xhs", Capability.CREATOR)
+
+    assert endpoint.method == "GET"
+    assert endpoint.path == "/api/v1/xiaohongshu/app_v2/get_user_posted_notes"
+    assert endpoint.creator_param == "user_id"
+    assert endpoint.cursor_param == "cursor"
+    assert endpoint.page_param == ""
+
+
 def test_douyin_search_uses_current_search_endpoint():
     endpoint = get_endpoint("dy", Capability.SEARCH)
 

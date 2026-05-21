@@ -122,6 +122,7 @@ async def rebuild_heat_signal(request: KeywordHeatRebuildRequest):
                 "evidence": signal["evidence"],
                 "short_window": signal["short_window"],
                 "medium_window": signal["medium_window"],
+                "sampling_advice": signal.get("sampling_advice"),
             },
         }
     )

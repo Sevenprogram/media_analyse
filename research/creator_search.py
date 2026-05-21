@@ -235,7 +235,12 @@ async def search_creators(repository, request: dict[str, Any]) -> dict[str, Any]
     diagnostics["profile_count"] = len(profiles)
 
     query_terms = _query_terms(request.get("raw_query") or "")
-    should_use_text_fallback = bool(query_terms) and not (required_tag_ids or optional_tag_ids)
+    text_required_terms = _query_terms_not_covered_by_tags(
+        query_terms,
+        tag_definitions,
+        list(set(required_tag_ids + optional_tag_ids)),
+    )
+    should_use_text_fallback = bool(query_terms)
     tag_ids_filter = list(set(required_tag_ids + optional_tag_ids)) or None
     tags_by_creator: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     if tag_ids_filter:
@@ -281,7 +286,7 @@ async def search_creators(repository, request: dict[str, Any]) -> dict[str, Any]
         )
         recent_posts = []
         fallback = {"score": 0.0, "evidence": [], "matched_terms": []}
-        if should_use_text_fallback or (query_terms and tag_ids_filter and not tag_filters_have_matches):
+        if should_use_text_fallback:
             recent_posts = await repository.list_posts_by_creator(
                 platform=profile["platform"],
                 creator_id=profile["creator_id"],
@@ -290,12 +295,12 @@ async def search_creators(repository, request: dict[str, Any]) -> dict[str, Any]
             fallback = _score_creator_text_fallback(
                 profile=profile,
                 posts=recent_posts,
-                query_terms=query_terms,
+                query_terms=text_required_terms or query_terms,
             )
             diagnostics["fallback_used"] = diagnostics["fallback_used"] or fallback["score"] > 0
         if missing_required_tags and fallback["score"] <= 0:
             continue
-        if should_use_text_fallback and fallback["score"] <= 0:
+        if text_required_terms and not set(text_required_terms).issubset(set(fallback["matched_terms"])):
             continue
         tag_score = calculate_creator_match_score(
             required_tag_ids=required_tag_ids,
@@ -305,6 +310,8 @@ async def search_creators(repository, request: dict[str, Any]) -> dict[str, Any]
             recent_posts=recent_posts,
         ) if tags or required_tag_ids or optional_tag_ids else 0.0
         score = max(tag_score, fallback["score"])
+        if tag_score and fallback["score"]:
+            score = round(min(100.0, tag_score * 0.7 + fallback["score"] * 0.3), 4)
         if query_terms and not (required_tag_ids or optional_tag_ids) and score <= 0:
             continue
         results.append(
@@ -314,6 +321,9 @@ async def search_creators(repository, request: dict[str, Any]) -> dict[str, Any]
                 "display_name": profile.get("display_name"),
                 "profile_url": profile.get("profile_url"),
                 "follower_count": profile.get("follower_count"),
+                "total_like_count": _profile_metric(profile, "total_like_count"),
+                "total_collect_count": _profile_metric(profile, "total_collect_count"),
+                "interaction_count": _profile_metric(profile, "interaction_count"),
                 "recent_post_count_30d": profile.get("recent_post_count_30d") or 0,
                 "avg_engagement_rate": profile.get("avg_engagement_rate"),
                 "hot_post_rate": profile.get("hot_post_rate"),
@@ -567,6 +577,35 @@ def _query_terms(raw_query: str) -> list[str]:
     return unique_terms
 
 
+def _query_terms_not_covered_by_tags(
+    query_terms: list[str],
+    tag_definitions: list[dict[str, Any]],
+    tag_ids: list[int],
+) -> list[str]:
+    if not query_terms or not tag_ids:
+        return query_terms
+    covered_terms: set[str] = set()
+    wanted = {int(tag_id) for tag_id in tag_ids}
+    for tag in tag_definitions:
+        if int(tag.get("id") or 0) not in wanted:
+            continue
+        for value in [
+            tag.get("tag_name"),
+            *(tag.get("keywords") or []),
+            *(tag.get("synonyms") or []),
+        ]:
+            normalized = str(value or "").lower().strip()
+            if normalized:
+                covered_terms.add(normalized)
+                covered_terms.update(re.findall(r"[a-z0-9]{2,}", normalized))
+    remaining = []
+    for term in query_terms:
+        if any(covered and (covered in term or term in covered) for covered in covered_terms):
+            continue
+        remaining.append(term)
+    return remaining
+
+
 def _score_creator_text_fallback(
     *,
     profile: dict[str, Any],
@@ -618,6 +657,11 @@ def _profile_search_text(profile: dict[str, Any]) -> str:
             profile.get("bio"),
         ]
     ).lower()
+
+
+def _profile_metric(profile: dict[str, Any], key: str) -> Any:
+    metrics = (profile.get("tag_summary_json") or {}).get("profile_metrics") or {}
+    return metrics.get(key)
 
 
 def _post_search_text(post: dict[str, Any]) -> str:

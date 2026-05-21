@@ -20,12 +20,39 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from contextlib import asynccontextmanager
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from .models import Base
 import config
 from config.db_config import mysql_db_config, sqlite_db_config, postgres_db_config
 
 # Keep a cache of engines
 _engines = {}
+
+
+def _normalize_postgres_url(db_url: str) -> tuple[str, dict]:
+    connect_args = {}
+    parsed = urlsplit(db_url)
+    query_items = parse_qsl(parsed.query, keep_blank_values=True)
+    filtered_query_items = []
+    for key, value in query_items:
+        if key.lower() in {"ssl", "sslmode"} and value.lower() in {
+            "1",
+            "true",
+            "require",
+        }:
+            connect_args["ssl"] = True
+            continue
+        filtered_query_items.append((key, value))
+    normalized_url = urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            urlencode(filtered_query_items),
+            parsed.fragment,
+        )
+    )
+    return normalized_url, connect_args
 
 
 async def create_database_if_not_exists(db_type: str):
@@ -64,16 +91,19 @@ def get_async_engine(db_type: str = None):
     if db_type in ["json", "jsonl", "csv"]:
         return None
 
+    connect_args = {}
+
     if db_type == "sqlite":
         db_url = f"sqlite+aiosqlite:///{sqlite_db_config['db_path']}"
     elif db_type == "mysql" or db_type == "db":
         db_url = f"mysql+asyncmy://{mysql_db_config['user']}:{mysql_db_config['password']}@{mysql_db_config['host']}:{mysql_db_config['port']}/{mysql_db_config['db_name']}"
     elif db_type == "postgres":
         db_url = postgres_db_config.get("database_url") or f"postgresql+asyncpg://{postgres_db_config['user']}:{postgres_db_config['password']}@{postgres_db_config['host']}:{postgres_db_config['port']}/{postgres_db_config['db_name']}"
+        db_url, connect_args = _normalize_postgres_url(db_url)
     else:
         raise ValueError(f"Unsupported database type: {db_type}")
 
-    engine = create_async_engine(db_url, echo=False)
+    engine = create_async_engine(db_url, echo=False, connect_args=connect_args)
     _engines[db_type] = engine
     return engine
 

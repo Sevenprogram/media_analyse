@@ -25,6 +25,7 @@ import asyncio
 import os
 import subprocess
 import uvicorn
+from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,11 +43,22 @@ from .routers.keyword_opportunities import router as keyword_opportunities_route
 from .routers.keyword_library import router as keyword_library_router
 from .routers.reports import router as reports_router
 from .routers.research import router as research_router
+from database.db_session import create_tables
+from research.database_guard import is_research_database_enabled
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if is_research_database_enabled():
+        await create_tables()
+    yield
+
 
 app = FastAPI(
     title="MediaCrawler WebUI API",
     description="API for controlling MediaCrawler from WebUI",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Get webui static files directory

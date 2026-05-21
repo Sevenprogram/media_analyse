@@ -1,3 +1,4 @@
+import json
 from collections import Counter
 from typing import Any
 
@@ -85,6 +86,93 @@ def build_tracker_analysis(
         },
         "hot_content": candidates[:10],
         "evidence": [item.get("evidence") for item in candidates[:20]],
+    }
+
+
+def build_content_tracking_ai_prompt(
+    *,
+    title: str | None,
+    text: str,
+    platform: str | None,
+    keywords: list[str],
+    candidates: list[dict[str, Any]],
+    comments: list[dict[str, Any]],
+) -> str:
+    schema = {
+        "topic_summary": "string",
+        "keyword_judgement": [
+            {
+                "keyword": "string",
+                "value": "high|medium|low|noise",
+                "reason": "string",
+                "tracking_action": "include|exclude|watch",
+            }
+        ],
+        "similar_content_patterns": ["string"],
+        "comment_feedback": ["string"],
+        "tracking_suggestions": {
+            "included_keywords": ["string"],
+            "excluded_keywords": ["string"],
+            "platform_notes": ["string"],
+        },
+        "opportunities": ["string"],
+        "risk_notes": ["string"],
+    }
+    evidence = {
+        "source": {
+            "title": title,
+            "text": text[:4000],
+            "platform": platform,
+            "keywords": keywords,
+        },
+        "local_candidates": [
+            _compact_candidate_for_ai(item) for item in candidates[:20]
+        ],
+        "local_comments": [
+            {
+                "platform": item.get("platform"),
+                "post_id": item.get("post_id") or item.get("platform_post_id"),
+                "content": str(item.get("content") or "")[:500],
+                "like_count": item.get("like_count") or 0,
+                "keyword_hits": item.get("keyword_hits") or item.get("matched_keywords") or [],
+            }
+            for item in comments[:30]
+        ],
+    }
+    return (
+        "你是内容增长研究员。只能基于输入的本地数据库证据做分析，不要编造外部事实。\n"
+        "任务：判断这段内容的主题、哪些关键词值得持续追踪、本地同类内容呈现出什么模式、评论区有什么反馈，并给出追踪建议。\n"
+        "硬性要求：\n"
+        "1. 只返回 JSON，不要 Markdown。\n"
+        "2. 每个判断必须能对应输入中的关键词、候选内容或评论证据。\n"
+        "3. 样本不足时要在 risk_notes 说明，不要强行下结论。\n"
+        "4. included_keywords 只放建议纳入追踪的词，excluded_keywords 只放噪音词或容易误伤的词。\n"
+        f"输出 JSON schema 示例：{json.dumps(schema, ensure_ascii=False)}\n"
+        f"本地证据：{json.dumps(evidence, ensure_ascii=False, default=str)}"
+    )
+
+
+def normalize_content_tracking_ai_output(output: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(output, dict):
+        return _empty_ai_output("AI output is not a JSON object")
+    suggestions = output.get("tracking_suggestions")
+    if not isinstance(suggestions, dict):
+        suggestions = {}
+    return {
+        "topic_summary": str(output.get("topic_summary") or output.get("summary") or ""),
+        "keyword_judgement": [
+            _normalize_keyword_judgement(item)
+            for item in _list_of_dicts(output.get("keyword_judgement"))
+        ],
+        "similar_content_patterns": _string_list(output.get("similar_content_patterns")),
+        "comment_feedback": _string_list(output.get("comment_feedback")),
+        "tracking_suggestions": {
+            "included_keywords": _string_list(suggestions.get("included_keywords")),
+            "excluded_keywords": _string_list(suggestions.get("excluded_keywords")),
+            "platform_notes": _string_list(suggestions.get("platform_notes")),
+        },
+        "opportunities": _string_list(output.get("opportunities")),
+        "risk_notes": _string_list(output.get("risk_notes")),
     }
 
 
@@ -274,3 +362,58 @@ def _post_engagement(post: dict[str, Any]) -> int:
             "collected_count",
         )
     )
+
+
+def _compact_candidate_for_ai(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "platform": item.get("platform"),
+        "post_id": item.get("platform_post_id") or item.get("post_id"),
+        "title": item.get("title"),
+        "similarity_score": item.get("similarity_score"),
+        "matched_keywords": item.get("matched_keywords") or item.get("keyword_hits") or [],
+        "engagement": item.get("engagement") or {},
+        "evidence": item.get("evidence") or {},
+    }
+
+
+def _normalize_keyword_judgement(item: dict[str, Any]) -> dict[str, str]:
+    value = str(item.get("value") or "medium").lower()
+    if value not in {"high", "medium", "low", "noise"}:
+        value = "medium"
+    action = str(item.get("tracking_action") or "watch").lower()
+    if action not in {"include", "exclude", "watch"}:
+        action = "watch"
+    return {
+        "keyword": str(item.get("keyword") or ""),
+        "value": value,
+        "reason": str(item.get("reason") or ""),
+        "tracking_action": action,
+    }
+
+
+def _empty_ai_output(reason: str) -> dict[str, Any]:
+    return {
+        "topic_summary": "",
+        "keyword_judgement": [],
+        "similar_content_patterns": [],
+        "comment_feedback": [],
+        "tracking_suggestions": {
+            "included_keywords": [],
+            "excluded_keywords": [],
+            "platform_notes": [],
+        },
+        "opportunities": [],
+        "risk_notes": [reason],
+    }
+
+
+def _list_of_dicts(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if item is not None and str(item).strip()]

@@ -114,6 +114,68 @@ def test_4router_bootstrap_reads_env_and_hides_secret(monkeypatch):
     assert "secret-4router-key" not in response.text
 
 
+def test_gateway_bootstrap_reads_env_and_hides_secret(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+    monkeypatch.setenv("AI_GATEWAY_API_KEY", "secret-gateway-key")
+    monkeypatch.setenv("AI_GATEWAY_BASE_URL", "https://gateway.example/v1")
+    monkeypatch.setenv("AI_GATEWAY_MODEL", "gateway-model")
+
+    class FakeRepository:
+        async def upsert_ai_provider_by_name(self, payload):
+            assert payload["name"] == "AI Gateway"
+            assert payload["api_key"] == "secret-gateway-key"
+            assert payload["base_url"] == "https://gateway.example/v1"
+            assert payload["model"] == "gateway-model"
+            return {
+                "id": 1,
+                "name": payload["name"],
+                "base_url": payload["base_url"],
+                "model": payload["model"],
+                "enabled": payload["enabled"],
+                "api_key_set": True,
+            }
+
+    monkeypatch.setattr(research_router, "ResearchRepository", FakeRepository)
+    client = TestClient(app)
+
+    response = client.post("/api/research/ai/providers/gateway/bootstrap")
+
+    assert response.status_code == 200
+    assert response.json()["provider"]["base_url"] == "https://gateway.example/v1"
+    assert response.json()["provider"]["model"] == "gateway-model"
+    assert "secret-gateway-key" not in response.text
+
+
+def test_default_ai_prompts_bootstrap_upserts_two_templates(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+    seen = []
+
+    class FakeRepository:
+        async def upsert_prompt_template_by_name(self, payload):
+            seen.append(payload)
+            return {
+                "id": len(seen),
+                "name": payload["name"],
+                "task_type": payload["task_type"],
+                "platform": payload["platform"],
+                "version": payload["version"],
+                "enabled": payload["enabled"],
+            }
+
+    monkeypatch.setattr(research_router, "ResearchRepository", FakeRepository)
+    client = TestClient(app)
+
+    response = client.post("/api/research/ai/prompts/defaults/bootstrap")
+
+    assert response.status_code == 200
+    assert response.json()["created_or_updated"] == 2
+    assert {item["name"] for item in seen} == {
+        "default_post_understanding_v1",
+        "default_comment_understanding_v1",
+    }
+    assert all("summary" in item["output_schema"]["properties"] for item in seen)
+
+
 def test_backfill_requires_author_hash_salt(monkeypatch):
     monkeypatch.delenv("RESEARCH_AUTHOR_HASH_SALT", raising=False)
     client = TestClient(app)
@@ -293,6 +355,299 @@ def test_platform_capability_route(monkeypatch):
     assert response.status_code == 200
     assert response.json()["platform"] == "wb"
     assert response.json()["crawl_creator_enabled"] is False
+
+
+def test_growth_projects_route_lists_aggregated_projects(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+
+    class FakeService:
+        async def list_growth_projects(self):
+            return [
+                {
+                    "id": "education_summer_2026",
+                    "name": "Education Summer 2026",
+                    "primary_goal": "topic_discovery",
+                    "platforms": ["dy"],
+                    "status": "preliminarily_analyzable",
+                    "sample_status": {
+                        "kind": "comment_insufficient",
+                        "label": "Posts sufficient, comments insufficient",
+                    },
+                    "recommended_action": {
+                        "kind": "backfill_comments",
+                        "label": "Backfill comments",
+                    },
+                    "opportunity_score": 70,
+                    "last_collected_at": "2026-05-20T14:00:00Z",
+                    "metrics": {
+                        "jobs": 1,
+                        "posts": 60,
+                        "comments": 0,
+                        "raw_records": 50,
+                        "creators": 5,
+                        "failed_jobs": 0,
+                        "running_jobs": 0,
+                        "pending_jobs": 0,
+                    },
+                    "job_ids": [1],
+                }
+            ]
+
+    monkeypatch.setattr(research_router, "get_service", lambda: FakeService())
+    client = TestClient(app)
+
+    response = client.get("/api/research/growth-projects")
+
+    assert response.status_code == 200
+    assert response.json()["projects"][0]["id"] == "education_summer_2026"
+
+
+def test_growth_project_detail_route_returns_404_for_unknown_project(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+
+    class FakeService:
+        async def get_growth_project(self, project_id):
+            return None
+
+    monkeypatch.setattr(research_router, "get_service", lambda: FakeService())
+    client = TestClient(app)
+
+    response = client.get("/api/research/growth-projects/missing")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Growth project not found"
+
+
+def test_create_growth_project_creates_initial_research_job(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+    created = {}
+
+    class FakeService:
+        async def create_job(self, request):
+            created["request"] = request
+            return {
+                "id": 10,
+                "name": request.name,
+                "topic": request.topic,
+                "platforms": request.platforms,
+                "keywords": request.keywords,
+                "status": "pending",
+            }
+
+    monkeypatch.setattr(research_router, "get_service", lambda: FakeService())
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/research/growth-projects",
+        json={
+            "name": "2026 summer education topic research",
+            "primary_goal": "topic_discovery",
+            "platforms": ["dy", "xhs"],
+            "keywords": ["K12 education", "summer childcare"],
+            "collection_depth": "standard",
+            "refresh_cadence": "off",
+            "auto_ai_analysis": True,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["project_id"] == "2026_summer_education_topic_research"
+    assert body["job"]["topic"] == "2026_summer_education_topic_research"
+    assert created["request"].comment_policy.enable_comments is True
+
+
+def test_run_now_growth_project_queues_collection_job(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+
+    class FakeService:
+        async def get_growth_project(self, project_id):
+            return {
+                "project": {
+                    "id": project_id,
+                    "name": "Education summer",
+                    "platforms": ["dy"],
+                },
+                "keywords": [{"keyword": "K12 education"}],
+                "collection_records": [],
+            }
+
+        async def create_job(self, request):
+            return {
+                "id": 22,
+                "name": request.name,
+                "topic": request.topic,
+                "platforms": request.platforms,
+                "keywords": request.keywords,
+                "status": "pending",
+            }
+
+    class FakeRepository:
+        async def list_growth_project_records(self, include_archived=False):
+            return [{"id": 7, "name": "Education summer"}]
+
+        async def update_growth_project(self, project_id, payload):
+            return {"id": project_id, **payload}
+
+        async def update_growth_project_collection_plans(self, project_id, payload):
+            return []
+
+    async def fake_enqueue(job_id, *, project_id=None):
+        return {
+            "status": "queued",
+            "job_id": job_id,
+            "queue_position": 2,
+            "queue": {"running_job_id": 1, "queued_jobs": [], "queue_length": 1},
+        }
+
+    monkeypatch.setattr(research_router, "get_service", lambda: FakeService())
+    monkeypatch.setattr(research_router, "ResearchRepository", FakeRepository)
+    monkeypatch.setattr(research_router, "enqueue_research_collection_job", fake_enqueue)
+    client = TestClient(app)
+
+    response = client.post("/api/research/growth-projects/education_summer/collection/run-now")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "queued"
+    assert body["queue_position"] == 2
+    assert body["job"]["keywords"] == ["K12 education"]
+
+
+def test_growth_project_collection_progress_route(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+
+    class FakeService:
+        async def get_growth_project(self, project_id):
+            return {
+                "project": {"id": project_id, "name": "Education", "platforms": ["dy"]},
+                "keywords": [{"keyword": "K12 education"}],
+                "collection_records": [{"id": 31, "status": "running"}],
+            }
+
+    class FakeRepository:
+        async def get_job(self, job_id):
+            return {"id": job_id, "status": "running", "name": "Education collection"}
+
+        async def list_crawl_units(self, job_id):
+            return [
+                {"status": "succeeded"},
+                {"status": "running"},
+                {"status": "pending"},
+                {"status": "failed"},
+            ]
+
+        async def get_job_stats(self, job_id):
+            return {"posts": 12, "comments": 3, "raw_records": 15, "authors": 2}
+
+        async def list_events(self, job_id, limit=1):
+            return [{"event_type": "unit_done", "message": "done"}]
+
+    monkeypatch.setattr(research_router, "get_service", lambda: FakeService())
+    monkeypatch.setattr(research_router, "ResearchRepository", FakeRepository)
+    monkeypatch.setattr(research_router, "_research_execution_job_id", 31)
+    monkeypatch.setattr(research_router, "_research_execution_task", object())
+    monkeypatch.setattr(research_router, "_execution_busy", lambda: True)
+    client = TestClient(app)
+
+    response = client.get("/api/research/growth-projects/education/collection/progress")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "running"
+    assert body["progress"]["percent"] == 50
+    assert body["progress"]["sample_counts"]["posts"] == 12
+    assert body["progress"]["latest_event"]["message"] == "done"
+
+
+def test_update_growth_project_route(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+
+    class FakeRepository:
+        async def list_growth_project_records(self, include_archived=False):
+            return [{"id": 7, "name": "Education Summer"}]
+
+        async def update_growth_project(self, project_id, payload):
+            return {"id": project_id, "name": payload["name"], "platforms": payload["platforms"]}
+
+        async def create_growth_project_collection_plan(self, payload):
+            return payload
+
+    monkeypatch.setattr(research_router, "ResearchRepository", FakeRepository)
+    client = TestClient(app)
+
+    response = client.patch(
+        "/api/research/growth-projects/education_summer",
+        json={"name": "Education Summer 2026", "platforms": ["dy", "xhs"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["project"]["name"] == "Education Summer 2026"
+    assert response.json()["project"]["platforms"] == ["dy", "xhs"]
+
+
+def test_update_growth_project_can_switch_scene_pack_and_replace_keywords(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+    calls = {"deleted": 0, "keywords": []}
+
+    class FakeRepository:
+        async def list_growth_project_records(self, include_archived=False):
+            return [{"id": 7, "name": "Education Summer"}]
+
+        async def get_scene_pack(self, scene_pack_id):
+            return {"id": scene_pack_id, "name": "K12", "default_platforms": ["dy"]}
+
+        async def list_scene_pack_keywords(self, scene_pack_ids=None, enabled_only=False):
+            return [
+                {"keyword": "K12 education", "keyword_type": "primary"},
+                {"keyword": "summer childcare", "keyword_type": "secondary"},
+            ]
+
+        async def delete_growth_project_keywords(self, project_id):
+            calls["deleted"] += 1
+            return {"deleted": 2}
+
+        async def create_growth_project_keyword(self, payload):
+            calls["keywords"].append(payload)
+            return payload
+
+        async def update_growth_project(self, project_id, payload):
+            return {"id": project_id, **payload}
+
+    monkeypatch.setattr(research_router, "ResearchRepository", FakeRepository)
+    client = TestClient(app)
+
+    response = client.patch(
+        "/api/research/growth-projects/education_summer",
+        json={"scene_pack_id": 3, "scene_pack_keyword_mode": "replace"},
+    )
+
+    assert response.status_code == 200
+    assert calls["deleted"] == 1
+    assert [item["keyword"] for item in calls["keywords"]] == [
+        "K12 education",
+        "summer childcare",
+    ]
+
+
+def test_delete_growth_project_archives_project(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+
+    class FakeRepository:
+        async def list_growth_project_records(self, include_archived=False):
+            return [{"id": 7, "name": "Education Summer"}]
+
+        async def update_growth_project(self, project_id, payload):
+            return {"id": project_id, **payload}
+
+    monkeypatch.setattr(research_router, "ResearchRepository", FakeRepository)
+    client = TestClient(app)
+
+    response = client.delete("/api/research/growth-projects/education_summer")
+
+    assert response.status_code == 200
+    assert response.json()["deleted"] is True
+    assert response.json()["project"]["archived"] is True
 
 
 def test_global_defaults_route(monkeypatch):

@@ -298,3 +298,97 @@ async def test_search_creators_uses_text_fallback_when_required_tags_are_not_bui
     assert result["diagnostics"]["matched_tag_count"] == 1
     assert result["diagnostics"]["fallback_used"] is True
     assert result["results"][0]["creator_id"] == "creator-1"
+
+
+@pytest.mark.asyncio
+async def test_search_creators_requires_uncovered_query_terms_with_tag_matches():
+    class FakeRepository:
+        async def list_tag_definitions(self, vertical_id=None, enabled_only=True):
+            return [
+                {
+                    "id": 1,
+                    "vertical_id": 1,
+                    "tag_name": "K12教育",
+                    "keywords": ["K12"],
+                    "synonyms": [],
+                    "negative_keywords": [],
+                }
+            ]
+
+        async def list_verticals(self, enabled_only=True):
+            return [{"id": 1, "name": "education"}]
+
+        async def list_creator_profiles(self, platforms=None, limit=None):
+            return [
+                {
+                    "platform": "xhs",
+                    "creator_id": "creator-1",
+                    "display_name": "Teacher A",
+                    "recent_post_count_30d": 1,
+                    "tag_summary_json": {},
+                },
+                {
+                    "platform": "xhs",
+                    "creator_id": "creator-2",
+                    "display_name": "Teacher B",
+                    "recent_post_count_30d": 1,
+                    "tag_summary_json": {},
+                },
+            ]
+
+        async def list_entity_tags(
+            self,
+            entity_type=None,
+            entity_id=None,
+            platform=None,
+            vertical_id=None,
+            tag_ids=None,
+        ):
+            return [
+                {
+                    "platform": "xhs",
+                    "entity_id": "creator-1",
+                    "tag_id": 1,
+                    "confidence": 0.9,
+                    "evidence_json": {"term": "K12"},
+                },
+                {
+                    "platform": "xhs",
+                    "entity_id": "creator-2",
+                    "tag_id": 1,
+                    "confidence": 0.9,
+                    "evidence_json": {"term": "K12"},
+                },
+            ]
+
+        async def list_posts_by_creator(self, platform, creator_id, limit=None):
+            if creator_id == "creator-1":
+                return [
+                    {
+                        "platform": platform,
+                        "platform_post_id": "p1",
+                        "author_hash": creator_id,
+                        "title": "K12教育规划",
+                        "content": "单亲妈妈家庭学习记录",
+                        "engagement_json": {"liked_count": 80},
+                    }
+                ]
+            return [
+                {
+                    "platform": platform,
+                    "platform_post_id": "p2",
+                    "author_hash": creator_id,
+                    "title": "K12教育规划",
+                    "content": "普通家庭学习记录",
+                    "engagement_json": {"liked_count": 80},
+                }
+            ]
+
+    result = await search_creators(
+        FakeRepository(),
+        {"raw_query": "K12教育 + 单亲妈妈", "selected_vertical_id": 1, "platforms": ["xhs"]},
+    )
+
+    assert [item["creator_id"] for item in result["results"]] == ["creator-1"]
+    assert result["results"][0]["matched_tags"][0]["tag_id"] == 1
+    assert result["results"][0]["representative_posts"][0]["matched_terms"] == ["单亲妈妈"]

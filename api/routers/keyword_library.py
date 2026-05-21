@@ -4,10 +4,13 @@ from api.routers.research import require_research_database
 from research.growth_ai import expand_keywords_with_provider
 from research.keyword_library import export_scene_pack_keywords_csv
 from research.repository import ResearchRepository
+from research.tracking_packs import build_tracking_pack, create_daily_sampling_jobs
 from research.schemas import (
     AIKeywordExpansionRequest,
     ScenePackCreate,
     ScenePackKeywordCreate,
+    ScenePackKeywordUpdate,
+    ScenePackUpdate,
 )
 
 router = APIRouter(prefix="/keyword-library", tags=["keyword-library"])
@@ -29,12 +32,100 @@ async def list_scene_packs(vertical_id: int | None = None, enabled_only: bool = 
     return {"scene_packs": scene_packs}
 
 
+@router.patch("/scene-packs/{scene_pack_id}")
+async def update_scene_pack(scene_pack_id: int, request: ScenePackUpdate):
+    require_research_database()
+    result = await ResearchRepository().update_scene_pack(
+        scene_pack_id,
+        request.model_dump(mode="python", exclude_unset=True),
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Scene pack not found")
+    return result
+
+
+@router.delete("/scene-packs/{scene_pack_id}")
+async def delete_scene_pack(scene_pack_id: int):
+    require_research_database()
+    result = await ResearchRepository().delete_scene_pack(scene_pack_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Scene pack not found")
+    if not result.get("deleted"):
+        raise HTTPException(status_code=409, detail=result)
+    return result
+
+
+@router.get("/scene-packs/{scene_pack_id}/tracking-pack")
+async def get_tracking_pack(
+    scene_pack_id: int,
+    platform: list[str] | None = None,
+    daily_sample_limit_per_keyword: int = 150,
+):
+    require_research_database()
+    repository = ResearchRepository()
+    scene_pack = await repository.get_scene_pack(scene_pack_id)
+    if scene_pack is None:
+        raise HTTPException(status_code=404, detail="Scene pack not found")
+    keywords = await repository.list_scene_pack_keywords(
+        scene_pack_ids=[scene_pack_id],
+        enabled_only=True,
+    )
+    return {
+        "tracking_pack": build_tracking_pack(
+            scene_pack=scene_pack,
+            keywords=keywords,
+            platforms=platform,
+            daily_sample_limit_per_keyword=daily_sample_limit_per_keyword,
+        )
+    }
+
+
+@router.post("/scene-packs/{scene_pack_id}/sampling-jobs")
+async def create_scene_pack_sampling_jobs(
+    scene_pack_id: int,
+    payload: dict | None = None,
+):
+    require_research_database()
+    payload = payload or {}
+    try:
+        return await create_daily_sampling_jobs(
+            ResearchRepository(),
+            scene_pack_id=scene_pack_id,
+            platforms=payload.get("platforms"),
+            daily_sample_limit_per_keyword=int(payload.get("daily_sample_limit_per_keyword") or 150),
+            schedule_interval_minutes=int(payload.get("schedule_interval_minutes") or 1440),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.post("/keywords")
 async def create_scene_pack_keyword(request: ScenePackKeywordCreate):
     require_research_database()
     return await ResearchRepository().create_scene_pack_keyword(
         request.model_dump(mode="python")
     )
+
+
+@router.patch("/keywords/{keyword_id}")
+async def update_scene_pack_keyword(keyword_id: int, request: ScenePackKeywordUpdate):
+    require_research_database()
+    result = await ResearchRepository().update_scene_pack_keyword(
+        keyword_id,
+        request.model_dump(mode="python", exclude_unset=True),
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Scene pack keyword not found")
+    return result
+
+
+@router.delete("/keywords/{keyword_id}")
+async def delete_scene_pack_keyword(keyword_id: int):
+    require_research_database()
+    result = await ResearchRepository().delete_scene_pack_keyword(keyword_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Scene pack keyword not found")
+    return result
 
 
 @router.get("/keywords")

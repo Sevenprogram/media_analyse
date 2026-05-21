@@ -516,6 +516,11 @@ class ResearchScenePack(Base):
     description = Column(Text, nullable=True)
     weight = Column(Float, nullable=False, default=1.0)
     default_platforms = Column(json_column(), nullable=False, default=list)
+    primary_goal = Column(String(64), nullable=False, default="topic_discovery", index=True)
+    default_collection_depth = Column(String(32), nullable=False, default="standard")
+    default_ai_template = Column(String(128), nullable=True)
+    source = Column(String(32), nullable=False, default="custom", index=True)
+    archived = Column(Boolean, nullable=False, default=False, index=True)
     enabled = Column(Boolean, nullable=False, default=True, index=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(
@@ -547,6 +552,86 @@ class ResearchScenePackKeyword(Base):
     usage_flags_json = Column(json_column(), nullable=False, default=list)
     platform_overrides_json = Column(json_column(), nullable=False, default=dict)
     enabled = Column(Boolean, nullable=False, default=True, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class ResearchGrowthProject(Base):
+    __tablename__ = "research_growth_projects"
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_research_growth_project_name"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(200), nullable=False, index=True)
+    primary_goal = Column(String(64), nullable=False, default="topic_discovery", index=True)
+    scene_pack_id = Column(Integer, ForeignKey("research_scene_packs.id"), nullable=True, index=True)
+    platforms = Column(json_column(), nullable=False, default=list)
+    project_status = Column(String(32), nullable=False, default="active", index=True)
+    collection_status = Column(String(32), nullable=False, default="not_started", index=True)
+    comment_collection_enabled = Column(Boolean, nullable=False, default=True)
+    refresh_cadence = Column(String(32), nullable=False, default="off")
+    custom_interval_value = Column(Integer, nullable=True)
+    custom_interval_unit = Column(String(16), nullable=True)
+    sample_status = Column(String(64), nullable=False, default="sample_insufficient")
+    recommended_action = Column(String(64), nullable=False, default="start_collection")
+    opportunity_score = Column(Float, nullable=True)
+    last_collected_at = Column(DateTime(timezone=True), nullable=True)
+    archived = Column(Boolean, nullable=False, default=False, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class ResearchGrowthProjectKeyword(Base):
+    __tablename__ = "research_growth_project_keywords"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "keyword",
+            "keyword_type",
+            name="uq_research_growth_project_keyword",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("research_growth_projects.id"), nullable=False, index=True)
+    scene_pack_id = Column(Integer, ForeignKey("research_scene_packs.id"), nullable=True, index=True)
+    keyword = Column(String(255), nullable=False, index=True)
+    keyword_type = Column(String(32), nullable=False, index=True)
+    source = Column(String(32), nullable=False, default="scene_pack", index=True)
+    status = Column(String(32), nullable=False, default="active", index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class ResearchGrowthProjectCollectionPlan(Base):
+    __tablename__ = "research_growth_project_collection_plans"
+
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("research_growth_projects.id"), nullable=False, index=True)
+    platform = Column(String(32), nullable=False, index=True)
+    collection_mode = Column(String(32), nullable=False, default="search", index=True)
+    keyword_scope = Column(String(32), nullable=False, default="active")
+    enabled = Column(Boolean, nullable=False, default=True, index=True)
+    schedule_mode = Column(String(32), nullable=False, default="manual")
+    schedule_interval_minutes = Column(Integer, nullable=True)
+    last_run_at = Column(DateTime(timezone=True), nullable=True)
+    next_run_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(
         DateTime(timezone=True),

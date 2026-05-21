@@ -253,9 +253,13 @@ def _top_post_evidence(posts: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "platform_post_id": post.get("platform_post_id"),
             "title": post.get("title"),
             "content_type": post.get("content_type") or "unknown",
-            "publish_time": post.get("publish_time"),
+            "publish_time": _json_safe_time(post.get("publish_time")),
             "engagement_total": _post_engagement(post),
             "url": post.get("url"),
         }
         for post in sorted(posts, key=_post_engagement, reverse=True)[:10]
     ]
+
+
+def _json_safe_time(value: Any) -> Any:
+    return value.isoformat() if hasattr(value, "isoformat") else value

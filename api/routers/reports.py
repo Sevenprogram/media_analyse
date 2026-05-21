@@ -1,4 +1,5 @@
 import asyncio
+import json
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
@@ -115,6 +116,7 @@ async def get_boss_summary_report(
         platform=platform,
         default=[],
     )
+    creator_candidates = await _enrich_creator_candidates(repository, creator_candidates)
     competitors = await _maybe_call(repository, "list_competitor_accounts", default=[])
     tag_definitions = await _maybe_call(
         repository,
@@ -198,6 +200,7 @@ async def get_dashboard_summary(
         platform=platform,
         default=[],
     )
+    creator_candidates = await _enrich_creator_candidates(repository, creator_candidates)
     keyword_heat_snapshots = await _maybe_call(
         repository,
         "list_keyword_heat_snapshots",
@@ -212,6 +215,12 @@ async def get_dashboard_summary(
         "list_competitor_composition_snapshots",
         platform=platform,
         limit=50,
+        default=[],
+    )
+    competitor_accounts = await _maybe_call(
+        repository,
+        "list_competitor_accounts",
+        enabled_only=True,
         default=[],
     )
     content_snapshots = await _maybe_call(
@@ -233,14 +242,21 @@ async def get_dashboard_summary(
         limit=500,
         default=[],
     )
-    if not keyword_heat_snapshots and not content_snapshots:
+    if not keyword_heat_snapshots or not content_snapshots:
         fallback = await _build_dashboard_fallback_from_jobs(
             repository,
             jobs=jobs,
             platform=platform,
         )
-        keyword_heat_snapshots = fallback["keyword_heat_snapshots"]
-        content_snapshots = fallback["content_snapshots"]
+        if not keyword_heat_snapshots:
+            keyword_heat_snapshots = fallback["keyword_heat_snapshots"]
+        if not content_snapshots:
+            content_snapshots = fallback["content_snapshots"]
+    competitor_compositions = _merge_competitor_account_fallbacks(
+        competitor_compositions,
+        competitor_accounts,
+        platform=platform,
+    )
     return build_dashboard_summary(
         jobs=jobs,
         creator_candidates=creator_candidates,
@@ -347,6 +363,26 @@ async def _maybe_call(
         return default
 
 
+async def _enrich_creator_candidates(repository, candidates: list[dict]) -> list[dict]:
+    enriched = []
+    for item in candidates:
+        next_item = dict(item)
+        profile = await _maybe_call(
+            repository,
+            "get_creator_profile",
+            item.get("platform"),
+            item.get("creator_id"),
+            default=None,
+            timeout_seconds=1.0,
+        )
+        if profile:
+            for key in ("display_name", "profile_url", "bio", "follower_count", "post_count"):
+                if profile.get(key) not in (None, ""):
+                    next_item[key] = profile[key]
+        enriched.append(next_item)
+    return enriched
+
+
 async def _build_dashboard_fallback_from_jobs(
     repository,
     *,
@@ -356,11 +392,11 @@ async def _build_dashboard_fallback_from_jobs(
     keyword_counts: Counter[str] = Counter()
     keyword_latest_platform: dict[str, str | None] = {}
     content_snapshots: list[dict] = []
-    recent_jobs = [
-        item
-        for item in jobs
-        if not platform or platform in (item.get("platforms") or [])
-    ][:5]
+    recent_jobs = sorted(
+        [item for item in jobs if _job_matches_platform(item, platform)],
+        key=_job_fallback_priority,
+    )[:20]
+    filled_snapshots = 0
 
     for job in recent_jobs:
         posts = await _maybe_call(
@@ -382,6 +418,7 @@ async def _build_dashboard_fallback_from_jobs(
             comments = [item for item in comments if item.get("platform") == platform]
         if not posts and not comments:
             continue
+        filled_snapshots += 1
         chart = build_chart_summary(posts=posts, comments=comments, ai_results=[])
         top_posts = sorted(
             posts,
@@ -404,13 +441,12 @@ async def _build_dashboard_fallback_from_jobs(
                 "keyword_distribution": keyword_distribution,
                 "snapshot_date": datetime.now(timezone.utc).date().isoformat(),
                 "evidence": {
-                    "top_posts": [
-                        {"title": item.get("title") or item.get("platform_post_id") or "未命名内容"}
-                        for item in top_posts
-                    ]
+                    "top_posts": [_fallback_post_sample(item) for item in top_posts]
                 },
             }
         )
+        if filled_snapshots >= 5:
+            break
 
     keyword_heat_snapshots = [
         {
@@ -432,6 +468,53 @@ async def _build_dashboard_fallback_from_jobs(
     }
 
 
+def _merge_competitor_account_fallbacks(
+    snapshots: list[dict],
+    accounts: list[dict],
+    *,
+    platform: str | None,
+) -> list[dict]:
+    account_by_id = {item.get("id"): item for item in accounts if item.get("id") is not None}
+    merged = []
+    represented_ids = set()
+    for snapshot in snapshots:
+        item = dict(snapshot)
+        competitor_id = item.get("competitor_id")
+        represented_ids.add(competitor_id)
+        account = account_by_id.get(competitor_id)
+        if account:
+            item.setdefault("display_name", account.get("display_name"))
+            item.setdefault("competitor_name", account.get("display_name") or account.get("creator_id"))
+            item.setdefault("profile_url", account.get("profile_url"))
+        merged.append(item)
+
+    for account in accounts:
+        if platform and account.get("platform") != platform:
+            continue
+        if account.get("id") in represented_ids:
+            continue
+        merged.append(
+            {
+                "competitor_id": account.get("id"),
+                "platform": account.get("platform"),
+                "display_name": account.get("display_name"),
+                "competitor_name": account.get("display_name") or account.get("creator_id") or f"友商 #{account.get('id')}",
+                "profile_url": account.get("profile_url"),
+                "total_flow_count": 0,
+                "hot_post_rate": 0.0,
+                "snapshot_date": datetime.now(timezone.utc).date().isoformat(),
+                "sample_count": 0,
+                "missing_execution_parameters": not account.get("profile_url"),
+                "evidence": {
+                    "items": [
+                        "已配置友商账号，但还没有公开流量快照；请立即获取数据或重建快照。"
+                    ]
+                },
+            }
+        )
+    return merged
+
+
 def _engagement_total(engagement: dict) -> float:
     total = 0.0
     for key in (
@@ -450,6 +533,18 @@ def _engagement_total(engagement: dict) -> float:
     return total
 
 
+def _fallback_post_sample(item: dict) -> dict:
+    return {
+        "title": item.get("title") or item.get("platform_post_id") or "未命名内容",
+        "body": item.get("content"),
+        "platform": item.get("platform"),
+        "platform_post_id": item.get("platform_post_id"),
+        "url": item.get("url"),
+        "publish_time": item.get("publish_time"),
+        "engagement_json": item.get("engagement_json") or {},
+    }
+
+
 def _estimate_hot_post_rate(posts: list[dict]) -> float:
     if not posts:
         return 0.0
@@ -458,3 +553,26 @@ def _estimate_hot_post_rate(posts: list[dict]) -> float:
         if _engagement_total(item.get("engagement_json") or {}) >= 100:
             hot += 1
     return hot / len(posts)
+
+
+def _job_matches_platform(job: dict, platform: str | None) -> bool:
+    if not platform:
+        return True
+    platforms = job.get("platforms") or []
+    if isinstance(platforms, str):
+        try:
+            platforms = json.loads(platforms)
+        except json.JSONDecodeError:
+            platforms = [platforms]
+    return platform in platforms
+
+
+def _job_fallback_priority(job: dict) -> tuple[int, int, int]:
+    status_priority = {
+        "completed": 0,
+        "running": 1,
+        "queued": 3,
+        "pending": 4,
+    }.get(str(job.get("status") or ""), 2)
+    mode_priority = 0 if job.get("collection_mode") == "search" else 1
+    return (status_priority, mode_priority, -int(job.get("id") or 0))

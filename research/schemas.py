@@ -127,6 +127,94 @@ class ResearchJobCreate(BaseModel):
         return self
 
 
+class GrowthProjectCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    scene_pack_id: int | None = Field(default=None, ge=1)
+    primary_goal: Literal[
+        "topic_discovery",
+        "creator_discovery",
+        "keyword_expansion",
+        "competitor_monitoring",
+        "mixed_research",
+    ] = "topic_discovery"
+    platforms: list[str] = Field(default_factory=list)
+    keywords: list[str] = Field(default_factory=list)
+    collection_depth: Literal["lightweight", "standard", "deep"] = "standard"
+    refresh_cadence: Literal["off", "daily", "three_days", "weekly"] = "off"
+    auto_ai_analysis: bool = True
+    start_immediately: bool = False
+
+    @field_validator("platforms")
+    @classmethod
+    def validate_growth_project_platforms(cls, value: list[str]) -> list[str]:
+        unsupported = sorted(set(value) - SUPPORTED_RESEARCH_PLATFORMS)
+        if unsupported:
+            raise ValueError(f"Unsupported platform(s): {', '.join(unsupported)}")
+        return value
+
+    @field_validator("keywords")
+    @classmethod
+    def strip_growth_project_keywords(cls, value: list[str]) -> list[str]:
+        return _strip_string_list(value)
+
+    @model_validator(mode="after")
+    def validate_growth_project_inputs(self):
+        if self.scene_pack_id is None and not self.keywords:
+            raise ValueError("growth project requires keywords or scene_pack_id")
+        if self.scene_pack_id is None and not self.platforms:
+            raise ValueError("growth project requires platforms or scene_pack_id")
+        return self
+
+
+class GrowthProjectUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    primary_goal: Literal[
+        "topic_discovery",
+        "creator_discovery",
+        "keyword_expansion",
+        "competitor_monitoring",
+        "mixed_research",
+    ] | None = None
+    platforms: list[str] | None = None
+    scene_pack_id: int | None = Field(default=None, ge=1)
+    scene_pack_keyword_mode: Literal["replace", "append", "link_only"] | None = None
+    comment_collection_enabled: bool | None = None
+    refresh_cadence: Literal[
+        "off",
+        "daily",
+        "three_days",
+        "weekly",
+        "custom_hours",
+        "custom_days",
+    ] | None = None
+    custom_interval_value: int | None = Field(default=None, ge=1)
+    custom_interval_unit: Literal["hours", "days"] | None = None
+
+    @field_validator("platforms")
+    @classmethod
+    def validate_optional_growth_project_platforms(
+        cls, value: list[str] | None
+    ) -> list[str] | None:
+        if value is None:
+            return None
+        unsupported = sorted(set(value) - SUPPORTED_RESEARCH_PLATFORMS)
+        if unsupported:
+            raise ValueError(f"Unsupported platform(s): {', '.join(unsupported)}")
+        return value
+
+    @model_validator(mode="after")
+    def validate_custom_interval(self):
+        if self.refresh_cadence == "custom_hours":
+            if self.custom_interval_value is None:
+                raise ValueError("custom_hours requires custom_interval_value")
+            self.custom_interval_unit = "hours"
+        if self.refresh_cadence == "custom_days":
+            if self.custom_interval_value is None:
+                raise ValueError("custom_days requires custom_interval_value")
+            self.custom_interval_unit = "days"
+        return self
+
+
 class ResearchJobUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     topic: str | None = Field(default=None, min_length=1, max_length=500)
@@ -435,6 +523,17 @@ class ScenePackCreate(BaseModel):
     description: str | None = None
     weight: float = Field(default=1.0, ge=0)
     default_platforms: list[str] = Field(default_factory=list)
+    primary_goal: Literal[
+        "topic_discovery",
+        "creator_discovery",
+        "keyword_expansion",
+        "competitor_monitoring",
+        "mixed_research",
+    ] = "topic_discovery"
+    default_collection_depth: Literal["lightweight", "standard", "deep"] = "standard"
+    default_ai_template: str | None = None
+    source: Literal["system", "custom", "project"] = "custom"
+    archived: bool = False
     enabled: bool = True
 
     @field_validator("default_platforms")
@@ -451,6 +550,17 @@ class ScenePackUpdate(BaseModel):
     description: str | None = None
     weight: float | None = Field(default=None, ge=0)
     default_platforms: list[str] | None = None
+    primary_goal: Literal[
+        "topic_discovery",
+        "creator_discovery",
+        "keyword_expansion",
+        "competitor_monitoring",
+        "mixed_research",
+    ] | None = None
+    default_collection_depth: Literal["lightweight", "standard", "deep"] | None = None
+    default_ai_template: str | None = None
+    source: Literal["system", "custom", "project"] | None = None
+    archived: bool | None = None
     enabled: bool | None = None
 
     @field_validator("default_platforms")
@@ -483,6 +593,30 @@ class ScenePackKeywordCreate(BaseModel):
     @field_validator("platform")
     @classmethod
     def validate_optional_keyword_platform(cls, value: str | None) -> str | None:
+        if value is not None and value not in SUPPORTED_RESEARCH_PLATFORMS:
+            raise ValueError(f"Unsupported platform: {value}")
+        return value
+
+
+class ScenePackKeywordUpdate(BaseModel):
+    scene_pack_id: int | None = Field(default=None, ge=1)
+    keyword: str | None = Field(default=None, min_length=1, max_length=255)
+    keyword_type: KeywordType | None = None
+    platform: str | None = None
+    weight: float | None = Field(default=None, ge=0)
+    reason: str | None = None
+    usage_flags: list[str] | None = None
+    platform_overrides: dict[str, Any] | None = None
+    enabled: bool | None = None
+
+    @field_validator("keyword")
+    @classmethod
+    def strip_optional_scene_keyword(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @field_validator("platform")
+    @classmethod
+    def validate_optional_update_keyword_platform(cls, value: str | None) -> str | None:
         if value is not None and value not in SUPPORTED_RESEARCH_PLATFORMS:
             raise ValueError(f"Unsupported platform: {value}")
         return value
@@ -653,6 +787,28 @@ class ContentTrackerCreate(BaseModel):
         if not self.included_keywords and not self.seed_refs:
             raise ValueError("content tracker requires included_keywords or seed_refs")
         return self
+
+
+class ContentTrackingAIAnalysisRequest(BaseModel):
+    title: str | None = None
+    text: str = Field(min_length=1)
+    platform: str | None = None
+    keywords: list[str] = Field(default_factory=list)
+    candidates: list[dict[str, Any]] = Field(default_factory=list)
+    comments: list[dict[str, Any]] = Field(default_factory=list)
+    provider_config_id: int | None = Field(default=None, ge=1)
+
+    @field_validator("platform")
+    @classmethod
+    def validate_optional_ai_content_platform(cls, value: str | None) -> str | None:
+        if value is not None and value not in SUPPORTED_RESEARCH_PLATFORMS:
+            raise ValueError(f"Unsupported platform: {value}")
+        return value
+
+    @field_validator("keywords")
+    @classmethod
+    def strip_ai_content_keywords(cls, value: list[str]) -> list[str]:
+        return _strip_string_list(value)
 
 
 class TaggingRunRequest(BaseModel):

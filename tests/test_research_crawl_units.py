@@ -133,6 +133,26 @@ async def test_worker_runs_claimed_unit_to_completion():
 
 
 @pytest.mark.asyncio
+async def test_worker_can_scope_claim_to_specific_job():
+    unit = build_crawl_units_for_job(_job())[0] | {
+        "id": 10,
+        "attempt_count": 1,
+        "max_attempts": 3,
+    }
+    repository = FakeWorkerRepository(job=_job(), unit=unit, all_finished=True)
+    worker = ResearchWorker(
+        repository=repository,
+        crawler_manager=FakeCrawlerManager(),
+        worker_id="worker-1",
+        backfill=FakeBackfill(),
+    )
+
+    await worker.run_once(job_id=123)
+
+    assert repository.claimed_job_id == 123
+
+
+@pytest.mark.asyncio
 async def test_worker_retries_failed_unit_until_max_attempts():
     unit = build_crawl_units_for_job(_job())[0] | {
         "id": 10,
@@ -219,7 +239,8 @@ class FakeWorkerRepository:
         self.events = []
         self.heartbeats = []
 
-    async def claim_next_crawl_unit(self, *, worker_id):
+    async def claim_next_crawl_unit(self, *, worker_id, job_id=None):
+        self.claimed_job_id = job_id
         return self.unit
 
     async def get_job(self, job_id):

@@ -80,6 +80,11 @@ class TikHubClient:
                 if attempt >= self.max_retries:
                     raise
                 await asyncio.sleep(self.retry_backoff * (attempt + 1))
+            except TikHubValidationError as exc:
+                last_error = exc
+                if attempt >= self.max_retries or not _is_retryable_validation_error(str(exc)):
+                    raise
+                await asyncio.sleep(self.retry_backoff * (attempt + 1))
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_error = exc
                 if attempt >= self.max_retries:
@@ -99,6 +104,8 @@ class TikHubClient:
             raise TikHubRateLimitError("TikHub rate limit reached.")
         if response.status_code in (400, 422):
             raise TikHubValidationError(response.text)
+        if response.status_code == 404:
+            raise TikHubValidationError(f"TikHub endpoint not found: {response.text}")
         if response.status_code >= 500:
             raise TikHubUpstreamError(response.text)
 
@@ -124,3 +131,11 @@ class TikHubClient:
         if params is None:
             return None
         return {key: value for key, value in params.items() if value not in (None, "")}
+
+
+def _is_retryable_validation_error(message: str) -> bool:
+    return (
+        "Please retry" in message
+        or "请求失败，请重试" in message
+        or "Request failed" in message
+    )

@@ -264,7 +264,7 @@ class ResearchExecutionManager:
                 message=f"Crawler manager rejected start for {platform}",
                 stats=None,
             )
-            return
+            raise RuntimeError(f"Crawler manager rejected start for {platform}")
 
         await self._wait_for_process()
 
@@ -336,8 +336,11 @@ class ResearchExecutionManager:
         return enabled_requests
 
     async def _wait_for_process(self) -> None:
-        while self.crawler_manager.process and self.crawler_manager.process.poll() is None:
+        process = self.crawler_manager.process
+        while process and process.poll() is None:
             await asyncio.sleep(1)
+        if process and process.returncode not in (0, None):
+            raise RuntimeError(f"Crawler exited with code: {process.returncode}")
 
 
 def _to_platform_enum(platform: str) -> PlatformEnum:

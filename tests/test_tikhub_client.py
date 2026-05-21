@@ -64,3 +64,36 @@ async def test_client_maps_http_errors(monkeypatch, status_code, error_type):
     with pytest.raises(error_type):
         await client.request("GET", "/api/v1/example")
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_client_retries_retryable_validation_error(monkeypatch):
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(
+                400,
+                json={
+                    "detail": {
+                        "code": 400,
+                        "message": "Request failed. Please retry.",
+                    }
+                },
+            )
+        return httpx.Response(200, json={"code": 200, "data": {"ok": True}})
+
+    monkeypatch.setenv("TIKHUB_API_KEY", "secret")
+    client = TikHubClient(
+        transport=httpx.MockTransport(handler),
+        max_retries=1,
+        retry_backoff=0,
+    )
+
+    data = await client.request("GET", "/api/v1/example")
+    await client.close()
+
+    assert calls == 2
+    assert data == {"ok": True}

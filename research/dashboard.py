@@ -53,6 +53,16 @@ def build_dashboard_summary(
         ignored_opportunities=ignored_opportunities,
         monitoring=monitoring,
     )
+    type_decisions = _build_type_decisions(
+        opportunities=opportunities,
+        watchlist=watchlist,
+        monitoring=monitoring,
+        platform=platform,
+    )
+    type_diagnostics = _build_type_diagnostics(
+        opportunities=opportunities,
+        watchlist=watchlist,
+    )
     decision = _build_decision(
         opportunities=opportunities,
         watchlist=watchlist,
@@ -64,11 +74,13 @@ def build_dashboard_summary(
         "decision": decision,
         "actions": _build_actions(opportunities=top_opportunities, decision=decision),
         "monitoring": monitoring,
-        "opportunities": top_opportunities,
+        "opportunities": opportunities,
         "top_opportunities": top_opportunities,
-        "watchlist": watchlist[:3],
+        "watchlist": watchlist,
         "ignored_opportunities": ignored_opportunities,
         "diagnostics": diagnostics,
+        "type_decisions": type_decisions,
+        "type_diagnostics": type_diagnostics,
         "scoring_profile": {"weights": SCORING_WEIGHTS, "window": "7d_plus_24h"},
     }
 
@@ -81,8 +93,12 @@ def _build_monitoring(
     competitor_compositions: list[dict[str, Any]],
     content_snapshots: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    running_jobs = sum(1 for item in jobs if item.get("status") == "running")
-    errors = sum(1 for item in jobs if item.get("status") in {"failed", "error"})
+    status_counts: dict[str, int] = {}
+    for item in jobs:
+        status = str(item.get("status") or "unknown")
+        status_counts[status] = status_counts.get(status, 0) + 1
+    running_jobs = status_counts.get("running", 0)
+    errors = sum(status_counts.get(status, 0) for status in ("failed", "error"))
     today_collected = sum(int(item.get("total_content_count") or 0) for item in content_snapshots)
     today_collected += sum(int(item.get("total_flow_count") or 0) for item in competitor_compositions)
     realtime_jobs = sum(
@@ -95,6 +111,10 @@ def _build_monitoring(
     )
     return {
         "running_jobs": running_jobs,
+        "pending_jobs": status_counts.get("pending", 0),
+        "completed_jobs": status_counts.get("completed", 0),
+        "failed_jobs": errors,
+        "job_status_counts": status_counts,
         "today_collected": today_collected,
         "errors": errors,
         "monitor_pools": len(monitor_pools),
@@ -118,20 +138,20 @@ def _build_decision(
             "confidence": "low",
             "sample_status": "insufficient",
             "sample_summary": "24h 与 7d 样本不足，暂不输出确定性判断。",
-            "risk_notes": ["样本不足，暂不输出确定性推流判断。"],
+            "risk_notes": ["样本不足，暂不输出确定性推荐。"],
             "evidence_count": evidence_count,
         }
 
     top = opportunities[0]
     sample_status = "enough" if evidence_count >= 3 else "limited"
     confidence = "high" if top["score"] >= 85 and evidence_count >= 6 else "medium"
-    platform_text = f"{platform} 骞冲彴" if platform else "褰撳墠骞冲彴"
+    platform_text = f"{platform} 平台" if platform else "当前平台"
     return {
-        "headline": f"{platform_text}浠婃棩浼樺厛鍏虫敞銆{top['name']}銆嶏紝{top['reason']}",
+        "headline": f"{platform_text}今日优先关注「{top['display_title']}」，{top['reason']}",
         "confidence": confidence,
         "sample_status": sample_status,
-        "sample_summary": f"宸插舰鎴?{len(opportunities)} 鏉℃満浼氱嚎绱紝璇佹嵁 {evidence_count} 鏉°€?",
-        "risk_notes": [] if sample_status == "enough" else ["璇佹嵁鏁伴噺鏈夐檺锛屾墽琛屽墠寤鸿鏌ョ湅璇︽儏銆?"],
+        "sample_summary": f"已形成 {len(opportunities)} 条机会线索，证据 {evidence_count} 条。",
+        "risk_notes": [] if sample_status == "enough" else ["证据样本偏少，建议先观察样本覆盖和更新时间。"],
         "evidence_count": evidence_count,
     }
 
@@ -145,17 +165,17 @@ def _build_actions(
         return {
             "do_now": [
                 {
-                    "title": "鎵ц涓€娆″疄鏃跺彂鐜?",
-                    "reason": "褰撳墠鏍锋湰涓嶈冻锛岄渶瑕佸厛閲囬泦鍏抽敭璇嶅拰杈句汉鍩虹鏁版嵁銆?",
+                    "title": "补充一轮实时发现样本",
+                    "reason": "当前样本不足，先采集关键词、内容、达人样本后再判断机会。",
                     "target_type": "keyword",
                     "action": "search_now",
-                    "payload": {"keywords": ["K12鏁欒偛", "鍗曚翰濡堝"]},
+                    "payload": {"keywords": ["K12教育", "单亲妈妈"]},
                 }
             ],
             "watch_today": [],
             "defer": [
                 {
-                    "title": "鏆傜紦纭畾鎬ф姇鏀惧垽鏂?",
+                    "title": "暂缓生成增长报告",
                     "reason": decision["sample_summary"],
                     "target_type": "report",
                     "action": "view_detail",
@@ -166,7 +186,7 @@ def _build_actions(
 
     do_now = [
         {
-            "title": f"澶勭悊 {item['name']}",
+            "title": f"跟进 {item['display_title']}",
             "reason": item["reason"],
             "target_type": item["type"],
             "action": _last_action_kind(item),
@@ -176,7 +196,7 @@ def _build_actions(
     ]
     watch_today = [
         {
-            "title": f"瑙傚療 {item['name']}",
+            "title": f"观察 {item['display_title']}",
             "reason": item["reason"],
             "target_type": item["type"],
             "action": "view_detail",
@@ -185,6 +205,101 @@ def _build_actions(
         for item in opportunities[2:5]
     ]
     return {"do_now": do_now, "watch_today": watch_today, "defer": []}
+
+
+def _build_type_decisions(
+    *,
+    opportunities: list[dict[str, Any]],
+    watchlist: list[dict[str, Any]],
+    monitoring: dict[str, Any],
+    platform: str | None,
+) -> dict[str, dict[str, Any]]:
+    return {
+        opportunity_type: _build_single_type_decision(
+            opportunities=[item for item in opportunities if item.get("type") == opportunity_type],
+            watchlist=[item for item in watchlist if item.get("type") == opportunity_type],
+            platform=platform,
+            opportunity_type=opportunity_type,
+        )
+        for opportunity_type in ("keyword", "content", "creator", "competitor")
+    }
+
+
+def _build_type_diagnostics(
+    *,
+    opportunities: list[dict[str, Any]],
+    watchlist: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    labels = {
+        "keyword": "关键词",
+        "content": "内容",
+        "creator": "达人",
+        "competitor": "友商动作",
+    }
+    diagnostics: dict[str, list[dict[str, Any]]] = {}
+    for opportunity_type, label in labels.items():
+        type_opportunities = [item for item in opportunities if item.get("type") == opportunity_type]
+        type_watchlist = [item for item in watchlist if item.get("type") == opportunity_type]
+        entries: list[dict[str, Any]] = []
+        if not type_opportunities and not type_watchlist:
+            entries.append(
+                {
+                    "code": f"no_{opportunity_type}_opportunities",
+                    "title": f"暂无{label}机会",
+                    "body": f"当前还没有可展示的{label}样本；请先完成采集或刷新快照。",
+                }
+            )
+        if type_watchlist:
+            entries.append(
+                {
+                    "code": f"{opportunity_type}_watchlist_low_confidence",
+                    "title": f"{label}存在待补证据项",
+                    "body": f"{len(type_watchlist)} 条{label}机会因样本少、证据不足或数据过旧进入观察池。",
+                }
+            )
+        diagnostics[opportunity_type] = entries
+    return diagnostics
+
+
+def _build_single_type_decision(
+    *,
+    opportunities: list[dict[str, Any]],
+    watchlist: list[dict[str, Any]],
+    platform: str | None,
+    opportunity_type: str,
+) -> dict[str, Any]:
+    labels = {
+        "keyword": "关键词",
+        "content": "内容",
+        "creator": "达人",
+        "competitor": "友商动作",
+    }
+    label = labels.get(opportunity_type, "机会")
+    ranked = opportunities or watchlist
+    evidence_count = sum(int(item.get("evidence_count") or 0) for item in ranked)
+    if not ranked:
+        return {
+            "headline": f"当前暂无可判断的{label}机会。",
+            "confidence": "low",
+            "sample_status": "insufficient",
+            "sample_summary": f"还没有形成{label}样本，请先采集或重建对应快照。",
+            "risk_notes": [f"{label}样本不足，暂不输出确定性推荐。"],
+            "evidence_count": 0,
+        }
+
+    top = ranked[0]
+    sample_count = int((top.get("sample_scope") or {}).get("sample_count") or 0)
+    sample_status = "enough" if opportunities and evidence_count >= 3 and sample_count >= 10 else "limited"
+    confidence = "high" if top.get("confidence") == "high" else "medium" if opportunities else "low"
+    platform_text = f"{platform} 平台" if platform else "当前平台"
+    return {
+        "headline": f"{platform_text}{label}优先关注「{top.get('display_title') or top.get('name')}」。",
+        "confidence": confidence,
+        "sample_status": sample_status,
+        "sample_summary": f"{label}共 {len(ranked)} 条线索，证据 {evidence_count} 条。",
+        "risk_notes": [] if sample_status == "enough" else [f"{label}证据仍偏少，建议先补样本再执行。"],
+        "evidence_count": evidence_count,
+    }
 
 
 def _build_opportunities(
@@ -200,11 +315,12 @@ def _build_opportunities(
     items.extend(_competitor_opportunity(item) for item in competitor_compositions)
     items.extend(_content_opportunity(item) for item in content_snapshots)
     items.sort(key=lambda item: item["score"], reverse=True)
-    return items[:20]
+    return items
 
 
 def _creator_opportunity(item: dict[str, Any]) -> dict[str, Any]:
-    name = item.get("display_name") or item.get("creator_id") or "鏈懡鍚嶈揪浜?"
+    creator_id = str(item.get("creator_id") or "")
+    name = item.get("display_name") or creator_id or "未命名达人"
     platform = item.get("platform")
     evidence = item.get("evidence") or []
     evidence_count = _evidence_count(evidence)
@@ -217,12 +333,20 @@ def _creator_opportunity(item: dict[str, Any]) -> dict[str, Any]:
         "competition_gap": _clamp(70 + (100 - float(item.get("match_score") or 0)) * 0.1),
         "actionability": _clamp(65 + float(item.get("recent_post_count_30d") or 0) * 1.5),
     }
-    payload = {"platform": platform, "creator_id": item.get("creator_id"), "display_name": name}
-    summary = [f"鍖归厤鍒?{item.get('match_score', 0)}銆?"]
+    payload = {
+        "platform": platform,
+        "creator_id": creator_id,
+        "display_name": name,
+        "profile_url": _creator_profile_url(platform, creator_id, item),
+    }
+    summary = [f"匹配分 {round(float(item.get('match_score') or 0), 1)}，近 30 天内容 {sample_count} 条。"]
     return _standard_opportunity(
-        opportunity_id=f"creator:{platform}:{item.get('creator_id')}",
+        opportunity_id=f"creator:{platform}:{creator_id}",
         opportunity_type="creator",
         name=name,
+        display_title=name,
+        display_subtitle=f"{_label_platform(platform)}达人 · {creator_id}" if creator_id else f"{_label_platform(platform)}达人",
+        target_url=payload["profile_url"],
         platform=platform,
         breakdown=breakdown,
         risk_tags=_risk_tags(
@@ -243,13 +367,13 @@ def _creator_opportunity(item: dict[str, Any]) -> dict[str, Any]:
         evidence=evidence,
         evidence_count=evidence_count,
         payload=payload,
-        reason="涓昏瘝鍖归厤杈冮珮涓旇繎鏈熸寔缁彂甯栵紝閫傚悎浼樺厛澶嶆牳骞跺姞鍏ョ洃鎺с€?",
+        reason="主词匹配较高且近期持续发布，适合优先复核并加入监控。",
         samples=_samples_from_evidence(evidence, default_type="creator", platform=platform),
     )
 
 
 def _keyword_opportunity(item: dict[str, Any]) -> dict[str, Any]:
-    keyword = item.get("keyword") or item.get("tag_name") or str(item.get("tag_id") or "鍏抽敭璇?")
+    keyword = item.get("keyword") or item.get("tag_name") or str(item.get("tag_id") or "关键词机会")
     platform = item.get("platform")
     evidence = item.get("evidence") or {}
     evidence_count = _evidence_count(evidence)
@@ -265,11 +389,14 @@ def _keyword_opportunity(item: dict[str, Any]) -> dict[str, Any]:
         "actionability": _keyword_actionability(item),
     }
     payload = {"platform": platform, "keyword": keyword}
-    summary = [f"骞冲彴淇″彿锛歿{item.get('platform_signal') or 'normal'}銆?"]
+    summary = [f"热度 {round(heat_score, 1)}，24h 增长 {round(growth_score, 1)}，平台信号 {item.get('platform_signal') or 'normal'}。"]
     return _standard_opportunity(
         opportunity_id=f"keyword:{platform}:{keyword}",
         opportunity_type="keyword",
         name=keyword,
+        display_title=str(keyword),
+        display_subtitle=f"{_label_platform(platform)}关键词 · 样本 {sample_count}",
+        target_url=None,
         platform=platform,
         breakdown=breakdown,
         risk_tags=_risk_tags(
@@ -290,17 +417,17 @@ def _keyword_opportunity(item: dict[str, Any]) -> dict[str, Any]:
         evidence=evidence,
         evidence_count=evidence_count,
         payload=payload,
-        reason=f"鐑害鍒?{round(heat_score, 1)}锛屽钩鍙颁俊鍙蜂负 {item.get('platform_signal') or 'normal'}銆?",
+        reason=f"热度分 {round(heat_score, 1)}，增长分 {round(growth_score, 1)}，值得马上补样本验证。",
         samples=_samples_from_evidence(evidence, default_type="post", platform=platform),
     )
 
 
 def _competitor_opportunity(item: dict[str, Any]) -> dict[str, Any]:
     platform = item.get("platform")
-    name = f"鍙嬪晢 #{item.get('competitor_id')}"
+    name = item.get("display_name") or item.get("competitor_name") or f"友商 #{item.get('competitor_id')}"
     evidence = item.get("evidence") or {}
     top_posts = evidence.get("top_posts") or [] if isinstance(evidence, dict) else []
-    evidence_count = len(top_posts)
+    evidence_count = len(top_posts) or _evidence_count(evidence)
     sample_count = _sample_count(item, evidence, default=int(item.get("total_flow_count") or 30))
     platforms = _platforms(item)
     stale = _is_stale(item)
@@ -313,11 +440,14 @@ def _competitor_opportunity(item: dict[str, Any]) -> dict[str, Any]:
         "actionability": _clamp(55 + evidence_count * 12),
     }
     payload = {"platform": platform, "competitor_id": item.get("competitor_id")}
-    summary = [f"鎬讳簰鍔?{item.get('total_flow_count', 0)}锛岀垎娆剧巼 {item.get('hot_post_rate', 0)}銆?"]
+    summary = [f"友商内容流量 {int(total_flow_count)}，高互动率 {round(hot_post_rate * 100, 1)}%。"]
     return _standard_opportunity(
         opportunity_id=f"competitor:{platform}:{item.get('competitor_id')}",
         opportunity_type="competitor",
         name=name,
+        display_title=str(name),
+        display_subtitle=f"{_label_platform(platform)}友商动作",
+        target_url=None,
         platform=platform,
         breakdown=breakdown,
         risk_tags=_risk_tags(
@@ -338,16 +468,22 @@ def _competitor_opportunity(item: dict[str, Any]) -> dict[str, Any]:
         evidence=evidence,
         evidence_count=evidence_count,
         payload=payload,
-        reason="鍙嬪晢娴侀噺缁勬垚鍑虹幇鍙鐩樻牱鏈紝寤鸿鏌ョ湅鍏抽敭璇嶅拰鐖嗘鍐呭缁撴瀯銆?",
-        samples=_samples_from_evidence(top_posts, default_type="competitor", platform=platform),
+        reason="友商近期内容供给和互动较集中，适合拆解选题与发布节奏。",
+        samples=_samples_from_evidence(top_posts or evidence, default_type="competitor", platform=platform),
     )
 
 
 def _content_opportunity(item: dict[str, Any]) -> dict[str, Any]:
     platform = item.get("platform")
-    name = f"鍐呭杩借釜 #{item.get('tracker_id')}"
     evidence = item.get("evidence") or {}
     top_posts = evidence.get("top_posts") or [] if isinstance(evidence, dict) else []
+    first_post = top_posts[0] if top_posts and isinstance(top_posts[0], dict) else {}
+    name = (
+        first_post.get("title")
+        or item.get("title")
+        or item.get("tracker_name")
+        or f"内容机会 #{item.get('tracker_id')}"
+    )
     keywords = item.get("keyword_distribution") or {}
     evidence_count = len(top_posts) or _evidence_count(keywords)
     sample_count = _sample_count(item, evidence, default=int(item.get("total_content_count") or 30))
@@ -366,11 +502,14 @@ def _content_opportunity(item: dict[str, Any]) -> dict[str, Any]:
         "tracker_id": item.get("tracker_id"),
         "keywords": list(keywords.keys())[:5] if isinstance(keywords, dict) else [],
     }
-    summary = [f"鍖归厤鍐呭 {item.get('total_content_count', 0)} 鏉°€?"]
+    summary = [f"同类内容 {int(total_content_count)} 条，高互动率 {round(hot_post_rate * 100, 1)}%。"]
     return _standard_opportunity(
         opportunity_id=f"content:{platform}:{item.get('tracker_id')}",
         opportunity_type="content",
         name=name,
+        display_title=str(name),
+        display_subtitle=f"{_label_platform(platform)}内容 · 样本 {sample_count}",
+        target_url=first_post.get("url"),
         platform=platform,
         breakdown=breakdown,
         risk_tags=_risk_tags(
@@ -391,7 +530,7 @@ def _content_opportunity(item: dict[str, Any]) -> dict[str, Any]:
         evidence=evidence,
         evidence_count=evidence_count,
         payload=payload,
-        reason="鍚岀被鍐呭宸叉湁鍙瀵熸牱鏈紝閫傚悎缁х画杩借釜鍏抽敭璇嶅懡涓拰鐖嗘缁撴瀯銆?",
+        reason="同类优质内容供给不足且关键词可执行，适合快速复刻内容角度。",
         samples=_samples_from_evidence(top_posts, default_type="content", platform=platform),
     )
 
@@ -401,6 +540,9 @@ def _standard_opportunity(
     opportunity_id: str,
     opportunity_type: str,
     name: str,
+    display_title: str,
+    display_subtitle: str,
+    target_url: str | None,
     platform: str | None,
     breakdown: dict[str, float],
     risk_tags: list[str],
@@ -417,10 +559,14 @@ def _standard_opportunity(
     samples: list[dict[str, Any]],
 ) -> dict[str, Any]:
     score = _weighted_score(breakdown)
+    payload = {**payload, "display_title": display_title, "target_url": target_url}
     return {
         "id": opportunity_id,
         "type": opportunity_type,
         "name": name,
+        "display_title": display_title,
+        "display_subtitle": display_subtitle,
+        "target_url": target_url,
         "platform": platform,
         "score": score,
         "score_breakdown": breakdown,
@@ -439,8 +585,8 @@ def _standard_opportunity(
             "points_30d": [],
         },
         "actions": [
-            {"kind": "view_evidence", "label": "鏌ョ湅璇佹嵁", "risk": "low", "payload": payload},
-            {"kind": "prefill_collection_task", "label": "棰勫～閲囬泦浠诲姟", "risk": "high", "payload": payload},
+            {"kind": "view_evidence", "label": "查看证据", "risk": "low", "payload": payload},
+            {"kind": "prefill_collection_task", "label": "预填采集任务", "risk": "high", "payload": payload},
         ],
         "samples": samples,
         "detail": {
@@ -520,32 +666,32 @@ def _build_diagnostics(
         diagnostics.append(
             {
                 "code": "no_data",
-                "title": "鏆傛棤鏈轰細鍒ゆ柇",
-                "body": "鍏堥噰闆嗘牱鏈悗鍐嶇敓鎴愭満浼氭銆?",
+                "title": "暂无可排序机会",
+                "body": "缺少标准化样本，系统只展示诊断，不生成假结论。",
             }
         )
     if watchlist:
         diagnostics.append(
             {
                 "code": "watchlist_low_confidence",
-                "title": "鏈変綆淇″績鏈轰細",
-                "body": f"{len(watchlist)} 鏉℃満浼氶渶瑕佹洿澶氭牱鏈墠鑳芥帓鍏ヤ紭鍏堢骇銆?",
+                "title": "观察池存在低可信机会",
+                "body": f"{len(watchlist)} 条机会因小样本、平台单一或数据过旧进入观察池。",
             }
         )
     if ignored_opportunities:
         diagnostics.append(
             {
                 "code": "feedback_ignored",
-                "title": "宸插簲鐢ㄥ弽棣?",
-                "body": f"{len(ignored_opportunities)} 鏉¤鏍囪涓鸿垽骞剁Щ鍑洪灞忔帓鍚嶃€?",
+                "title": "已按反馈移除误判机会",
+                "body": f"{len(ignored_opportunities)} 条机会被标记为误判，不再影响当前榜单。",
             }
         )
     if monitoring.get("errors"):
         diagnostics.append(
             {
                 "code": "collection_errors",
-                "title": "閲囬泦浠诲姟寮傚父",
-                "body": f"{monitoring['errors']} 涓换鍔″浜庡け璐ユ垨寮傚父鐘舵€併€?",
+                "title": "采集链路存在失败任务",
+                "body": f"{monitoring['errors']} 个任务失败，需要先查看任务日志。",
                 "action": "view_jobs",
             }
         )
@@ -697,15 +843,16 @@ def _samples_from_evidence(
     samples = []
     for item in source[:10]:
         if isinstance(item, dict):
+            engagement = item.get("engagement") or item.get("engagement_json") or {}
             samples.append(
                 {
                     "type": item.get("type") or default_type,
-                    "title": item.get("title") or item.get("text"),
+                    "title": item.get("title") or item.get("text") or item.get("platform_post_id"),
                     "body": item.get("body") or item.get("content"),
                     "platform": item.get("platform") or platform,
-                    "url": item.get("url"),
+                    "url": item.get("url") or _post_url(item.get("platform") or platform, item.get("platform_post_id")),
                     "publish_time": item.get("publish_time"),
-                    "engagement": item.get("engagement") or item.get("engagement_json") or {},
+                    "engagement": engagement,
                     "matched_terms": item.get("matched_terms") or [],
                     "raw_ref": item,
                 }
@@ -725,6 +872,51 @@ def _samples_from_evidence(
                 }
             )
     return samples
+
+
+def _creator_profile_url(platform: str | None, creator_id: str, item: dict[str, Any]) -> str | None:
+    explicit = item.get("profile_url") or item.get("url")
+    if explicit:
+        return str(explicit)
+    if not creator_id:
+        return None
+    if platform == "xhs":
+        return f"https://www.xiaohongshu.com/user/profile/{creator_id.removeprefix('xhs_')}"
+    if platform == "dy":
+        return f"https://www.douyin.com/user/{creator_id}"
+    if platform in {"wb", "weibo"}:
+        return f"https://weibo.com/u/{creator_id}"
+    if platform == "bili":
+        return f"https://space.bilibili.com/{creator_id}"
+    return None
+
+
+def _post_url(platform: str | None, post_id: Any) -> str | None:
+    if not post_id:
+        return None
+    post_id = str(post_id)
+    if platform == "xhs":
+        return f"https://www.xiaohongshu.com/explore/{post_id}"
+    if platform == "dy":
+        return f"https://www.douyin.com/video/{post_id}"
+    if platform in {"wb", "weibo"}:
+        return f"https://weibo.com/detail/{post_id}"
+    if platform == "bili":
+        return f"https://www.bilibili.com/video/{post_id}"
+    return None
+
+
+def _label_platform(platform: str | None) -> str:
+    return {
+        "xhs": "小红书",
+        "dy": "抖音",
+        "ks": "快手",
+        "bili": "B站",
+        "wb": "微博",
+        "weibo": "微博",
+        "tieba": "贴吧",
+        "zhihu": "知乎",
+    }.get(platform or "", platform or "未知平台")
 
 
 def _last_action_kind(item: dict[str, Any]) -> str:
@@ -763,9 +955,9 @@ def _evidence_count(evidence: Any) -> int:
 
 def _latest_timestamp(items: list[dict[str, Any]]) -> str | None:
     values = [
-        item.get("created_at") or item.get("snapshot_date")
+        item.get("updated_at") or item.get("created_at") or item.get("snapshot_date")
         for item in items
-        if item.get("created_at") or item.get("snapshot_date")
+        if item.get("updated_at") or item.get("created_at") or item.get("snapshot_date")
     ]
     if not values:
         return None

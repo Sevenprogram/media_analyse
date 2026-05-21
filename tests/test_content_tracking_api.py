@@ -59,6 +59,7 @@ def test_content_tracking_analyze_returns_hits(monkeypatch):
     body = response.json()
     assert body["summary"]["matched_posts"] == 1
     assert body["summary"]["matched_comments"] == 1
+    assert body["fingerprints"][0]["fingerprint"]["summary"]
 
 
 def test_content_tracking_extract_search_and_tracker_routes(monkeypatch):
@@ -130,6 +131,91 @@ def test_content_realtime_discovery_requires_explicit_switch(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["status"] == "skipped"
+
+
+def test_content_tracking_ai_analysis_uses_env_gateway(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+    monkeypatch.setenv("AI_GATEWAY_API_KEY", "test-key")
+    monkeypatch.setenv("AI_GATEWAY_BASE_URL", "https://gateway.example/v1")
+    monkeypatch.setenv("AI_GATEWAY_MODEL", "test-model")
+
+    class FakeRepository:
+        pass
+
+    class FakeProvider:
+        def __init__(self, *, base_url, api_key, model, timeout=60):
+            assert base_url == "https://gateway.example/v1"
+            assert api_key == "test-key"
+            assert model == "test-model"
+
+        async def complete_json(self, *, prompt, params=None):
+            assert "本地证据" in prompt
+            return {
+                "topic_summary": "K12 内容追踪",
+                "keyword_judgement": [
+                    {
+                        "keyword": "K12",
+                        "value": "high",
+                        "reason": "本地候选内容命中",
+                        "tracking_action": "include",
+                    }
+                ],
+                "similar_content_patterns": ["标题集中在家长焦虑和陪伴学习"],
+                "comment_feedback": ["评论关注执行方法"],
+                "tracking_suggestions": {
+                    "included_keywords": ["K12"],
+                    "excluded_keywords": ["无关"],
+                    "platform_notes": ["优先看小红书"],
+                },
+                "opportunities": ["拆解陪伴学习场景"],
+                "risk_notes": [],
+            }
+
+    import api.routers.content_tracking as content_router
+
+    monkeypatch.setattr(content_router, "ResearchRepository", FakeRepository)
+    monkeypatch.setattr(content_router, "OpenAICompatibleProvider", FakeProvider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/content-tracking/ai-analysis",
+        json={
+            "title": "K12教育",
+            "text": "单亲妈妈如何陪伴学习",
+            "platform": "xhs",
+            "keywords": ["K12"],
+            "candidates": [{"platform": "xhs", "title": "K12 陪伴", "similarity_score": 92}],
+            "comments": [{"platform": "xhs", "content": "需要方法"}],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"]["model"] == "test-model"
+    assert body["analysis"]["topic_summary"] == "K12 内容追踪"
+    assert body["analysis"]["tracking_suggestions"]["included_keywords"] == ["K12"]
+
+
+def test_content_tracking_ai_analysis_requires_provider(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+    monkeypatch.delenv("AI_GATEWAY_API_KEY", raising=False)
+
+    class FakeRepository:
+        async def list_ai_providers(self):
+            return []
+
+    import api.routers.content_tracking as content_router
+
+    monkeypatch.setattr(content_router, "ResearchRepository", FakeRepository)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/content-tracking/ai-analysis",
+        json={"text": "K12 tutoring", "keywords": ["K12"]},
+    )
+
+    assert response.status_code == 400
+    assert "AI_GATEWAY_API_KEY" in response.json()["detail"]
 
 
 def test_growth_report_returns_summary(monkeypatch):

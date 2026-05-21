@@ -19,9 +19,40 @@
 
 
 import os
+from pathlib import Path
 
 from .base_config import *
 from .db_config import *
+
+
+def _read_env_file(env_path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not env_path.exists():
+        return values
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        values[key] = value
+    return values
+
+
+def _load_dotenv() -> None:
+    root = Path(__file__).resolve().parent.parent
+    original_keys = set(os.environ)
+    values = {
+        **_read_env_file(root / ".env.example"),
+        **_read_env_file(root / ".env"),
+    }
+    for key, value in values.items():
+        if key not in original_keys:
+            os.environ[key] = value
+
+
+_load_dotenv()
 
 
 def _env_bool(name: str, default: bool) -> bool:

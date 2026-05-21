@@ -17,6 +17,21 @@ RESEARCH_CRAWL_UNIT_REQUIRED_COLUMNS = {
     "run_key",
 }
 
+RESEARCH_SCENE_PACK_REQUIRED_COLUMNS = {
+    "primary_goal",
+    "default_collection_depth",
+    "default_ai_template",
+    "source",
+    "archived",
+}
+
+RESEARCH_GROWTH_PROJECT_REQUIRED_COLUMNS = {
+    "comment_collection_enabled",
+    "refresh_cadence",
+    "custom_interval_value",
+    "custom_interval_unit",
+}
+
 
 async def ensure_research_schema(conn) -> None:
     dialect = conn.dialect.name
@@ -38,6 +53,20 @@ async def ensure_research_schema(conn) -> None:
         table_name="research_crawl_units",
         required=RESEARCH_CRAWL_UNIT_REQUIRED_COLUMNS,
         statement_builder=_alter_research_crawl_units_statement,
+        dialect=dialect,
+    )
+    await _ensure_columns(
+        conn,
+        table_name="research_scene_packs",
+        required=RESEARCH_SCENE_PACK_REQUIRED_COLUMNS,
+        statement_builder=_alter_research_scene_packs_statement,
+        dialect=dialect,
+    )
+    await _ensure_columns(
+        conn,
+        table_name="research_growth_projects",
+        required=RESEARCH_GROWTH_PROJECT_REQUIRED_COLUMNS,
+        statement_builder=_alter_research_growth_projects_statement,
         dialect=dialect,
     )
 
@@ -202,6 +231,70 @@ def _alter_research_crawl_units_statement(dialect: str, column: str) -> str | No
         },
         "mariadb": {
             "run_key": "ALTER TABLE research_crawl_units ADD COLUMN run_key VARCHAR(64) NOT NULL DEFAULT 'default'",
+        },
+    }
+    return statements.get(dialect, {}).get(column)
+
+
+def _alter_research_scene_packs_statement(dialect: str, column: str) -> str | None:
+    statements: dict[str, dict[str, str]] = {
+        "sqlite": {
+            "primary_goal": "ALTER TABLE research_scene_packs ADD COLUMN primary_goal VARCHAR(64) NOT NULL DEFAULT 'topic_discovery'",
+            "default_collection_depth": "ALTER TABLE research_scene_packs ADD COLUMN default_collection_depth VARCHAR(32) NOT NULL DEFAULT 'standard'",
+            "default_ai_template": "ALTER TABLE research_scene_packs ADD COLUMN default_ai_template VARCHAR(128) NULL",
+            "source": "ALTER TABLE research_scene_packs ADD COLUMN source VARCHAR(32) NOT NULL DEFAULT 'custom'",
+            "archived": "ALTER TABLE research_scene_packs ADD COLUMN archived BOOLEAN NOT NULL DEFAULT 0",
+        },
+        "postgresql": {
+            "primary_goal": "ALTER TABLE research_scene_packs ADD COLUMN primary_goal VARCHAR(64) NOT NULL DEFAULT 'topic_discovery'",
+            "default_collection_depth": "ALTER TABLE research_scene_packs ADD COLUMN default_collection_depth VARCHAR(32) NOT NULL DEFAULT 'standard'",
+            "default_ai_template": "ALTER TABLE research_scene_packs ADD COLUMN default_ai_template VARCHAR(128) NULL",
+            "source": "ALTER TABLE research_scene_packs ADD COLUMN source VARCHAR(32) NOT NULL DEFAULT 'custom'",
+            "archived": "ALTER TABLE research_scene_packs ADD COLUMN archived BOOLEAN NOT NULL DEFAULT false",
+        },
+        "mysql": {
+            "primary_goal": "ALTER TABLE research_scene_packs ADD COLUMN primary_goal VARCHAR(64) NOT NULL DEFAULT 'topic_discovery'",
+            "default_collection_depth": "ALTER TABLE research_scene_packs ADD COLUMN default_collection_depth VARCHAR(32) NOT NULL DEFAULT 'standard'",
+            "default_ai_template": "ALTER TABLE research_scene_packs ADD COLUMN default_ai_template VARCHAR(128) NULL",
+            "source": "ALTER TABLE research_scene_packs ADD COLUMN source VARCHAR(32) NOT NULL DEFAULT 'custom'",
+            "archived": "ALTER TABLE research_scene_packs ADD COLUMN archived BOOLEAN NOT NULL DEFAULT false",
+        },
+        "mariadb": {
+            "primary_goal": "ALTER TABLE research_scene_packs ADD COLUMN primary_goal VARCHAR(64) NOT NULL DEFAULT 'topic_discovery'",
+            "default_collection_depth": "ALTER TABLE research_scene_packs ADD COLUMN default_collection_depth VARCHAR(32) NOT NULL DEFAULT 'standard'",
+            "default_ai_template": "ALTER TABLE research_scene_packs ADD COLUMN default_ai_template VARCHAR(128) NULL",
+            "source": "ALTER TABLE research_scene_packs ADD COLUMN source VARCHAR(32) NOT NULL DEFAULT 'custom'",
+            "archived": "ALTER TABLE research_scene_packs ADD COLUMN archived BOOLEAN NOT NULL DEFAULT false",
+        },
+    }
+    return statements.get(dialect, {}).get(column)
+
+
+def _alter_research_growth_projects_statement(dialect: str, column: str) -> str | None:
+    statements: dict[str, dict[str, str]] = {
+        "sqlite": {
+            "comment_collection_enabled": "ALTER TABLE research_growth_projects ADD COLUMN comment_collection_enabled BOOLEAN NOT NULL DEFAULT 1",
+            "refresh_cadence": "ALTER TABLE research_growth_projects ADD COLUMN refresh_cadence VARCHAR(32) NOT NULL DEFAULT 'off'",
+            "custom_interval_value": "ALTER TABLE research_growth_projects ADD COLUMN custom_interval_value INTEGER NULL",
+            "custom_interval_unit": "ALTER TABLE research_growth_projects ADD COLUMN custom_interval_unit VARCHAR(16) NULL",
+        },
+        "postgresql": {
+            "comment_collection_enabled": "ALTER TABLE research_growth_projects ADD COLUMN comment_collection_enabled BOOLEAN NOT NULL DEFAULT true",
+            "refresh_cadence": "ALTER TABLE research_growth_projects ADD COLUMN refresh_cadence VARCHAR(32) NOT NULL DEFAULT 'off'",
+            "custom_interval_value": "ALTER TABLE research_growth_projects ADD COLUMN custom_interval_value INTEGER NULL",
+            "custom_interval_unit": "ALTER TABLE research_growth_projects ADD COLUMN custom_interval_unit VARCHAR(16) NULL",
+        },
+        "mysql": {
+            "comment_collection_enabled": "ALTER TABLE research_growth_projects ADD COLUMN comment_collection_enabled BOOLEAN NOT NULL DEFAULT true",
+            "refresh_cadence": "ALTER TABLE research_growth_projects ADD COLUMN refresh_cadence VARCHAR(32) NOT NULL DEFAULT 'off'",
+            "custom_interval_value": "ALTER TABLE research_growth_projects ADD COLUMN custom_interval_value INTEGER NULL",
+            "custom_interval_unit": "ALTER TABLE research_growth_projects ADD COLUMN custom_interval_unit VARCHAR(16) NULL",
+        },
+        "mariadb": {
+            "comment_collection_enabled": "ALTER TABLE research_growth_projects ADD COLUMN comment_collection_enabled BOOLEAN NOT NULL DEFAULT true",
+            "refresh_cadence": "ALTER TABLE research_growth_projects ADD COLUMN refresh_cadence VARCHAR(32) NOT NULL DEFAULT 'off'",
+            "custom_interval_value": "ALTER TABLE research_growth_projects ADD COLUMN custom_interval_value INTEGER NULL",
+            "custom_interval_unit": "ALTER TABLE research_growth_projects ADD COLUMN custom_interval_unit VARCHAR(16) NULL",
         },
     }
     return statements.get(dialect, {}).get(column)

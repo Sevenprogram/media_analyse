@@ -81,14 +81,14 @@ def test_dashboard_summary_returns_standard_decision_contract():
         creator_candidates=[],
         keyword_heat_snapshots=[
             {
-                "keyword": "K12鏁欒偛",
+                "keyword": "K12教育",
                 "platform": "xhs",
                 "heat_score": 90,
                 "growth_score": 40,
                 "platform_signal": "boosting",
                 "sample_count": 128,
                 "snapshot_date": "2026-05-21",
-                "evidence": {"items": ["24h 璁ㄨ涓婂崌"]},
+                "evidence": {"items": ["24h 讨论上升"]},
             }
         ],
         competitor_compositions=[],
@@ -115,6 +115,8 @@ def test_dashboard_summary_returns_standard_decision_contract():
     assert opportunity["sample_scope"]["sample_count"] == 128
     assert "risk_tags" in opportunity
     assert "samples" in opportunity
+    assert "display_title" in opportunity
+    assert "target_url" in opportunity
     assert summary["opportunities"] == summary["top_opportunities"]
 
 
@@ -188,3 +190,66 @@ def test_feedback_moves_false_positive_out_of_top_opportunities():
 
     assert all(item["name"] != "false-positive" for item in summary["top_opportunities"])
     assert any(item["name"] == "false-positive" for item in summary["ignored_opportunities"])
+
+
+def test_dashboard_summary_keeps_full_opportunity_pool_beyond_top_five():
+    summary = build_dashboard_summary(
+        jobs=[],
+        creator_candidates=[
+            {
+                "platform": "xhs",
+                "creator_id": f"creator-{index}",
+                "display_name": f"creator-{index}",
+                "match_score": 90 - index,
+                "recent_post_count_30d": 30,
+                "evidence": [{"text": "match"}],
+            }
+            for index in range(6)
+        ],
+        keyword_heat_snapshots=[
+            {
+                "keyword": "long-tail-keyword",
+                "platform": "xhs",
+                "heat_score": 50,
+                "growth_score": 10,
+                "sample_count": 30,
+                "evidence": {"items": ["keyword evidence"]},
+            }
+        ],
+        competitor_compositions=[],
+        content_snapshots=[],
+        monitor_pools=[],
+        platform="xhs",
+    )
+
+    assert len(summary["top_opportunities"]) == 5
+    assert len(summary["opportunities"]) == 7
+    assert any(item["type"] == "keyword" for item in summary["opportunities"])
+
+
+def test_dashboard_summary_exposes_type_decisions_and_competitor_watchlist():
+    summary = build_dashboard_summary(
+        jobs=[],
+        creator_candidates=[],
+        keyword_heat_snapshots=[],
+        competitor_compositions=[
+            {
+                "competitor_id": 1,
+                "platform": "xhs",
+                "display_name": "竞品账号",
+                "total_flow_count": 0,
+                "hot_post_rate": 0.0,
+                "sample_count": 0,
+                "evidence": {"items": ["已配置友商账号，但还没有公开流量快照"]},
+            }
+        ],
+        content_snapshots=[],
+        monitor_pools=[],
+        platform="xhs",
+    )
+
+    assert any(item["type"] == "competitor" for item in summary["watchlist"])
+    assert summary["type_decisions"]["competitor"]["sample_status"] == "limited"
+    assert summary["type_decisions"]["keyword"]["sample_status"] == "insufficient"
+    assert summary["type_diagnostics"]["competitor"]
+    assert summary["type_diagnostics"]["keyword"][0]["code"] == "no_keyword_opportunities"

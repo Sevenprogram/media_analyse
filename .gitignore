@@ -121,7 +121,10 @@ celerybeat.pid
 
 # Environments
 .env
-.venv
+.env.*
+!.env.example
+!.env.*.example
+.venv/
 env/
 venv/
 ENV/
@@ -161,22 +164,55 @@ cython_debug/
 
 *.xml
 *.iml
-.idea
-/temp_image/
-/browser_data/
-/data/
+.idea/
 
 */.DS_Store
-.vscode
-/node_modules
+.vscode/
+/node_modules/
 *.tsbuildinfo
 docs/.vitepress/cache
 
 # other gitignore
-.venv
 .refer
 
 agent_zone
 debug_tools
 
+# Local tool/runtime state
+.superpowers/
+.playwright-mcp/
+.uv-cache/
+.ruff_cache/
+.eslintcache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Frontend build output
+/api/webui/dist/
+/api/webui/.vite/
+/api/webui/node_modules/
+/api/webui/coverage/
+/playwright-report/
+/test-results/
+
+# Local crawler output and browser/session data
+/browser_data/
+/data/
+/temp_image/
+/logs/
+
+# Local databases and SQLite sidecars
 database/*.db
+database/*.sqlite
+database/*.sqlite3
+database/*.db-journal
+database/*.db-wal
+database/*.db-shm
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm

@@ -54,10 +54,11 @@ class ResearchWorker:
         self,
         *,
         options: ResearchExecutionOptions | None = None,
+        job_id: int | None = None,
     ) -> dict[str, Any]:
         options = options or ResearchExecutionOptions()
         await self._heartbeat(status="idle")
-        unit = await self.repository.claim_next_crawl_unit(worker_id=self.worker_id)
+        unit = await self.repository.claim_next_crawl_unit(worker_id=self.worker_id, job_id=job_id)
         if unit is None:
             return {"status": "idle", "worker_id": self.worker_id}
         await self._heartbeat(status="running", current_unit_id=unit["id"])
@@ -250,6 +251,7 @@ async def run_worker_once(
     worker_id: str,
     save_option: SaveDataOptionEnum,
     headless: bool,
+    job_id: int | None = None,
 ) -> dict[str, Any]:
     from api.services.crawler_manager import crawler_manager
 
@@ -263,7 +265,8 @@ async def run_worker_once(
         backfill=backfill,
     )
     return await worker.run_once(
-        options=ResearchExecutionOptions(save_option=save_option, headless=headless)
+        options=ResearchExecutionOptions(save_option=save_option, headless=headless),
+        job_id=job_id,
     )
 
 

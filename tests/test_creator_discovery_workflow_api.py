@@ -111,6 +111,26 @@ def test_creator_candidate_pool_and_export(monkeypatch):
                 }
             ]
 
+        async def get_creator_profile(self, platform, creator_id):
+            if platform == "xhs" and creator_id == "creator-1":
+                return {
+                    "platform": "xhs",
+                    "creator_id": "creator-1",
+                    "display_name": "Teacher A",
+                    "profile_url": "https://www.xiaohongshu.com/user/profile/creator-1",
+                }
+            return None
+
+        async def list_creator_profiles(self, platforms=None, limit=None):
+            return [
+                {
+                    "platform": "dy",
+                    "creator_id": "creator-2",
+                    "display_name": "Teacher B",
+                    "profile_url": "https://www.douyin.com/user/creator-2",
+                }
+            ]
+
     import api.routers.creator_search as creator_search_router
 
     monkeypatch.setattr(creator_search_router, "ResearchRepository", FakeRepository)
@@ -127,6 +147,13 @@ def test_creator_candidate_pool_and_export(monkeypatch):
     response = client.get("/api/creator-search/candidate-pool")
     assert response.status_code == 200
     assert response.json()["candidates"][0]["platform"] == "xhs"
+    assert response.json()["candidates"][0]["display_name"] == "Teacher A"
+    assert response.json()["candidates"][0]["profile_url"].endswith("/creator-1")
+
+    response = client.get("/api/creator-search/candidate-pool?include_profile_candidates=true")
+    assert response.status_code == 200
+    assert {item["platform"] for item in response.json()["candidates"]} == {"xhs", "dy"}
+    assert response.json()["candidates"][1]["display_name"] == "Teacher B"
 
     response = client.get("/api/creator-search/export")
     assert response.status_code == 200

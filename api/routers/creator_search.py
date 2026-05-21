@@ -14,6 +14,8 @@ from research.creator_search import (
     parse_search_intent,
     search_creators,
 )
+from research.auto_pooling import auto_pool_a_tier_candidates
+from research.candidate_tiering import tier_creator_candidates
 from research.monitor_pools import MonitorPoolService, automation_select_candidates
 from research.repository import ResearchRepository
 from research.schemas import (
@@ -24,6 +26,7 @@ from research.schemas import (
     MonitorPoolCreate,
     MonitorPoolUpdate,
 )
+from research.tikhub_creator_metrics import enrich_creator_metrics_from_tikhub
 
 router = APIRouter(prefix="/creator-search", tags=["creator-search"])
 
@@ -61,10 +64,12 @@ async def parse_creator_search_intent(request: CreatorSearchIntentRequest):
 @router.post("/search")
 async def search_creator_profiles(request: CreatorSearchRequest):
     require_research_database()
-    return await search_creators(
+    result = await search_creators(
         ResearchRepository(),
         request.model_dump(mode="python"),
     )
+    result["results"] = tier_creator_candidates(result.get("results") or [])
+    return result
 
 
 @router.post("/candidate-pool")
@@ -81,15 +86,130 @@ async def list_creator_candidates(
     pool_name: str | None = None,
     platform: str | None = None,
     vertical_id: int | None = None,
+    include_profile_candidates: bool = False,
 ):
     require_research_database()
+    repository = ResearchRepository()
+    candidates = await repository.list_creator_candidates(
+        pool_name=pool_name,
+        platform=platform,
+        vertical_id=vertical_id,
+    )
     return {
-        "candidates": await ResearchRepository().list_creator_candidates(
-            pool_name=pool_name,
+        "candidates": tier_creator_candidates(await _enrich_creator_candidates_for_display(
+            repository,
+            candidates,
+            include_profile_candidates=include_profile_candidates,
             platform=platform,
+            pool_name=pool_name,
             vertical_id=vertical_id,
-        )
+        ))
     }
+
+
+@router.post("/candidate-pool/auto-pool")
+async def auto_pool_creator_candidates(payload: dict):
+    require_research_database()
+    pool_id = int(payload.get("pool_id") or 0)
+    if pool_id <= 0:
+        raise HTTPException(status_code=400, detail="pool_id is required")
+    try:
+        candidates = payload.get("candidates")
+        if candidates is None:
+            repository = ResearchRepository()
+            candidates = await repository.list_creator_candidates(
+                pool_name=payload.get("pool_name"),
+                platform=payload.get("platform"),
+                vertical_id=payload.get("vertical_id"),
+            )
+        return await auto_pool_a_tier_candidates(
+            ResearchRepository(),
+            pool_id=pool_id,
+            candidates=tier_creator_candidates(candidates),
+            daily_cap=int(payload.get("daily_cap") or 20),
+            crawl_now=bool(payload.get("crawl_now", False)),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+async def _enrich_creator_candidates_for_display(
+    repository,
+    candidates: list[dict],
+    *,
+    include_profile_candidates: bool,
+    platform: str | None,
+    pool_name: str | None,
+    vertical_id: int | None,
+) -> list[dict]:
+    enriched = []
+    seen: set[tuple[str | None, str | None]] = set()
+    for item in candidates:
+        next_item = {"source": "candidate_pool", **item}
+        item_platform = item.get("platform")
+        creator_id = item.get("creator_id")
+        seen.add((item_platform, creator_id))
+        profile = await _get_creator_profile(repository, item_platform, creator_id)
+        if profile:
+            _merge_profile_fields(next_item, profile)
+        enriched.append(next_item)
+
+    if not include_profile_candidates or pool_name or vertical_id is not None:
+        return enriched
+
+    profiles = await _list_creator_profiles(
+        repository,
+        platforms=[platform] if platform else None,
+    )
+    for profile in profiles:
+        key = (profile.get("platform"), profile.get("creator_id"))
+        if key in seen:
+            continue
+        profile_candidate = {
+            "id": f"profile:{profile.get('platform')}:{profile.get('creator_id')}",
+            "platform": profile.get("platform"),
+            "creator_id": profile.get("creator_id"),
+            "pool_name": "local-profile",
+            "vertical_id": None,
+            "match_score": None,
+            "matched_tags": [],
+            "evidence": {"source": "creator_profile"},
+            "notes": "来自本地达人画像，尚未进入候选池评分",
+            "source": "local_profile",
+        }
+        _merge_profile_fields(profile_candidate, profile)
+        enriched.append(profile_candidate)
+    return enriched
+
+
+async def _get_creator_profile(repository, platform: str | None, creator_id: str | None) -> dict | None:
+    if not platform or not creator_id or not hasattr(repository, "get_creator_profile"):
+        return None
+    return await repository.get_creator_profile(platform, creator_id)
+
+
+async def _list_creator_profiles(repository, platforms: list[str] | None) -> list[dict]:
+    if not hasattr(repository, "list_creator_profiles"):
+        return []
+    return await repository.list_creator_profiles(platforms=platforms)
+
+
+def _merge_profile_fields(target: dict, profile: dict) -> None:
+    for key in (
+        "display_name",
+        "profile_url",
+        "bio",
+        "follower_count",
+        "following_count",
+        "post_count",
+        "avg_engagement_rate",
+        "hot_post_rate",
+        "recent_post_count_30d",
+        "latest_snapshot_at",
+        "tag_summary_json",
+    ):
+        if profile.get(key) not in (None, ""):
+            target[key] = profile[key]
 
 
 @router.post("/scene-packs/{scene_pack_id}/score-candidates")
@@ -201,6 +321,33 @@ class CreatorRealtimeDiscoveryRequest(BaseModel):
     platforms: list[str] = Field(default_factory=list)
     realtime: bool = False
     wait: bool = False
+
+
+class CreatorMetricsEnrichRequest(BaseModel):
+    creators: list[dict] = Field(default_factory=list)
+    raw_query: str | None = None
+    platforms: list[str] = Field(default_factory=list)
+    limit: int = Field(default=20, ge=1, le=200)
+    recent_activity_min: int | None = Field(default=1, ge=0)
+
+
+@router.post("/profile-metrics/enrich")
+async def enrich_creator_profile_metrics(request: CreatorMetricsEnrichRequest):
+    require_research_database()
+    repository = ResearchRepository()
+    creators = request.creators
+    if not creators and request.raw_query:
+        search = await search_creators(
+            repository,
+            {
+                "raw_query": request.raw_query,
+                "platforms": request.platforms,
+                "recent_activity_min": request.recent_activity_min,
+                "limit": request.limit,
+            },
+        )
+        creators = search.get("results") or []
+    return await enrich_creator_metrics_from_tikhub(repository, creators)
 
 
 @router.post("/discover/realtime")

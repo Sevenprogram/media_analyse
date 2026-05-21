@@ -63,18 +63,19 @@ class DouyinTikHubMapper(BaseTikHubMapper):
         }
 
     def map_creator(self, item: dict[str, Any]) -> dict[str, Any]:
-        user = author(item) or item
+        user = author(item) or item.get("user_info") or item
         return {
             "user": {
-                "nickname": str(pick(user, "nickname", "name")),
+                "nickname": str(pick(user, "nickname", "nick_name", "name")),
                 "gender": pick(user, "gender", default=0),
                 "avatar_300x300": {"uri": first_url(pick(user, "avatar", "avatar_url"))},
                 "signature": str(pick(user, "signature", "desc", "bio")),
                 "ip_location": str(pick(user, "ip_location")),
-                "following_count": pick(user, "follows", "following_count", default=0),
-                "max_follower_count": pick(user, "fans", "followers_count", default=0),
-                "total_favorited": pick(user, "interaction", "liked_count", default=0),
-                "aweme_count": pick(user, "videos_count", "aweme_count", default=0),
+                "following_count": pick(user, "follows", "following_count", "favoriting_count", default=nested(user, "follow_info", "following_count", default=0)),
+                "max_follower_count": pick(user, "fans", "fans_cnt", "followers_count", "follower_count", default=nested(user, "follow_info", "follower_count", default=0)),
+                "total_favorited": pick(user, "interaction", "like_cnt", "liked_count", "total_favorited", "like_count", default=0),
+                "collect_count": pick(user, "collected_count", "collect_count", "favorite_count", "favorites_count", default=0),
+                "aweme_count": pick(user, "videos_count", "publish_cnt", "aweme_count", "posts_count", default=0),
             },
             "raw_data": raw(item),
         }
