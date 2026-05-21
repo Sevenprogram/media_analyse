@@ -259,8 +259,13 @@ def test_content_realtime_discovery_defaults_to_supported_platforms(monkeypatch)
     )
 
     assert response.status_code == 200
-    assert response.json()["job_id"] == 11
+    body = response.json()
+    assert body["job_id"] == 11
+    assert body["start_date"]
+    assert body["end_date"]
     assert calls["created_job"]["platforms"] == ["xhs", "dy"]
+    assert calls["created_job"]["start_date"] < calls["created_job"]["end_date"]
+    assert (calls["created_job"]["end_date"] - calls["created_job"]["start_date"]).days == 2
     assert calls["created_job"]["comment_policy"]["content_tracking_total_limit"] == 50
     assert calls["created_job"]["comment_policy"]["max_posts_per_job"] == 25
     assert calls["scheduled"]["job_id"] == 11
@@ -351,6 +356,8 @@ def test_search_similar_realtime_schedules_job_and_refreshes(monkeypatch):
     assert body["candidates"][0]["evidence"]["source"] == "realtime_imported"
     assert calls["created_job"]["topic"] == "content_realtime_discovery"
     assert calls["created_job"]["platforms"] == ["xhs", "dy"]
+    assert calls["created_job"]["start_date"] < calls["created_job"]["end_date"]
+    assert (calls["created_job"]["end_date"] - calls["created_job"]["start_date"]).days == 2
     assert calls["created_job"]["comment_policy"]["content_tracking_total_limit"] == 50
     assert calls["created_job"]["comment_policy"]["max_posts_per_job"] == 25
     assert calls["scheduled"]["job_id"] == 42
@@ -377,12 +384,13 @@ def test_content_realtime_total_limit_is_split_across_selected_platforms(monkeyp
     client = TestClient(app)
     response = client.post(
         "/api/content-tracking/realtime-discovery",
-        json={"keywords": ["K12"], "platforms": ["xhs", "dy"], "realtime": True, "limit": 31},
+        json={"keywords": ["K12"], "platforms": ["xhs", "dy"], "realtime": True, "limit": 31, "collection_window_days": 7},
     )
 
     assert response.status_code == 200
     assert calls["created_job"]["comment_policy"]["content_tracking_total_limit"] == 31
     assert calls["created_job"]["comment_policy"]["max_posts_per_job"] == 16
+    assert (calls["created_job"]["end_date"] - calls["created_job"]["start_date"]).days == 6
 
 
 def test_search_similar_realtime_rejects_unsupported_platform(monkeypatch):

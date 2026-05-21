@@ -1993,6 +1993,7 @@ type ContentTrackingState = {
   realtimeBusyJobId: number | null;
   realtimeCancelling: boolean;
   realtimeLimit: number;
+  realtimeWindowDays: number;
 };
 
 const contentTrackingState: ContentTrackingState = {
@@ -2020,6 +2021,7 @@ const contentTrackingState: ContentTrackingState = {
   realtimeBusyJobId: null,
   realtimeCancelling: false,
   realtimeLimit: 50,
+  realtimeWindowDays: 3,
 };
 
 const contentTrackingListeners = new Set<() => void>();
@@ -2078,6 +2080,7 @@ export function ContentTrackingPage() {
   const [realtimeBusyJobId, setRealtimeBusyJobId] = useContentTrackingField("realtimeBusyJobId");
   const [realtimeCancelling, setRealtimeCancelling] = useContentTrackingField("realtimeCancelling");
   const [realtimeLimit, setRealtimeLimit] = useContentTrackingField("realtimeLimit");
+  const [realtimeWindowDays, setRealtimeWindowDays] = useContentTrackingField("realtimeWindowDays");
 
   const selectedTerms = [...selectedKeywords];
   const platformPayload = platform === "all" ? [] : [platform];
@@ -2154,17 +2157,18 @@ export function ContentTrackingPage() {
       resetRealtimeProgress();
     }
     try {
-      let similar: { candidates: UnknownRecord[]; realtime?: UnknownRecord; job_id?: number; status?: string };
+      let similar: { candidates: UnknownRecord[]; realtime?: UnknownRecord; job_id?: number; status?: string; start_date?: string; end_date?: string };
       let analysis: UnknownRecord;
       if (realtimeSearchEnabled) {
         setRealtimeStep(25, "正在创建实时搜索任务");
-        const discovery = await api<{ status: string; job_id?: number | null; busy_job_id?: number | null; message?: string; execution?: UnknownRecord }>("/api/content-tracking/realtime-discovery", {
+        const discovery = await api<{ status: string; job_id?: number | null; busy_job_id?: number | null; message?: string; execution?: UnknownRecord; start_date?: string; end_date?: string }>("/api/content-tracking/realtime-discovery", {
           method: "POST",
           body: JSON.stringify({
             keywords: terms,
             platforms: platformPayload,
             realtime: true,
             limit: realtimeLimit,
+            collection_window_days: realtimeWindowDays,
           }),
         });
         if (discovery.status === "busy") {
@@ -2176,14 +2180,26 @@ export function ContentTrackingPage() {
         const jobId = Number(discovery.job_id || 0);
         if (!jobId) throw new Error("实时搜索任务创建失败");
         setRealtimeJobId(jobId);
-        setRealtimeMetadata({ job_id: jobId, status: discovery.status, matched_count: 0 });
+        setRealtimeMetadata({ job_id: jobId, status: discovery.status, matched_count: 0, start_date: discovery.start_date, end_date: discovery.end_date });
         setRealtimeStep(55, "正在写入内容库");
-        similar = await api<{ candidates: UnknownRecord[]; job_id: number; status: string }>(`/api/content-tracking/discovery/${jobId}/wait-refresh`, { method: "POST" });
+        similar = await api<{ candidates: UnknownRecord[]; job_id: number; status: string; start_date?: string; end_date?: string }>(`/api/content-tracking/discovery/${jobId}/wait-refresh`, { method: "POST" });
         if (contentTrackingState.realtimeJobId !== jobId) return;
         if (similar.status === "cancelled") {
           setRealtimeStep(0, "");
           setRealtimeMetadata(null);
           setMessage("已取消本次实时搜索");
+          return;
+        }
+        if (similar.status === "failed") {
+          setRealtimeStep(100, "搜索失败");
+          setRealtimeMetadata({
+            job_id: jobId,
+            status: similar.status,
+            matched_count: similar.candidates?.length || 0,
+            start_date: similar.start_date || discovery.start_date,
+            end_date: similar.end_date || discovery.end_date,
+          });
+          setError("实时搜索失败，可能是平台采集进程异常；请查看任务日志或缩小平台范围后重试。");
           return;
         }
         setRealtimeStep(85, "正在刷新本地结果");
@@ -2196,6 +2212,8 @@ export function ContentTrackingPage() {
           job_id: jobId,
           status: similar.status,
           matched_count: similar.candidates?.length || 0,
+          start_date: similar.start_date || discovery.start_date,
+          end_date: similar.end_date || discovery.end_date,
         };
       } else {
         const similarPromise = api<{ candidates: UnknownRecord[]; realtime?: UnknownRecord }>("/api/content-tracking/search-similar", {
@@ -2415,6 +2433,22 @@ export function ContentTrackingPage() {
               }}
             />
           </label>
+          <label className={`content-realtime-limit ${!realtimeSearchEnabled ? "disabled" : ""}`}>
+            <span>
+              <strong>时间范围</strong>
+              <small>只把发布时间落在该范围内的内容写入样本库。</small>
+            </span>
+            <select
+              value={realtimeWindowDays}
+              disabled={!realtimeSearchEnabled || Boolean(running)}
+              onChange={(event) => setRealtimeWindowDays(Number(event.target.value) || 3)}
+            >
+              <option value={1}>近 1 天</option>
+              <option value={3}>近 3 天</option>
+              <option value={7}>近 7 天</option>
+              <option value={30}>近 30 天</option>
+            </select>
+          </label>
           <div className="content-action-row">
             <Button type="button" variant="primary" onClick={() => void runExtractKeywords()} disabled={Boolean(running)}>
               {running === "extract" ? <Loader2 size={16} className="spin" /> : <KeyRound size={16} />}提取关键词
@@ -2445,6 +2479,9 @@ export function ContentTrackingPage() {
                       : realtimeMetadata
                         ? `Job #${text(realtimeMetadata.job_id)} · ${text(realtimeMetadata.status, "-")} · 匹配 ${formatOptionalNumber(realtimeMetadata.matched_count)} 条`
                         : "等待任务创建"}
+                  {realtimeMetadata?.start_date && realtimeMetadata?.end_date
+                    ? ` · ${text(realtimeMetadata.start_date)} 至 ${text(realtimeMetadata.end_date)}`
+                    : ""}
                 </small>
                 {realtimeJobId && running === "search" && (
                   <Button type="button" variant="ghost" size="sm" onClick={() => void cancelRealtimeSearch()} disabled={realtimeCancelling}>

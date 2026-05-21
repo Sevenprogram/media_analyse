@@ -1,5 +1,5 @@
 import os
-from datetime import date
+from datetime import date, timedelta
 from math import ceil
 from typing import Any
 
@@ -36,6 +36,7 @@ from research.schemas import (
 router = APIRouter(prefix="/content-tracking", tags=["content-tracking"])
 
 REALTIME_CONTENT_PLATFORMS = {"xhs", "dy"}
+DEFAULT_REALTIME_COLLECTION_WINDOW_DAYS = 3
 
 
 def _resolve_realtime_platforms(platforms: list[str]) -> list[str]:
@@ -64,6 +65,13 @@ def _content_realtime_comment_policy(
         "max_posts_per_job": per_platform_limit,
         "content_tracking_total_limit": total_limit,
     }
+
+
+def _realtime_collection_window(collection_window_days: int = DEFAULT_REALTIME_COLLECTION_WINDOW_DAYS) -> tuple[date, date]:
+    end_date = date.today()
+    days = max(1, min(30, int(collection_window_days or DEFAULT_REALTIME_COLLECTION_WINDOW_DAYS)))
+    start_date = end_date - timedelta(days=days - 1)
+    return start_date, end_date
 
 
 class ContentTrackingRequest(BaseModel):
@@ -196,6 +204,7 @@ async def _local_similar_candidates(
 async def _search_similar_with_realtime(request: SimilarContentSearchRequest) -> dict[str, Any]:
     realtime_platforms = _resolve_realtime_platforms(request.platforms)
     repository = ResearchRepository()
+    start_date, end_date = _realtime_collection_window(request.collection_window_days)
     job = await repository.create_job(
         {
             "name": f"content realtime discovery - {' '.join(request.keywords)}",
@@ -205,8 +214,8 @@ async def _search_similar_with_realtime(request: SimilarContentSearchRequest) ->
             "keywords": request.keywords,
             "target_ids": [],
             "creator_ids": [],
-            "start_date": date.today(),
-            "end_date": date.today(),
+            "start_date": start_date,
+            "end_date": end_date,
             "status": "pending",
             "comment_policy": _content_realtime_comment_policy(request, realtime_platforms),
             "raw_record_mode": "minimal",
@@ -242,6 +251,8 @@ async def _search_similar_with_realtime(request: SimilarContentSearchRequest) ->
             "platforms": realtime_platforms,
             "status": completed_job.get("status"),
             "matched_count": len(candidates),
+            "start_date": str(start_date),
+            "end_date": str(end_date),
             "errors": [],
         },
         "candidates": candidates,
@@ -338,6 +349,7 @@ async def start_realtime_content_discovery(request: SimilarContentSearchRequest)
         return {"status": "skipped", "reason": "realtime search switch is off"}
     realtime_platforms = _resolve_realtime_platforms(request.platforms)
     repository = ResearchRepository()
+    start_date, end_date = _realtime_collection_window(request.collection_window_days)
     job = await repository.create_job(
         {
             "name": f"content realtime discovery - {' '.join(request.keywords)}",
@@ -347,8 +359,8 @@ async def start_realtime_content_discovery(request: SimilarContentSearchRequest)
             "keywords": request.keywords,
             "target_ids": [],
             "creator_ids": [],
-            "start_date": date.today(),
-            "end_date": date.today(),
+            "start_date": start_date,
+            "end_date": end_date,
             "status": "pending",
             "comment_policy": _content_realtime_comment_policy(request, realtime_platforms),
             "raw_record_mode": "minimal",
@@ -369,7 +381,13 @@ async def start_realtime_content_discovery(request: SimilarContentSearchRequest)
             "message": execution.get("message") or "A research execution is already running",
             "execution": execution,
         }
-    return {"status": execution["status"], "job_id": job["id"], "execution": execution}
+    return {
+        "status": execution["status"],
+        "job_id": job["id"],
+        "execution": execution,
+        "start_date": str(start_date),
+        "end_date": str(end_date),
+    }
 
 
 @router.post("/realtime-jobs/{job_id}/cancel")
@@ -421,6 +439,8 @@ async def wait_content_discovery_and_refresh(job_id: int):
     return {
         "job_id": job_id,
         "status": job["status"],
+        "start_date": str(job["start_date"]),
+        "end_date": str(job["end_date"]),
         "refreshed": True,
         "candidates": candidates,
     }

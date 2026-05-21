@@ -736,6 +736,7 @@ class SimilarContentSearchRequest(BaseModel):
     realtime: bool = False
     exclude_tracked: bool = True
     limit: int = Field(default=50, ge=1, le=200)
+    collection_window_days: int = Field(default=3, ge=1, le=30)
 
     @field_validator("keywords")
     @classmethod

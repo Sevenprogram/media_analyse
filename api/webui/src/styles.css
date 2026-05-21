@@ -5173,10 +5173,15 @@ fieldset {
   font-size: 12px;
 }
 
-.content-realtime-limit input {
+.content-realtime-limit input,
+.content-realtime-limit select {
   width: 96px;
   height: 34px;
   text-align: center;
+}
+
+.content-realtime-limit select {
+  width: 120px;
 }
 
 
