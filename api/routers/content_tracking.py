@@ -30,6 +30,22 @@ from research.schemas import (
 
 router = APIRouter(prefix="/content-tracking", tags=["content-tracking"])
 
+REALTIME_CONTENT_PLATFORMS = {"xhs", "dy"}
+
+
+def _resolve_realtime_platforms(platforms: list[str]) -> list[str]:
+    selected = [item for item in platforms if item]
+    if not selected:
+        return ["xhs", "dy"]
+
+    unsupported = sorted(set(selected) - REALTIME_CONTENT_PLATFORMS)
+    if unsupported:
+        raise HTTPException(
+            status_code=400,
+            detail="实时搜索暂只支持小红书和抖音",
+        )
+    return selected
+
 
 class ContentTrackingRequest(BaseModel):
     query: str = Field(min_length=1, max_length=500)

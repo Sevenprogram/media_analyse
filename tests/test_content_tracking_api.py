@@ -133,6 +133,31 @@ def test_content_realtime_discovery_requires_explicit_switch(monkeypatch):
     assert response.json()["status"] == "skipped"
 
 
+def test_content_realtime_platform_resolution_all_defaults_to_xhs_and_dy():
+    import api.routers.content_tracking as content_router
+
+    assert content_router._resolve_realtime_platforms([]) == ["xhs", "dy"]
+
+
+def test_content_realtime_platform_resolution_keeps_supported_single_platform():
+    import api.routers.content_tracking as content_router
+
+    assert content_router._resolve_realtime_platforms(["xhs"]) == ["xhs"]
+    assert content_router._resolve_realtime_platforms(["dy"]) == ["dy"]
+
+
+def test_content_realtime_platform_resolution_rejects_unsupported_platform():
+    import api.routers.content_tracking as content_router
+
+    try:
+        content_router._resolve_realtime_platforms(["bili"])
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 400
+        assert "小红书和抖音" in str(getattr(exc, "detail", exc))
+    else:
+        raise AssertionError("unsupported realtime platform should fail")
+
+
 def test_content_tracking_ai_analysis_uses_env_gateway(monkeypatch):
     monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
     monkeypatch.setenv("AI_GATEWAY_API_KEY", "test-key")
