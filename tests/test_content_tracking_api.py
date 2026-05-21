@@ -133,6 +133,40 @@ def test_content_realtime_discovery_requires_explicit_switch(monkeypatch):
     assert response.json()["status"] == "skipped"
 
 
+def test_content_realtime_discovery_defaults_to_supported_platforms(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+    calls = {"created_job": None, "scheduled": None}
+
+    class FakeRepository:
+        async def create_job(self, payload):
+            calls["created_job"] = payload
+            return {"id": 11, **payload}
+
+    async def fake_schedule(job_id, background=True, force_schedule=True):
+        calls["scheduled"] = {
+            "job_id": job_id,
+            "background": background,
+            "force_schedule": force_schedule,
+        }
+        return {"status": "accepted", "job_id": job_id}
+
+    import api.routers.content_tracking as content_router
+
+    monkeypatch.setattr(content_router, "ResearchRepository", FakeRepository)
+    monkeypatch.setattr(content_router, "schedule_and_execute_research_job", fake_schedule)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/content-tracking/realtime-discovery",
+        json={"keywords": ["K12"], "platforms": [], "realtime": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["job_id"] == 11
+    assert calls["created_job"]["platforms"] == ["xhs", "dy"]
+    assert calls["scheduled"]["job_id"] == 11
+
+
 def test_content_realtime_platform_resolution_all_defaults_to_xhs_and_dy():
     import api.routers.content_tracking as content_router
 
@@ -156,6 +190,108 @@ def test_content_realtime_platform_resolution_rejects_unsupported_platform():
         assert "小红书和抖音" in str(getattr(exc, "detail", exc))
     else:
         raise AssertionError("unsupported realtime platform should fail")
+
+
+def test_search_similar_realtime_schedules_job_and_refreshes(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+
+    calls = {"created_job": None, "scheduled": None, "waited": None}
+
+    class FakeRepository:
+        async def create_job(self, payload):
+            calls["created_job"] = payload
+            return {"id": 42, **payload}
+
+        async def get_job(self, job_id):
+            return {"id": job_id, "status": "completed", "keywords": ["K12"]}
+
+        async def list_all_posts(self, job_id=None, platform=None, limit=None):
+            calls["list_job_id"] = job_id
+            return [
+                {
+                    "platform": "xhs",
+                    "platform_post_id": "p-live",
+                    "title": "K12 realtime imported post",
+                    "content": "K12 tutoring",
+                    "engagement_json": {"liked_count": 40},
+                }
+            ]
+
+    async def fake_schedule(job_id, background=True, force_schedule=True):
+        calls["scheduled"] = {
+            "job_id": job_id,
+            "background": background,
+            "force_schedule": force_schedule,
+        }
+        return {"status": "accepted", "job_id": job_id}
+
+    async def fake_wait(job_id):
+        calls["waited"] = job_id
+        return {"id": job_id, "status": "completed", "keywords": ["K12"]}
+
+    import api.routers.content_tracking as content_router
+
+    monkeypatch.setattr(content_router, "ResearchRepository", FakeRepository)
+    monkeypatch.setattr(content_router, "schedule_and_execute_research_job", fake_schedule)
+    monkeypatch.setattr(content_router, "wait_for_research_job_status", fake_wait)
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/content-tracking/search-similar",
+        json={"keywords": ["K12"], "platforms": [], "realtime": True, "limit": 50},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["realtime"]["enabled"] is True
+    assert body["realtime"]["job_id"] == 42
+    assert body["realtime"]["platforms"] == ["xhs", "dy"]
+    assert body["realtime"]["status"] == "completed"
+    assert body["realtime"]["matched_count"] == 1
+    assert body["candidates"][0]["platform_post_id"] == "p-live"
+    assert body["candidates"][0]["evidence"]["source"] == "realtime_imported"
+    assert calls["created_job"]["topic"] == "content_realtime_discovery"
+    assert calls["created_job"]["platforms"] == ["xhs", "dy"]
+    assert calls["scheduled"]["job_id"] == 42
+    assert calls["waited"] == 42
+
+
+def test_search_similar_realtime_rejects_unsupported_platform(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/content-tracking/search-similar",
+        json={"keywords": ["K12"], "platforms": ["bili"], "realtime": True},
+    )
+
+    assert response.status_code == 400
+    assert "小红书和抖音" in response.json()["detail"]
+
+
+def test_search_similar_realtime_busy_returns_409(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+
+    class FakeRepository:
+        async def create_job(self, payload):
+            return {"id": 7, **payload}
+
+    async def fake_schedule(job_id, background=True, force_schedule=True):
+        return {"status": "busy", "job_id": 99, "message": "A research execution is already running"}
+
+    import api.routers.content_tracking as content_router
+
+    monkeypatch.setattr(content_router, "ResearchRepository", FakeRepository)
+    monkeypatch.setattr(content_router, "schedule_and_execute_research_job", fake_schedule)
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/content-tracking/search-similar",
+        json={"keywords": ["K12"], "platforms": ["xhs"], "realtime": True},
+    )
+
+    assert response.status_code == 409
+    assert "already running" in response.json()["detail"]
 
 
 def test_content_tracking_ai_analysis_uses_env_gateway(monkeypatch):

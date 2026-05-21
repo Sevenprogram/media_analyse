@@ -100,15 +100,94 @@ async def extract_keywords(request: ContentKeywordExtractionRequest):
 @router.post("/search-similar")
 async def search_similar(request: SimilarContentSearchRequest):
     require_research_database()
+    if request.realtime:
+        return await _search_similar_with_realtime(request)
+
     repository = ResearchRepository()
+    candidates = await _local_similar_candidates(repository, request)
+    return {"candidates": candidates}
+
+
+async def _local_similar_candidates(
+    repository: ResearchRepository,
+    request: SimilarContentSearchRequest,
+    *,
+    job_id: int | None = None,
+    evidence_source: str | None = None,
+) -> list[dict[str, Any]]:
     platform = request.platforms[0] if len(request.platforms) == 1 else None
-    posts = await repository.list_all_posts(platform=platform, limit=500)
+    list_kwargs: dict[str, Any] = {"platform": platform, "limit": 500}
+    if job_id is not None:
+        list_kwargs["job_id"] = job_id
+    posts = await repository.list_all_posts(**list_kwargs)
     candidates = search_similar_content(
         keywords=request.keywords,
         posts=posts,
         limit=request.limit,
     )
-    return {"candidates": candidates}
+    if evidence_source:
+        for candidate in candidates:
+            evidence = candidate.setdefault("evidence", {})
+            evidence["source"] = evidence_source
+    return candidates
+
+
+async def _search_similar_with_realtime(request: SimilarContentSearchRequest) -> dict[str, Any]:
+    realtime_platforms = _resolve_realtime_platforms(request.platforms)
+    repository = ResearchRepository()
+    job = await repository.create_job(
+        {
+            "name": f"content realtime discovery - {' '.join(request.keywords)}",
+            "topic": "content_realtime_discovery",
+            "platforms": realtime_platforms,
+            "collection_mode": "search",
+            "keywords": request.keywords,
+            "target_ids": [],
+            "creator_ids": [],
+            "start_date": date.today(),
+            "end_date": date.today(),
+            "status": "pending",
+            "comment_policy": {
+                "enable_comments": False,
+                "enable_sub_comments": False,
+            },
+            "raw_record_mode": "minimal",
+            "anonymize_authors": True,
+        }
+    )
+
+    execution = await schedule_and_execute_research_job(
+        job["id"],
+        background=True,
+        force_schedule=True,
+    )
+    if execution.get("status") == "busy":
+        raise HTTPException(
+            status_code=409,
+            detail=execution.get("message") or "A research execution is already running",
+        )
+
+    completed_job = await wait_for_research_job_status(job["id"])
+    if completed_job is None:
+        raise HTTPException(status_code=404, detail="Content discovery job not found")
+
+    candidates = await _local_similar_candidates(
+        repository,
+        request,
+        job_id=job["id"],
+        evidence_source="realtime_imported",
+    )
+    return {
+        "realtime": {
+            "enabled": True,
+            "job_id": job["id"],
+            "platforms": realtime_platforms,
+            "status": completed_job.get("status"),
+            "matched_count": len(candidates),
+            "errors": [],
+        },
+        "candidates": candidates,
+    }
 
 
 @router.post("/ai-analysis")
@@ -199,17 +278,13 @@ async def start_realtime_content_discovery(request: SimilarContentSearchRequest)
     require_research_database()
     if not request.realtime:
         return {"status": "skipped", "reason": "realtime search switch is off"}
-    if not request.platforms:
-        raise HTTPException(
-            status_code=400,
-            detail="Realtime content discovery requires selected or global default platforms",
-        )
+    realtime_platforms = _resolve_realtime_platforms(request.platforms)
     repository = ResearchRepository()
     job = await repository.create_job(
         {
             "name": f"content realtime discovery - {' '.join(request.keywords)}",
             "topic": "content_realtime_discovery",
-            "platforms": request.platforms,
+            "platforms": realtime_platforms,
             "collection_mode": "search",
             "keywords": request.keywords,
             "target_ids": [],
