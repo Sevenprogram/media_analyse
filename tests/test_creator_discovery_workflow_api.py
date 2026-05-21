@@ -467,6 +467,66 @@ def test_creator_search_realtime_failure_returns_local_results(monkeypatch):
     assert "TikHub unavailable" in payload["realtime"]["error"]
 
 
+def test_creator_search_task_wait_returns_completed_result(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+    import api.routers.creator_search as creator_search_router
+
+    class FakeRepository:
+        async def list_tag_definitions(self, vertical_id=None, enabled_only=True):
+            return []
+
+        async def list_verticals(self, enabled_only=True):
+            return []
+
+        async def list_creator_profiles(self, platforms=None, limit=None):
+            return [
+                {
+                    "platform": "xhs",
+                    "creator_id": "task-local-1",
+                    "display_name": "Task Teacher",
+                    "profile_url": "https://www.xiaohongshu.com/user/profile/task-local-1",
+                    "follower_count": 1600,
+                    "recent_post_count_30d": 3,
+                    "avg_engagement_rate": None,
+                    "hot_post_rate": None,
+                    "tag_summary_json": {},
+                }
+            ]
+
+        async def list_entity_tags(self, **kwargs):
+            return []
+
+        async def list_posts_by_creator(self, platform, creator_id, limit=30):
+            return [
+                {
+                    "platform": platform,
+                    "platform_post_id": "p1",
+                    "title": "K12 task evidence",
+                    "content": "K12 task evidence",
+                    "publish_time": None,
+                    "engagement_json": {"liked_count": 10},
+                }
+            ]
+
+    monkeypatch.setattr(creator_search_router, "ResearchRepository", FakeRepository)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/creator-search/search-tasks",
+        json={"raw_query": "K12", "platforms": ["xhs"], "wait": True},
+    )
+
+    assert response.status_code == 200
+    task = response.json()
+    assert task["status"] == "completed"
+    assert task["progress"]["stage"] == "complete"
+    assert task["result"]["results"][0]["creator_id"] == "task-local-1"
+
+    status_response = client.get(f"/api/creator-search/search-tasks/{task['task_id']}")
+    assert status_response.status_code == 200
+    assert status_response.json()["status"] == "completed"
+
+
 def test_realtime_discovery_schedules_execution(monkeypatch):
     monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
     import api.routers.creator_search as creator_router

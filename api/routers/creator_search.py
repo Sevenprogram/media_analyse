@@ -1,4 +1,6 @@
-from datetime import date
+import asyncio
+from datetime import date, datetime, timezone
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, Field
@@ -29,6 +31,12 @@ from research.schemas import (
 from research.tikhub_creator_metrics import enrich_creator_metrics_from_tikhub
 
 router = APIRouter(prefix="/creator-search", tags=["creator-search"])
+
+CREATOR_SEARCH_TASKS: dict[str, dict] = {}
+
+
+class CreatorSearchTaskRequest(CreatorSearchRequest):
+    wait: bool = False
 
 
 @router.post("/parse-intent")
@@ -70,6 +78,92 @@ async def search_creator_profiles(request: CreatorSearchRequest):
     )
     result["results"] = tier_creator_candidates(result.get("results") or [])
     return result
+
+
+@router.post("/search-tasks")
+async def start_creator_search_task(request: CreatorSearchTaskRequest):
+    require_research_database()
+    task_id = uuid4().hex
+    payload = request.model_dump(mode="python")
+    wait = bool(payload.pop("wait", False))
+    task = _new_creator_search_task(task_id, payload)
+    CREATOR_SEARCH_TASKS[task_id] = task
+    if wait:
+        await _run_creator_search_task(task_id, payload)
+    else:
+        asyncio.create_task(_run_creator_search_task(task_id, payload))
+    return CREATOR_SEARCH_TASKS[task_id]
+
+
+@router.get("/search-tasks/{task_id}")
+async def get_creator_search_task(task_id: str):
+    require_research_database()
+    task = CREATOR_SEARCH_TASKS.get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Creator search task not found")
+    return task
+
+
+@router.post("/search-tasks/{task_id}/cancel")
+async def cancel_creator_search_task(task_id: str):
+    require_research_database()
+    task = CREATOR_SEARCH_TASKS.get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Creator search task not found")
+    if task["status"] in {"completed", "failed", "cancelled"}:
+        return task
+    task["status"] = "cancelled"
+    task["progress"] = {"stage": "cancelled", "label": "Cancelled", "percent": task["progress"].get("percent", 0)}
+    task["updated_at"] = _now_iso()
+    return task
+
+
+def _new_creator_search_task(task_id: str, payload: dict) -> dict:
+    now = _now_iso()
+    return {
+        "task_id": task_id,
+        "status": "pending",
+        "request": payload,
+        "progress": {"stage": "queued", "label": "Queued", "percent": 5},
+        "result": None,
+        "error": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+async def _run_creator_search_task(task_id: str, payload: dict) -> None:
+    task = CREATOR_SEARCH_TASKS.get(task_id)
+    if task is None or task.get("status") == "cancelled":
+        return
+    try:
+        _update_creator_search_task(task, "running", "database", "Searching database", 20)
+        if payload.get("include_realtime"):
+            _update_creator_search_task(task, "running", "realtime", "Searching realtime platforms", 50)
+        result = await search_creators(ResearchRepository(), payload)
+        if task.get("status") == "cancelled":
+            return
+        _update_creator_search_task(task, "running", "merging", "Merging results", 90)
+        result["results"] = tier_creator_candidates(result.get("results") or [])
+        task["result"] = result
+        task["status"] = "completed"
+        task["progress"] = result.get("progress") or {"stage": "complete", "label": "Complete", "percent": 100}
+        task["updated_at"] = _now_iso()
+    except Exception as exc:
+        task["status"] = "failed"
+        task["error"] = str(exc)
+        task["progress"] = {"stage": "failed", "label": "Failed", "percent": 100}
+        task["updated_at"] = _now_iso()
+
+
+def _update_creator_search_task(task: dict, status: str, stage: str, label: str, percent: int) -> None:
+    task["status"] = status
+    task["progress"] = {"stage": stage, "label": label, "percent": percent}
+    task["updated_at"] = _now_iso()
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 @router.post("/candidate-pool")

@@ -77,6 +77,8 @@ async def discover_realtime_creators(
 
 async def _call_search(client: Any, endpoint: Any, keyword: str) -> Any:
     payload = {**endpoint.default_params, endpoint.keyword_param: keyword}
+    if endpoint.page_param and endpoint.page_param not in payload:
+        payload[endpoint.page_param] = 1
     if endpoint.json_body:
         return await client.request(endpoint.method, endpoint.path, json=payload)
     return await client.request(endpoint.method, endpoint.path, params=payload)

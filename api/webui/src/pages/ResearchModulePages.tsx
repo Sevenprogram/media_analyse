@@ -52,6 +52,7 @@ type CompetitorFetchStatus = { status: "running" | "success" | "error"; message:
 type PersistedCompetitorFetchTask = { competitorId: number; taskId: string; name: string; daysBack?: number };
 
 const COMPETITOR_FETCH_TASKS_KEY = "mediaCrawler.competitorFetchTasks";
+const CREATOR_SEARCH_TASK_KEY = "mediaCrawler.creatorSearchTaskId";
 
 type CreatorSearchResponse = {
   intent?: UnknownRecord | null;
@@ -59,6 +60,15 @@ type CreatorSearchResponse = {
   realtime?: CreatorSearchRealtimeDiagnostics;
   progress?: CreatorSearchProgress;
   results: UnknownRecord[];
+};
+
+type CreatorSearchTask = {
+  task_id: string;
+  status: string;
+  request?: UnknownRecord;
+  progress?: CreatorSearchProgress;
+  result?: CreatorSearchResponse | null;
+  error?: string | null;
 };
 
 type CreatorSearchProgress = {
@@ -486,6 +496,7 @@ export function CreatorDiscoveryPage() {
   const [includeRealtime, setIncludeRealtime] = React.useState(false);
   const [searchProgress, setSearchProgress] = React.useState<CreatorSearchProgress | null>(null);
   const [resultsUpdating, setResultsUpdating] = React.useState(false);
+  const [activeTaskId, setActiveTaskId] = React.useState<string | null>(null);
   const [searchError, setSearchError] = React.useState<string | null>(null);
   const [selectedCreators, setSelectedCreators] = React.useState<Set<string>>(new Set());
   const [message, setMessage] = React.useState<string | null>(null);
@@ -496,6 +507,76 @@ export function CreatorDiscoveryPage() {
   const platformRows = countBy(activeRows, (item) => text(item.platform, "unknown"));
   const selectedRows = resultRows.filter((item) => selectedCreators.has(creatorRowKey(item)));
 
+  React.useEffect(() => {
+    const savedTaskId = window.localStorage.getItem(CREATOR_SEARCH_TASK_KEY);
+    if (savedTaskId) {
+      setActiveTaskId(savedTaskId);
+      setSearching(true);
+      setResultsUpdating(Boolean(searchResult));
+      setSearchProgress(creatorSearchStage("database"));
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (!activeTaskId) return;
+    let stopped = false;
+    async function pollTask() {
+      while (!stopped) {
+        try {
+          const task = await api<CreatorSearchTask>(`/api/creator-search/search-tasks/${activeTaskId}`);
+          if (stopped) return;
+          applyCreatorSearchTask(task);
+          if (["completed", "failed", "cancelled"].includes(task.status)) return;
+          await sleepMs(1000);
+        } catch (err) {
+          if (!stopped) {
+            setSearchError(err instanceof Error ? err.message : String(err));
+            setSearching(false);
+            setResultsUpdating(false);
+          }
+          return;
+        }
+      }
+    }
+    void pollTask();
+    return () => {
+      stopped = true;
+    };
+  }, [activeTaskId]);
+
+  function applyCreatorSearchTask(task: CreatorSearchTask) {
+    if (task.request && "include_realtime" in task.request) {
+      setIncludeRealtime(Boolean(task.request.include_realtime));
+    }
+    if (task.progress) setSearchProgress(task.progress);
+    if (task.status === "completed" && task.result) {
+      setSearchResult(task.result);
+      setSearching(false);
+      setResultsUpdating(false);
+      setActiveTaskId(null);
+      window.localStorage.removeItem(CREATOR_SEARCH_TASK_KEY);
+      void candidates.reload();
+      return;
+    }
+    if (task.status === "failed") {
+      setSearchError(task.error || "筛选任务失败");
+      setSearching(false);
+      setResultsUpdating(false);
+      setActiveTaskId(null);
+      window.localStorage.removeItem(CREATOR_SEARCH_TASK_KEY);
+      return;
+    }
+    if (task.status === "cancelled") {
+      setMessage("筛选任务已取消");
+      setSearching(false);
+      setResultsUpdating(false);
+      setActiveTaskId(null);
+      window.localStorage.removeItem(CREATOR_SEARCH_TASK_KEY);
+      return;
+    }
+    setSearching(true);
+  }
+
   async function runCreatorSearch(event?: React.FormEvent) {
     event?.preventDefault();
     setSearching(true);
@@ -505,11 +586,7 @@ export function CreatorDiscoveryPage() {
     setMessage(null);
     setSelectedCreators(new Set());
     try {
-      if (includeRealtime) {
-        await sleepMs(150);
-        setSearchProgress(creatorSearchStage("realtime"));
-      }
-      const response = await api<CreatorSearchResponse>("/api/creator-search/search", {
+      const task = await api<CreatorSearchTask>("/api/creator-search/search-tasks", {
         method: "POST",
         body: JSON.stringify({
           raw_query: query.trim(),
@@ -520,17 +597,11 @@ export function CreatorDiscoveryPage() {
           include_realtime: includeRealtime,
         }),
       });
-      if (includeRealtime) {
-        setSearchProgress(creatorSearchStage("persistence"));
-        await sleepMs(100);
-        setSearchProgress(creatorSearchStage("merging"));
-        await sleepMs(100);
-      }
-      setSearchProgress(response.progress || creatorSearchStage("complete"));
-      setSearchResult(response);
+      window.localStorage.setItem(CREATOR_SEARCH_TASK_KEY, task.task_id);
+      setActiveTaskId(task.task_id);
+      applyCreatorSearchTask(task);
     } catch (err) {
       setSearchError(err instanceof Error ? err.message : String(err));
-    } finally {
       setSearching(false);
       setResultsUpdating(false);
     }
@@ -628,7 +699,7 @@ export function CreatorDiscoveryPage() {
             <Button variant="primary" disabled={searching || !query.trim() || !platforms.length}>{searching ? <Loader2 size={16} className="spin" /> : <Search size={16} />}筛选达人</Button>
             <Button type="button" variant="ghost" onClick={() => void runCreatorSearch()} disabled={searching || !query.trim()}><RefreshCw size={16} />刷新结果</Button>
           </div>
-          {includeRealtime && (searching || searchProgress) && (
+          {(searching || searchProgress) && (
             <div className="creator-search-progress">
               <div>
                 <span>{searchProgress?.label || "Preparing realtime search"}</span>

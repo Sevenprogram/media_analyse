@@ -74,6 +74,7 @@ async def test_discover_realtime_creators_persists_xhs_author():
     assert result["diagnostics"]["status"] == "ok"
     assert result["diagnostics"]["created_profiles"] == 1
     assert result["diagnostics"]["created_candidates"] == 1
+    assert client.calls[0]["params"]["page"] == 1
     assert result["results"][0]["platform"] == "xhs"
     assert result["results"][0]["creator_id"] == "xhs-u1"
     assert result["results"][0]["display_name"] == "Teacher X"
