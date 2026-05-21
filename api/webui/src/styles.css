@@ -5102,7 +5102,12 @@ fieldset {
 .collection-progress-log-list {
   display: grid;
   gap: 6px;
+  max-height: 280px;
+  overflow-y: auto;
   padding-top: 2px;
+  padding-right: 4px;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .collection-progress-log-head {
@@ -5715,6 +5720,33 @@ fieldset {
 .content-realtime-progress small {
   color: var(--muted);
   font-size: 12px;
+}
+
+.content-realtime-log-block {
+  display: grid;
+  gap: 7px;
+  padding-top: 2px;
+}
+
+.content-realtime-log-list {
+  max-height: 220px;
+}
+
+.content-realtime-log-empty,
+.content-realtime-log-error {
+  margin: 0;
+  padding: 8px 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: #ffffff;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.content-realtime-log-error {
+  border-color: #fecaca;
+  background: #fff7f7;
+  color: #991b1b;
 }
 
 .content-realtime-meta-row {

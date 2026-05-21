@@ -79,6 +79,8 @@ type CreatorSearchProgress = {
   percent: number;
 };
 
+type ResearchJobEvent = UnknownRecord;
+
 type CreatorSearchRealtimeDiagnostics = {
   enabled?: boolean;
   status?: string;
@@ -151,6 +153,57 @@ function formatPercent(value: unknown) {
   if (!next) return "-";
   const normalized = next > 1 ? next : next * 100;
   return `${normalized.toFixed(normalized >= 10 ? 0 : 1)}%`;
+}
+
+function researchEventLabel(row: ResearchJobEvent) {
+  const platform = text(row.platform, "");
+  const platformName = platform ? labelPlatform(platform) : "任务";
+  const labels: Record<string, string> = {
+    crawl_units_scheduled: "步骤已生成",
+    execution_started: "任务开始",
+    execution_completed: "任务完成",
+    execution_failed: "任务失败",
+    execution_cancelled: "任务取消",
+    crawler_started: "开始采集",
+    crawler_output_captured: "输出捕获",
+    crawler_finished: "平台完成",
+    ingest_batch: "入库统计",
+    backfill_completed: "入库完成",
+    post_crawl_analysis_completed: "分析完成",
+    backfill_skipped_missing_salt: "跳过入库",
+  };
+  return `${platformName} · ${labels[text(row.event_type, "")] || text(row.event_type, "日志")}`;
+}
+
+function researchEventSummary(row: ResearchJobEvent) {
+  const stats = asRecord(row.stats_json);
+  const eventType = text(row.event_type, "");
+  const parts: string[] = [];
+  if (eventType === "ingest_batch" || eventType === "backfill_completed") {
+    parts.push(`入库 posts=${formatOptionalNumber(stats.posts)}`);
+    parts.push(`comments=${formatOptionalNumber(stats.comments)}`);
+    parts.push(`raw=${formatOptionalNumber(stats.raw_records)}`);
+    const filteredPosts = number(stats.filtered_posts_outside_window);
+    const filteredComments = number(stats.filtered_comments_outside_window);
+    if (filteredPosts || filteredComments) parts.push(`过滤 ${filteredPosts + filteredComments} 条`);
+  } else if (eventType === "crawl_units_scheduled") {
+    parts.push(`步骤 ${formatOptionalNumber(stats.total_units || stats.created)}`);
+    if (number(stats.skipped_by_platform_config)) parts.push(`跳过 ${formatOptionalNumber(stats.skipped_by_platform_config)}`);
+  } else if (eventType === "crawler_output_captured") {
+    parts.push(text(row.message));
+    if (stats.line_count !== undefined) parts.push(`输出 ${formatOptionalNumber(stats.line_count)} 行`);
+    if (number(stats.warning_or_error_count)) parts.push(`异常 ${formatOptionalNumber(stats.warning_or_error_count)}`);
+  } else if (eventType === "execution_failed") {
+    parts.push(text(row.message));
+    if (stats.error_type) parts.push(text(stats.error_type));
+  }
+  return parts.length ? parts.join(" · ") : text(row.message);
+}
+
+function isErrorResearchEvent(row: ResearchJobEvent) {
+  const eventType = text(row.event_type, "");
+  const stats = asRecord(row.stats_json);
+  return eventType.includes("failed") || eventType.includes("error") || number(stats.warning_or_error_count) > 0;
 }
 
 function sleepMs(ms: number) {
@@ -2135,6 +2188,8 @@ type ContentTrackingState = {
   realtimeCancelling: boolean;
   realtimeLimit: number;
   realtimeWindowDays: number;
+  realtimeLogs: ResearchJobEvent[];
+  realtimeLogError: string | null;
 };
 
 const contentTrackingState: ContentTrackingState = {
@@ -2163,6 +2218,8 @@ const contentTrackingState: ContentTrackingState = {
   realtimeCancelling: false,
   realtimeLimit: 50,
   realtimeWindowDays: 3,
+  realtimeLogs: [],
+  realtimeLogError: null,
 };
 
 const contentTrackingListeners = new Set<() => void>();
@@ -2222,11 +2279,41 @@ export function ContentTrackingPage() {
   const [realtimeCancelling, setRealtimeCancelling] = useContentTrackingField("realtimeCancelling");
   const [realtimeLimit, setRealtimeLimit] = useContentTrackingField("realtimeLimit");
   const [realtimeWindowDays, setRealtimeWindowDays] = useContentTrackingField("realtimeWindowDays");
+  const [realtimeLogs, setRealtimeLogs] = useContentTrackingField("realtimeLogs");
+  const [realtimeLogError, setRealtimeLogError] = useContentTrackingField("realtimeLogError");
 
   const selectedTerms = [...selectedKeywords];
   const platformPayload = platform === "all" ? [] : [platform];
   const platformQuery = platform === "all" ? undefined : platform;
   const realtimeSupportedPlatform = platform === "all" || platform === "xhs" || platform === "dy";
+  const realtimeLogJobId = realtimeJobId || realtimeBusyJobId || number(realtimeMetadata?.job_id);
+
+  React.useEffect(() => {
+    if (!realtimeSearchEnabled || !realtimeLogJobId) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const shouldPoll = () => running === "search" || Boolean(realtimeBusyJobId) || (realtimeProgress > 0 && realtimeProgress < 100);
+    const loadLogs = async () => {
+      try {
+        const response = await api<{ events: ResearchJobEvent[] }>(`/api/research/jobs/${realtimeLogJobId}/events?limit=80`);
+        if (cancelled) return;
+        setRealtimeLogs(array(response.events));
+        setRealtimeLogError(null);
+      } catch (err) {
+        if (cancelled) return;
+        setRealtimeLogError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (!cancelled && shouldPoll()) {
+          timer = window.setTimeout(loadLogs, 2000);
+        }
+      }
+    };
+    void loadLogs();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [realtimeSearchEnabled, realtimeLogJobId, running, realtimeBusyJobId, realtimeProgress, setRealtimeLogError, setRealtimeLogs]);
 
   async function runExtractKeywords() {
     setRunning("extract");
@@ -2278,6 +2365,8 @@ export function ContentTrackingPage() {
     setRealtimeJobId(null);
     setRealtimeBusyJobId(null);
     setRealtimeCancelling(false);
+    setRealtimeLogs([]);
+    setRealtimeLogError(null);
   }
 
   async function runLocalSearch() {
@@ -2296,9 +2385,11 @@ export function ContentTrackingPage() {
     setHasSearched(true);
     setRealtimeBusyJobId(null);
     setRealtimeCancelling(false);
+    setRealtimeLogError(null);
     if (realtimeSearchEnabled) {
       setRealtimeJobId(null);
       setRealtimeMetadata(null);
+      setRealtimeLogs([]);
       setRealtimeStep(10, "准备实时搜索");
     } else {
       resetRealtimeProgress();
@@ -2638,6 +2729,29 @@ export function ContentTrackingPage() {
                   </Button>
                 )}
               </div>
+              {realtimeLogJobId ? (
+                <div className="content-realtime-log-block">
+                  <div className="collection-progress-log-head">
+                    <span>运行日志</span>
+                    <strong>{realtimeLogs.length ? `${realtimeLogs.length} 条` : "等待日志"}</strong>
+                  </div>
+                  {realtimeLogError ? (
+                    <p className="content-realtime-log-error">{realtimeLogError}</p>
+                  ) : realtimeLogs.length ? (
+                    <div className="collection-progress-log-list content-realtime-log-list">
+                      {realtimeLogs.map((row) => (
+                        <article className={`collection-progress-log-row ${isErrorResearchEvent(row) ? "error" : ""}`} key={text(row.id)}>
+                          <span>{formatDateTime(text(row.created_at, ""))}</span>
+                          <strong>{researchEventLabel(row)}</strong>
+                          <p>{researchEventSummary(row)}</p>
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="content-realtime-log-empty">任务创建后会在这里显示平台采集、入库和失败原因。</p>
+                  )}
+                </div>
+              ) : null}
             </div>
           )}
           {(message || error) && <div className={`content-status ${error ? "error" : ""}`}>{error || message}</div>}
