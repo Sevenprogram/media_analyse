@@ -37,6 +37,10 @@ async def create_database_if_not_exists(db_type: str):
             await conn.execute(text(f"CREATE DATABASE IF NOT EXISTS {mysql_db_config['db_name']}"))
         await engine.dispose()
     elif db_type == "postgres":
+        if postgres_db_config.get("database_url") or not postgres_db_config.get(
+            "create_database", True
+        ):
+            return
         # Connect to the default 'postgres' database
         server_url = f"postgresql+asyncpg://{postgres_db_config['user']}:{postgres_db_config['password']}@{postgres_db_config['host']}:{postgres_db_config['port']}/postgres"
         print(f"[init_db] Connecting to Postgres: host={postgres_db_config['host']}, port={postgres_db_config['port']}, user={postgres_db_config['user']}, dbname=postgres")
@@ -65,7 +69,7 @@ def get_async_engine(db_type: str = None):
     elif db_type == "mysql" or db_type == "db":
         db_url = f"mysql+asyncmy://{mysql_db_config['user']}:{mysql_db_config['password']}@{mysql_db_config['host']}:{mysql_db_config['port']}/{mysql_db_config['db_name']}"
     elif db_type == "postgres":
-        db_url = f"postgresql+asyncpg://{postgres_db_config['user']}:{postgres_db_config['password']}@{postgres_db_config['host']}:{postgres_db_config['port']}/{postgres_db_config['db_name']}"
+        db_url = postgres_db_config.get("database_url") or f"postgresql+asyncpg://{postgres_db_config['user']}:{postgres_db_config['password']}@{postgres_db_config['host']}:{postgres_db_config['port']}/{postgres_db_config['db_name']}"
     else:
         raise ValueError(f"Unsupported database type: {db_type}")
 

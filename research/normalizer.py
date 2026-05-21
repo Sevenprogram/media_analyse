@@ -147,6 +147,8 @@ def normalize_xhs_note(item: dict[str, Any], *, job_id: int, salt: str) -> dict[
         "publish_time": parse_timestamp(item.get("time")),
         "engagement_json": {
             "type": item.get("type"),
+            "author_id": item.get("user_id"),
+            "nickname": item.get("nickname"),
             "liked_count": item.get("liked_count"),
             "collected_count": item.get("collected_count"),
             "comment_count": item.get("comment_count"),
@@ -203,6 +205,10 @@ def normalize_douyin_aweme(item: dict[str, Any], *, job_id: int, salt: str) -> d
         "publish_time": parse_timestamp(item.get("create_time")),
         "engagement_json": {
             "aweme_type": item.get("aweme_type"),
+            "author_id": item.get("user_id"),
+            "sec_uid": item.get("sec_uid"),
+            "nickname": item.get("nickname"),
+            "signature": item.get("user_signature"),
             "liked_count": item.get("liked_count"),
             "comment_count": item.get("comment_count"),
             "share_count": item.get("share_count"),

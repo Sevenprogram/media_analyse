@@ -33,6 +33,7 @@ from ._store_impl import (ZhihuCsvStoreImplement,
                                           ZhihuExcelStoreImplement)
 from tools import utils
 from var import source_keyword_var
+from store.d1_store import D1StoreImplement
 
 
 class ZhihuStoreFactory:
@@ -45,6 +46,7 @@ class ZhihuStoreFactory:
         "sqlite": ZhihuSqliteStoreImplement,
         "mongodb": ZhihuMongoStoreImplement,
         "excel": ZhihuExcelStoreImplement,
+        "d1": lambda: D1StoreImplement("zhihu"),
     }
 
     @staticmethod

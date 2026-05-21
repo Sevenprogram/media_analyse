@@ -28,6 +28,7 @@ from var import source_keyword_var
 
 from .xhs_store_media import *
 from ._store_impl import *
+from store.d1_store import D1StoreImplement
 
 
 class XhsStoreFactory:
@@ -40,6 +41,7 @@ class XhsStoreFactory:
         "sqlite": XhsSqliteStoreImplement,
         "mongodb": XhsMongoStoreImplement,
         "excel": XhsExcelStoreImplement,
+        "d1": lambda: D1StoreImplement("xhs"),
     }
 
     @staticmethod

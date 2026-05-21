@@ -28,6 +28,7 @@ import config
 from var import source_keyword_var
 
 from ._store_impl import *
+from store.d1_store import D1StoreImplement
 
 
 class KuaishouStoreFactory:
@@ -40,6 +41,7 @@ class KuaishouStoreFactory:
         "sqlite": KuaishouSqliteStoreImplement,
         "mongodb": KuaishouMongoStoreImplement,
         "excel": KuaishouExcelStoreImplement,
+        "d1": lambda: D1StoreImplement("ks"),
     }
 
     @staticmethod

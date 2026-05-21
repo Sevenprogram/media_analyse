@@ -1,0 +1,14 @@
+.git
+.venv
+.uv-cache
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+data
+exports
+logs
+node_modules
+api/webui/node_modules
+database/sqlite_tables.db

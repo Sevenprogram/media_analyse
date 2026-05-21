@@ -74,6 +74,13 @@ POSTGRES_DB_USER = os.getenv("POSTGRES_DB_USER", "postgres")
 POSTGRES_DB_HOST = os.getenv("POSTGRES_DB_HOST", "localhost")
 POSTGRES_DB_PORT = os.getenv("POSTGRES_DB_PORT", 5432)
 POSTGRES_DB_NAME = os.getenv("POSTGRES_DB_NAME", "media_crawler")
+POSTGRES_DATABASE_URL = os.getenv("POSTGRES_DATABASE_URL", "")
+POSTGRES_CREATE_DATABASE = os.getenv("POSTGRES_CREATE_DATABASE", "true").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 postgres_db_config = {
     "user": POSTGRES_DB_USER,
@@ -81,4 +88,6 @@ postgres_db_config = {
     "host": POSTGRES_DB_HOST,
     "port": POSTGRES_DB_PORT,
     "db_name": POSTGRES_DB_NAME,
+    "database_url": POSTGRES_DATABASE_URL,
+    "create_database": POSTGRES_CREATE_DATABASE,
 }

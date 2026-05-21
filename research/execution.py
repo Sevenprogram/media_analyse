@@ -16,9 +16,11 @@ from research.enums import (
     JOB_CANCELLED,
     JOB_COMPLETED,
     JOB_FAILED,
+    JOB_PAUSED_BY_PLATFORM_CONFIG,
     JOB_RUNNING,
 )
 from research.platforms import get_research_platform
+from research.postprocess import run_post_crawl_analysis
 
 
 class EventRepository(Protocol):
@@ -99,6 +101,35 @@ def build_crawler_start_requests(
     return requests
 
 
+def build_crawler_start_request_for_unit(
+    job: dict[str, Any],
+    unit: dict[str, Any],
+    *,
+    options: ResearchExecutionOptions | None = None,
+) -> CrawlerStartRequest:
+    options = options or ResearchExecutionOptions()
+    collection_mode = unit.get("collection_mode") or job.get("collection_mode") or COLLECTION_SEARCH
+    crawler_type = _to_crawler_type_enum(collection_mode)
+    comment_policy = job.get("comment_policy") or {}
+    enable_comments = bool(comment_policy.get("enable_comments", True))
+    enable_sub_comments = bool(comment_policy.get("enable_sub_comments", False))
+
+    return CrawlerStartRequest(
+        platform=_to_platform_enum(unit["platform"]),
+        login_type=options.login_type,
+        crawler_type=crawler_type,
+        keywords=unit.get("keyword") or "",
+        specified_ids=unit.get("target_id") or "",
+        creator_ids=unit.get("creator_id") or "",
+        start_page=options.start_page,
+        enable_comments=enable_comments,
+        enable_sub_comments=enable_sub_comments,
+        save_option=options.save_option,
+        cookies=options.cookies,
+        headless=options.headless,
+    )
+
+
 def execution_plan_to_dict(requests: list[CrawlerStartRequest]) -> list[dict[str, Any]]:
     return [
         {
@@ -151,7 +182,17 @@ class ResearchExecutionManager:
         options: ResearchExecutionOptions,
     ) -> None:
         await self.repository.update_job_status(job["id"], JOB_RUNNING)
-        requests = build_crawler_start_requests(job, options=options)
+        requests = await self._enabled_start_requests(job=job, options=options)
+        if not requests:
+            await self.repository.update_job_status(job["id"], JOB_PAUSED_BY_PLATFORM_CONFIG)
+            await self.repository.create_event(
+                job_id=job["id"],
+                platform=None,
+                event_type="execution_paused_by_platform_config",
+                message="No enabled platform capability is available for this job",
+                stats={"platforms": job.get("platforms") or []},
+            )
+            return
         try:
             await self.repository.create_event(
                 job_id=job["id"],
@@ -255,6 +296,44 @@ class ResearchExecutionManager:
                 message=f"Backfill completed for {platform}",
                 stats=stats,
             )
+            postprocess_stats = await run_post_crawl_analysis(
+                self.repository,
+                job_id=job["id"],
+                platform=platform,
+            )
+            await self.repository.create_event(
+                job_id=job["id"],
+                platform=platform,
+                event_type="post_crawl_analysis_completed",
+                message=f"Post-crawl tagging and creator profile refresh completed for {platform}",
+                stats=postprocess_stats,
+            )
+
+    async def _enabled_start_requests(
+        self,
+        *,
+        job: dict[str, Any],
+        options: ResearchExecutionOptions,
+    ) -> list[CrawlerStartRequest]:
+        requests = build_crawler_start_requests(job, options=options)
+        enabled_requests = []
+        for request in requests:
+            capability_getter = getattr(self.repository, "get_platform_capability", None)
+            capability = await capability_getter(request.platform.value) if capability_getter else None
+            if capability is None or _capability_allows_mode(
+                capability,
+                request.crawler_type.value,
+            ):
+                enabled_requests.append(request)
+                continue
+            await self.repository.create_event(
+                job_id=job["id"],
+                platform=request.platform.value,
+                event_type="platform_capability_skipped",
+                message=f"Skipped {request.platform.value} because platform capability is disabled",
+                stats={"crawler_type": request.crawler_type.value},
+            )
+        return enabled_requests
 
     async def _wait_for_process(self) -> None:
         while self.crawler_manager.process and self.crawler_manager.process.poll() is None:
@@ -280,3 +359,15 @@ def _to_crawler_type_enum(collection_mode: str) -> CrawlerTypeEnum:
     if collection_mode == COLLECTION_CREATOR:
         return CrawlerTypeEnum.CREATOR
     raise ValueError(f"Unsupported research collection mode: {collection_mode}")
+
+
+def _capability_allows_mode(capability: dict[str, Any], crawler_type: str) -> bool:
+    if not capability.get("enabled", True):
+        return False
+    if crawler_type == COLLECTION_SEARCH:
+        return bool(capability.get("crawl_search_enabled", True))
+    if crawler_type == COLLECTION_DETAIL:
+        return bool(capability.get("crawl_detail_enabled", True))
+    if crawler_type == COLLECTION_CREATOR:
+        return bool(capability.get("crawl_creator_enabled", True))
+    return True

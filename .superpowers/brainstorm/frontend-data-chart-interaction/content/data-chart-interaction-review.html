@@ -1,0 +1,93 @@
+<h2>数据、图表和交互优化地图</h2>
+<p class="subtitle">基于当前研究台、增长总览、任务工作台、数据浏览和图表代码的评估。结论：还需要优化，优先补“数据解释”和“操作闭环”，再做图表增强。</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">Priority 1 · Data Trust Layer</div>
+        <div class="mockup-body">
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px">
+            <div class="placeholder">样本量</div>
+            <div class="placeholder">时间窗</div>
+            <div class="placeholder">数据来源</div>
+          </div>
+          <div class="placeholder" style="height:44px">口径说明 / 置信度 / 缺失原因</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A. 先补数据可信度</h3>
+      <p>给每个指标和图表补样本数、时间窗、来源、更新时间、置信度和缺失原因。最能减少误读。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">Priority 2 · Insightful Charts</div>
+        <div class="mockup-body">
+          <div style="display:grid;grid-template-columns:1.2fr .8fr;gap:10px">
+            <div class="placeholder" style="height:120px">趋势 + 异常点 + 对比线</div>
+            <div>
+              <div class="placeholder" style="height:52px;margin-bottom:10px">结论</div>
+              <div class="placeholder" style="height:58px">证据</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B. 再增强图表表达</h3>
+      <p>把简单柱状/折线升级成“趋势、对比、异常、解释”组合，而不是只展示数量。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">Priority 3 · Action Loop</div>
+        <div class="mockup-body">
+          <div class="placeholder" style="height:42px;margin-bottom:10px">发现机会</div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="mock-button">查看证据</button>
+            <button class="mock-button">创建任务</button>
+            <button class="mock-button">加入监控</button>
+          </div>
+          <div class="placeholder" style="height:40px;margin-top:10px">执行结果回写</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C. 最后补交互闭环</h3>
+      <p>从图表、机会榜、数据表直接进入“证据详情、创建任务、加入监控、导出”，并把结果回写到当前上下文。</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>推荐顺序</h3>
+  <div class="options">
+    <div class="option" data-choice="recommended" onclick="toggleSelect(this)">
+      <div class="letter">1</div>
+      <div class="content">
+        <h3>数据可信度 → 图表解释 → 交互闭环</h3>
+        <p>先保证用户知道数据能不能信，再让图表能解释问题，最后把洞察变成动作。</p>
+      </div>
+    </div>
+    <div class="option" data-choice="dashboard-first" onclick="toggleSelect(this)">
+      <div class="letter">2</div>
+      <div class="content">
+        <h3>增长总览优先</h3>
+        <p>适合先服务老板视角，把首页改成真正的决策面板。</p>
+      </div>
+    </div>
+    <div class="option" data-choice="data-browser-first" onclick="toggleSelect(this)">
+      <div class="letter">3</div>
+      <div class="content">
+        <h3>数据浏览优先</h3>
+        <p>适合先服务研究员视角，把表格、筛选、详情和导出做扎实。</p>
+      </div>
+    </div>
+  </div>
+</div>

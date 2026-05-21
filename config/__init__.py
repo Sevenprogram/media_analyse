@@ -18,5 +18,28 @@
 # 使用本代码即表示您同意遵守上述原则和LICENSE中的所有条款。
 
 
+import os
+
 from .base_config import *
 from .db_config import *
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+SAVE_DATA_OPTION = os.getenv("SAVE_DATA_OPTION", SAVE_DATA_OPTION)
+HEADLESS = _env_bool("HEADLESS", HEADLESS)
+ENABLE_CDP_MODE = _env_bool("ENABLE_CDP_MODE", ENABLE_CDP_MODE)
+CDP_CONNECT_EXISTING = _env_bool("CDP_CONNECT_EXISTING", CDP_CONNECT_EXISTING)
+ENABLE_TIKHUB = _env_bool("ENABLE_TIKHUB", ENABLE_TIKHUB)
+TIKHUB_API_KEY = os.getenv("TIKHUB_API_KEY", TIKHUB_API_KEY)
+TIKHUB_BASE_URL = os.getenv("TIKHUB_BASE_URL", TIKHUB_BASE_URL)
+TIKHUB_TIMEOUT_SECONDS = int(os.getenv("TIKHUB_TIMEOUT_SECONDS", TIKHUB_TIMEOUT_SECONDS))
+TIKHUB_MAX_RETRIES = int(os.getenv("TIKHUB_MAX_RETRIES", TIKHUB_MAX_RETRIES))
+TIKHUB_RETRY_BACKOFF_SECONDS = float(
+    os.getenv("TIKHUB_RETRY_BACKOFF_SECONDS", TIKHUB_RETRY_BACKOFF_SECONDS)
+)

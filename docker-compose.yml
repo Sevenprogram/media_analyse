@@ -1,0 +1,87 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_DB_PWD:-mediacrawler}
+      POSTGRES_DB: ${POSTGRES_DB_NAME:-media_crawler}
+    ports:
+      - "${POSTGRES_PUBLIC_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_DB_USER:-postgres} -d ${POSTGRES_DB_NAME:-media_crawler}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      SAVE_DATA_OPTION: postgres
+      POSTGRES_DB_HOST: postgres
+      POSTGRES_DB_PORT: 5432
+      UV_CACHE_DIR: /app/.uv-cache
+      HEADLESS: "true"
+      ENABLE_CDP_MODE: "false"
+      CDP_CONNECT_EXISTING: "false"
+    ports:
+      - "${API_PUBLIC_PORT:-8080}:8080"
+    volumes:
+      - ./data:/app/data
+      - ./exports:/app/exports
+      - ./logs:/app/logs
+    command: >
+      sh -lc "uv run python -m research.bootstrap --db-type postgres &&
+              uv run uvicorn api.main:app --host 0.0.0.0 --port 8080"
+
+  scheduler:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      SAVE_DATA_OPTION: postgres
+      POSTGRES_DB_HOST: postgres
+      POSTGRES_DB_PORT: 5432
+      UV_CACHE_DIR: /app/.uv-cache
+    command: >
+      sh -lc "uv run python -m research.bootstrap --db-type postgres &&
+              uv run python -m research.scheduler --interval ${SCHEDULER_INTERVAL:-60}"
+
+  worker:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      SAVE_DATA_OPTION: postgres
+      POSTGRES_DB_HOST: postgres
+      POSTGRES_DB_PORT: 5432
+      UV_CACHE_DIR: /app/.uv-cache
+      HEADLESS: "true"
+      ENABLE_CDP_MODE: "false"
+      CDP_CONNECT_EXISTING: "false"
+    volumes:
+      - ./data:/app/data
+      - ./exports:/app/exports
+      - ./logs:/app/logs
+    command: >
+      sh -lc "uv run python -m research.bootstrap --db-type postgres &&
+              uv run python -m research.worker --interval ${WORKER_INTERVAL:-10} --headless"
+
+volumes:
+  postgres_data:

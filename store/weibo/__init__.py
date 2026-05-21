@@ -29,6 +29,7 @@ from var import source_keyword_var
 
 from .weibo_store_media import *
 from ._store_impl import *
+from store.d1_store import D1StoreImplement
 
 
 class WeibostoreFactory:
@@ -41,6 +42,7 @@ class WeibostoreFactory:
         "sqlite": WeiboSqliteStoreImplement,
         "mongodb": WeiboMongoStoreImplement,
         "excel": WeiboExcelStoreImplement,
+        "d1": lambda: D1StoreImplement("wb"),
     }
 
     @staticmethod

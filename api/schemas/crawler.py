@@ -56,6 +56,7 @@ class SaveDataOptionEnum(str, Enum):
     MONGODB = "mongodb"
     EXCEL = "excel"
     POSTGRES = "postgres"
+    D1 = "d1"
 
 
 class CrawlerStartRequest(BaseModel):

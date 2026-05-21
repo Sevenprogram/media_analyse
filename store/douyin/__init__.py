@@ -28,6 +28,7 @@ from var import source_keyword_var
 
 from ._store_impl import *
 from .douyin_store_media import *
+from store.d1_store import D1StoreImplement
 
 
 class DouyinStoreFactory:
@@ -40,6 +41,7 @@ class DouyinStoreFactory:
         "sqlite": DouyinSqliteStoreImplement,
         "mongodb": DouyinMongoStoreImplement,
         "excel": DouyinExcelStoreImplement,
+        "d1": lambda: D1StoreImplement("dy"),
     }
 
     @staticmethod

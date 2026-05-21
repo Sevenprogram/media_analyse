@@ -83,7 +83,7 @@ CDP_CONNECT_EXISTING = True
 AUTO_CLOSE_BROWSER = True
 
 # Data saving type option configuration, supports: csv, db, json, jsonl, sqlite, excel, postgres. It is best to save to DB, with deduplication function.
-SAVE_DATA_OPTION = "jsonl"  # csv or db or json or jsonl or sqlite or excel or postgres
+SAVE_DATA_OPTION = "sqlite"  # csv or db or json or jsonl or sqlite or excel or postgres
 
 # Data saving path, if not specified by default, it will be saved to the data folder.
 SAVE_DATA_PATH = ""
@@ -135,6 +135,24 @@ CRAWLER_MAX_SLEEP_SEC = 2
 # 是否禁用 SSL 证书验证。仅在使用企业代理、Burp Suite、mitmproxy 等会注入自签名证书的中间人代理时设为 True。
 # 警告：禁用 SSL 验证将使所有流量暴露于中间人攻击风险，请勿在生产环境中开启。
 DISABLE_SSL_VERIFY = False
+
+# TikHub third-party API data source.
+# When enabled, supported platforms are routed to the TikHub API crawler
+# instead of the Playwright/CDP browser crawler.
+ENABLE_TIKHUB = False
+TIKHUB_API_KEY = ""
+TIKHUB_BASE_URL = "https://api.tikhub.io"
+TIKHUB_TIMEOUT_SECONDS = 30
+TIKHUB_MAX_RETRIES = 3
+TIKHUB_RETRY_BACKOFF_SECONDS = 2
+
+# Cloudflare D1 storage. D1 is SQLite-compatible but accessed through
+# Cloudflare's REST API from this Python crawler.
+CLOUDFLARE_ACCOUNT_ID = ""
+CLOUDFLARE_D1_DATABASE_ID = ""
+CLOUDFLARE_D1_API_TOKEN = ""
+CLOUDFLARE_D1_BASE_URL = "https://api.cloudflare.com/client/v4"
+CLOUDFLARE_D1_TIMEOUT_SECONDS = 30
 
 from .bilibili_config import *
 from .xhs_config import *

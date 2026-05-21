@@ -39,6 +39,7 @@ from base.base_crawler import AbstractCrawler
 from media_platform.bilibili import BilibiliCrawler
 from media_platform.douyin import DouYinCrawler
 from media_platform.kuaishou import KuaishouCrawler
+from media_platform.tikhub import TikHubCrawler
 from media_platform.tieba import TieBaCrawler
 from media_platform.weibo import WeiboCrawler
 from media_platform.xhs import XiaoHongShuCrawler
@@ -60,6 +61,12 @@ class CrawlerFactory:
 
     @staticmethod
     def create_crawler(platform: str) -> AbstractCrawler:
+        if getattr(config, "ENABLE_TIKHUB", False):
+            if platform not in CrawlerFactory.CRAWLERS:
+                supported = ", ".join(sorted(CrawlerFactory.CRAWLERS))
+                raise ValueError(f"Invalid media platform for TikHub mode: {platform!r}. Supported: {supported}")
+            return TikHubCrawler(platform=platform)
+
         crawler_class = CrawlerFactory.CRAWLERS.get(platform)
         if not crawler_class:
             supported = ", ".join(sorted(CrawlerFactory.CRAWLERS))

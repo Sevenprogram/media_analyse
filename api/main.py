@@ -25,12 +25,22 @@ import asyncio
 import os
 import subprocess
 import uvicorn
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 
 from .routers import crawler_router, data_router, websocket_router
+from .routers.accounts import router as accounts_router
+from .routers.admin import router as admin_router
+from .routers.backtests import router as backtests_router
+from .routers.competitors import router as competitors_router
+from .routers.content_tracking import router as content_tracking_router
+from .routers.creator_search import router as creator_search_router
+from .routers.keyword_opportunities import router as keyword_opportunities_router
+from .routers.keyword_library import router as keyword_library_router
+from .routers.reports import router as reports_router
 from .routers.research import router as research_router
 
 app = FastAPI(
@@ -41,6 +51,8 @@ app = FastAPI(
 
 # Get webui static files directory
 WEBUI_DIR = os.path.join(os.path.dirname(__file__), "webui")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_UV_CACHE_DIR = PROJECT_ROOT / ".uv-cache"
 
 # CORS configuration - allow frontend dev server access
 app.add_middleware(
@@ -61,14 +73,29 @@ app.include_router(crawler_router, prefix="/api")
 app.include_router(data_router, prefix="/api")
 app.include_router(websocket_router, prefix="/api")
 app.include_router(research_router, prefix="/api")
+app.include_router(accounts_router, prefix="/api")
+app.include_router(admin_router, prefix="/api")
+app.include_router(backtests_router, prefix="/api")
+app.include_router(creator_search_router, prefix="/api")
+app.include_router(competitors_router, prefix="/api")
+app.include_router(keyword_opportunities_router, prefix="/api")
+app.include_router(keyword_library_router, prefix="/api")
+app.include_router(content_tracking_router, prefix="/api")
+app.include_router(reports_router, prefix="/api")
 
 
 @app.get("/")
 async def serve_frontend():
-    """Return frontend page"""
-    index_path = os.path.join(WEBUI_DIR, "index.html")
-    if os.path.exists(index_path):
-        return FileResponse(index_path)
+    """Open the research console as the primary WebUI entry."""
+    return RedirectResponse(url="/research", status_code=307)
+
+
+@app.get("/crawler")
+async def serve_crawler_console():
+    """Return legacy crawler command center page."""
+    crawler_path = os.path.join(WEBUI_DIR, "crawler.html")
+    if os.path.exists(crawler_path):
+        return FileResponse(crawler_path)
     return {
         "message": "MediaCrawler WebUI API",
         "version": "1.0.0",
@@ -80,6 +107,9 @@ async def serve_frontend():
 @app.get("/research")
 async def serve_research_console():
     """Return research console page"""
+    built_research_path = os.path.join(WEBUI_DIR, "dist", "index.html")
+    if os.path.exists(built_research_path):
+        return FileResponse(built_research_path)
     research_path = os.path.join(WEBUI_DIR, "research.html")
     if os.path.exists(research_path):
         return FileResponse(research_path)
@@ -95,32 +125,22 @@ async def health_check():
 async def check_environment():
     """Check if MediaCrawler environment is configured correctly"""
     try:
-        # Run uv run main.py --help command to check environment
-        process = await asyncio.create_subprocess_exec(
-            "uv", "run", "main.py", "--help",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd="."  # Project root directory
-        )
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(),
-            timeout=30.0  # 30 seconds timeout
-        )
+        process = await asyncio.to_thread(_run_environment_check)
 
         if process.returncode == 0:
             return {
                 "success": True,
                 "message": "MediaCrawler environment configured correctly",
-                "output": stdout.decode("utf-8", errors="ignore")[:500]  # Truncate to first 500 characters
+                "output": process.stdout[:500]  # Truncate to first 500 characters
             }
         else:
-            error_msg = stderr.decode("utf-8", errors="ignore") or stdout.decode("utf-8", errors="ignore")
+            error_msg = process.stderr or process.stdout
             return {
                 "success": False,
                 "message": "Environment check failed",
                 "error": error_msg[:500]
             }
-    except asyncio.TimeoutError:
+    except subprocess.TimeoutExpired:
         return {
             "success": False,
             "message": "Environment check timeout",
@@ -136,8 +156,31 @@ async def check_environment():
         return {
             "success": False,
             "message": "Environment check error",
-            "error": str(e)
+            "error": f"{type(e).__name__}: {e}"
         }
+
+
+def _run_environment_check() -> subprocess.CompletedProcess[str]:
+    """Run the environment check in a worker thread.
+
+    Windows uvicorn reload can run with a selector event loop, where
+    asyncio subprocess APIs raise NotImplementedError. subprocess.run keeps
+    this endpoint portable while the route itself remains async.
+    """
+    env = os.environ.copy()
+    env.setdefault("UV_CACHE_DIR", str(PROJECT_UV_CACHE_DIR))
+
+    return subprocess.run(
+        ["uv", "run", "main.py", "--help"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=PROJECT_ROOT,
+        env=env,
+        timeout=30.0,
+        text=True,
+        encoding="utf-8",
+        errors="ignore",
+    )
 
 
 @app.get("/api/config/platforms")

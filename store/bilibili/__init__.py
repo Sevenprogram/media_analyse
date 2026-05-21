@@ -29,6 +29,7 @@ from var import source_keyword_var
 
 from ._store_impl import *
 from .bilibilli_store_media import *
+from store.d1_store import D1StoreImplement
 
 
 class BiliStoreFactory:
@@ -41,6 +42,7 @@ class BiliStoreFactory:
         "sqlite": BiliSqliteStoreImplement,
         "mongodb": BiliMongoStoreImplement,
         "excel": BiliExcelStoreImplement,
+        "d1": lambda: D1StoreImplement("bili"),
     }
 
     @staticmethod

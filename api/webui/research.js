@@ -131,6 +131,11 @@ function readJobForm() {
     comment_policy: commentPolicy,
     raw_record_mode: $("rawRecordMode").value,
     anonymize_authors: $("anonymizeAuthors").checked,
+    schedule_enabled: $("scheduleEnabled").checked,
+    schedule_interval_minutes: $("scheduleEnabled").checked
+      ? Number($("scheduleInterval").value || 60)
+      : null,
+    next_run_at: $("nextRunAt").value || null,
   };
 }
 
@@ -146,6 +151,9 @@ function writeJobForm(job) {
   $("endDate").value = job?.end_date || "";
   $("rawRecordMode").value = job?.raw_record_mode || "minimal";
   $("anonymizeAuthors").checked = job?.anonymize_authors ?? true;
+  $("scheduleEnabled").checked = job?.schedule_enabled ?? false;
+  $("scheduleInterval").value = job?.schedule_interval_minutes || 60;
+  $("nextRunAt").value = toDatetimeLocal(job?.next_run_at);
   renderCollectionModes();
   renderPlatformChecks(job?.platforms);
   const policy = job?.comment_policy || {};
@@ -226,6 +234,21 @@ async function previewPlan() {
   $("executionPlan").textContent = JSON.stringify(plan, null, 2);
 }
 
+async function scheduleJob() {
+  ensureSelected();
+  const result = await api(`/api/research/jobs/${state.selectedJob.id}/schedule`, {
+    method: "POST",
+  });
+  $("executionPlan").textContent = JSON.stringify(result, null, 2);
+  await loadJobs();
+}
+
+async function loadCrawlUnits() {
+  ensureSelected();
+  const result = await api(`/api/research/jobs/${state.selectedJob.id}/crawl-units`);
+  $("executionPlan").textContent = JSON.stringify(result, null, 2);
+}
+
 async function executeJob() {
   ensureSelected();
   const result = await api(`/api/research/jobs/${state.selectedJob.id}/execute`, {
@@ -240,6 +263,86 @@ async function loadExecutionStatus() {
   const result = await api("/api/research/execution/status");
   $("executionPlan").textContent = JSON.stringify(result, null, 2);
   if (state.selectedJob) await loadJobs();
+}
+
+async function loadWorkers() {
+  const data = await api("/api/research/workers/status");
+  $("workerList").innerHTML = (data.workers || [])
+    .map(
+      (worker) => `
+      <div class="provider-item">
+        <strong>${escapeHtml(worker.worker_id)} ${worker.online ? "在线" : "离线"}</strong>
+        <div class="muted">${escapeHtml(worker.status)} | unit ${escapeHtml(worker.current_unit_id || "-")} | ${escapeHtml(worker.last_seen_at || "")}</div>
+      </div>`
+    )
+    .join("");
+}
+
+async function saveRateLimit() {
+  const platform = $("ratePlatform").value.trim();
+  const payload = {
+    platform,
+    requests_per_minute: Number($("rateRpm").value || 12),
+    min_sleep_seconds: Number($("rateMinSleep").value || 1),
+    max_sleep_seconds: Number($("rateMaxSleep").value || 5),
+    enabled: $("rateEnabled").checked,
+  };
+  const result = await api(`/api/research/platform-rate-limits/${platform}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+  $("executionPlan").textContent = JSON.stringify(result, null, 2);
+  await loadRateLimits();
+}
+
+async function loadRateLimits() {
+  const data = await api("/api/research/platform-rate-limits");
+  $("rateLimitList").innerHTML = (data.rate_limits || [])
+    .map(
+      (item) => `
+        <div class="provider-item">
+          <strong>${escapeHtml(item.platform)} ${item.enabled ? "启用" : "停用"}</strong>
+          <div class="muted">${item.requests_per_minute}/min | sleep ${item.min_sleep_seconds}-${item.max_sleep_seconds}s</div>
+        </div>`
+    )
+    .join("");
+}
+
+async function saveAuthProfile() {
+  const payload = {
+    name: $("authName").value.trim(),
+    platform: $("authPlatform").value.trim(),
+    login_type: $("authLoginType").value,
+    cookies: $("authCookies").value,
+    enabled: $("authEnabled").checked,
+  };
+  const result = await api("/api/research/auth-profiles", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  $("executionPlan").textContent = JSON.stringify(result, null, 2);
+  $("authCookies").value = "";
+  await loadAuthProfiles();
+}
+
+async function loadAuthProfiles() {
+  const data = await api("/api/research/auth-profiles");
+  $("authProfileList").innerHTML = (data.profiles || [])
+    .map(
+      (profile) => `
+      <div class="provider-item">
+        <strong>#${profile.id} ${escapeHtml(profile.name)} ${profile.enabled ? "启用" : "停用"}</strong>
+        <div class="muted">${escapeHtml(profile.platform)} | ${escapeHtml(profile.login_type)} | cookie ${profile.cookie_set ? "已设置" : "未设置"}</div>
+      </div>`
+    )
+    .join("");
+}
+
+async function loadValidationChecklist() {
+  const platform = $("validationPlatform").value.trim();
+  const suffix = platform ? `?platform=${encodeURIComponent(platform)}` : "";
+  const result = await api(`/api/research/validation/checklist${suffix}`);
+  $("validationResult").textContent = JSON.stringify(result, null, 2);
 }
 
 async function stopExecution() {
@@ -490,6 +593,14 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
+function toDatetimeLocal(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (item) => String(item).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 function bindEvents() {
   $("refreshBtn").addEventListener("click", () => loadJobs().catch(alert));
   $("setupStatusBtn").addEventListener("click", () => loadSetupStatus().catch(alert));
@@ -500,10 +611,18 @@ function bindEvents() {
     renderJobs();
   });
   $("createBtn").addEventListener("click", () => saveJob().catch(alert));
+  $("scheduleBtn").addEventListener("click", () => scheduleJob().catch(alert));
+  $("unitsBtn").addEventListener("click", () => loadCrawlUnits().catch(alert));
   $("planBtn").addEventListener("click", () => previewPlan().catch(alert));
   $("executeBtn").addEventListener("click", () => executeJob().catch(alert));
   $("statusBtn").addEventListener("click", () => loadExecutionStatus().catch(alert));
   $("stopBtn").addEventListener("click", () => stopExecution().catch(alert));
+  $("loadWorkersBtn").addEventListener("click", () => loadWorkers().catch(alert));
+  $("saveRateLimitBtn").addEventListener("click", () => saveRateLimit().catch(alert));
+  $("loadRateLimitsBtn").addEventListener("click", () => loadRateLimits().catch(alert));
+  $("saveAuthProfileBtn").addEventListener("click", () => saveAuthProfile().catch(alert));
+  $("loadAuthProfilesBtn").addEventListener("click", () => loadAuthProfiles().catch(alert));
+  $("loadValidationBtn").addEventListener("click", () => loadValidationChecklist().catch(alert));
   $("loadStatsBtn").addEventListener("click", () => loadStats().catch(alert));
   $("loadEventsBtn").addEventListener("click", () => loadEvents().catch(alert));
   $("loadChartsBtn").addEventListener("click", () => loadCharts().catch(alert));
@@ -529,5 +648,12 @@ async function init() {
   await loadConfigOptions().catch(() => {});
   writeJobForm(null);
   await loadSetupStatus().catch(() => {});
-  await Promise.allSettled([loadJobs(), loadProviders(), loadPrompts()]);
+  await Promise.allSettled([
+    loadJobs(),
+    loadProviders(),
+    loadPrompts(),
+    loadWorkers(),
+    loadRateLimits(),
+    loadAuthProfiles(),
+  ]);
 }
