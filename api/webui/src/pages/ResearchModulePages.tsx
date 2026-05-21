@@ -1992,6 +1992,7 @@ type ContentTrackingState = {
   realtimeJobId: number | null;
   realtimeBusyJobId: number | null;
   realtimeCancelling: boolean;
+  realtimeLimit: number;
 };
 
 const contentTrackingState: ContentTrackingState = {
@@ -2018,6 +2019,7 @@ const contentTrackingState: ContentTrackingState = {
   realtimeJobId: null,
   realtimeBusyJobId: null,
   realtimeCancelling: false,
+  realtimeLimit: 50,
 };
 
 const contentTrackingListeners = new Set<() => void>();
@@ -2075,6 +2077,7 @@ export function ContentTrackingPage() {
   const [realtimeJobId, setRealtimeJobId] = useContentTrackingField("realtimeJobId");
   const [realtimeBusyJobId, setRealtimeBusyJobId] = useContentTrackingField("realtimeBusyJobId");
   const [realtimeCancelling, setRealtimeCancelling] = useContentTrackingField("realtimeCancelling");
+  const [realtimeLimit, setRealtimeLimit] = useContentTrackingField("realtimeLimit");
 
   const selectedTerms = [...selectedKeywords];
   const platformPayload = platform === "all" ? [] : [platform];
@@ -2161,7 +2164,7 @@ export function ContentTrackingPage() {
             keywords: terms,
             platforms: platformPayload,
             realtime: true,
-            limit: 50,
+            limit: realtimeLimit,
           }),
         });
         if (discovery.status === "busy") {
@@ -2393,6 +2396,24 @@ export function ContentTrackingPage() {
               <strong>是否实时搜索</strong>
               <small>{realtimeSupportedPlatform ? "勾选后会先通过 TikHub 搜索小红书、抖音并入库" : "实时搜索暂只支持小红书和抖音"}</small>
             </span>
+          </label>
+          <label className={`content-realtime-limit ${!realtimeSearchEnabled ? "disabled" : ""}`}>
+            <span>
+              <strong>获取帖子数</strong>
+              <small>所有已选平台合计获取，后端会自动拆分到小红书/抖音。</small>
+            </span>
+            <input
+              type="number"
+              min={1}
+              max={200}
+              step={1}
+              value={realtimeLimit}
+              disabled={!realtimeSearchEnabled || Boolean(running)}
+              onChange={(event) => {
+                const value = Number(event.target.value || 1);
+                setRealtimeLimit(Math.max(1, Math.min(200, value)));
+              }}
+            />
           </label>
           <div className="content-action-row">
             <Button type="button" variant="primary" onClick={() => void runExtractKeywords()} disabled={Boolean(running)}>

@@ -1,5 +1,6 @@
 import os
 from datetime import date
+from math import ceil
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -49,6 +50,20 @@ def _resolve_realtime_platforms(platforms: list[str]) -> list[str]:
             detail="实时搜索暂只支持小红书和抖音",
         )
     return selected
+
+
+def _content_realtime_comment_policy(
+    request: SimilarContentSearchRequest,
+    platforms: list[str],
+) -> dict[str, Any]:
+    total_limit = max(1, int(request.limit or 50))
+    per_platform_limit = max(1, ceil(total_limit / max(1, len(platforms))))
+    return {
+        "enable_comments": False,
+        "enable_sub_comments": False,
+        "max_posts_per_job": per_platform_limit,
+        "content_tracking_total_limit": total_limit,
+    }
 
 
 class ContentTrackingRequest(BaseModel):
@@ -193,10 +208,7 @@ async def _search_similar_with_realtime(request: SimilarContentSearchRequest) ->
             "start_date": date.today(),
             "end_date": date.today(),
             "status": "pending",
-            "comment_policy": {
-                "enable_comments": False,
-                "enable_sub_comments": False,
-            },
+            "comment_policy": _content_realtime_comment_policy(request, realtime_platforms),
             "raw_record_mode": "minimal",
             "anonymize_authors": True,
         }
@@ -338,10 +350,7 @@ async def start_realtime_content_discovery(request: SimilarContentSearchRequest)
             "start_date": date.today(),
             "end_date": date.today(),
             "status": "pending",
-            "comment_policy": {
-                "enable_comments": False,
-                "enable_sub_comments": False,
-            },
+            "comment_policy": _content_realtime_comment_policy(request, realtime_platforms),
             "raw_record_mode": "minimal",
             "anonymize_authors": True,
         }
@@ -406,8 +415,9 @@ async def wait_content_discovery_and_refresh(job_id: int):
     if job is None:
         raise HTTPException(status_code=404, detail="Content discovery job not found")
     repository = ResearchRepository()
-    posts = await repository.list_all_posts(job_id=job_id, limit=500)
-    candidates = search_similar_content(keywords=job.get("keywords") or [], posts=posts, limit=50)
+    total_limit = int((job.get("comment_policy") or {}).get("content_tracking_total_limit") or 50)
+    posts = await repository.list_all_posts(job_id=job_id, limit=max(1, total_limit))
+    candidates = search_similar_content(keywords=job.get("keywords") or [], posts=posts, limit=max(1, total_limit))
     return {
         "job_id": job_id,
         "status": job["status"],

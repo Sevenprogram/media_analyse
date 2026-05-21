@@ -5143,6 +5143,43 @@ fieldset {
   opacity: 0.62;
 }
 
+.content-realtime-limit {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  padding: 9px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.content-realtime-limit.disabled {
+  opacity: 0.62;
+}
+
+.content-realtime-limit span {
+  display: grid;
+  gap: 3px;
+}
+
+.content-realtime-limit strong {
+  font-size: 13px;
+}
+
+.content-realtime-limit small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.content-realtime-limit input {
+  width: 96px;
+  height: 34px;
+  text-align: center;
+}
+
+
 .content-action-row,
 .tracker-create-row {
   display: flex;

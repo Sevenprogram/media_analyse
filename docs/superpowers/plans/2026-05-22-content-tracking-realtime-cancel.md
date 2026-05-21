@@ -47,6 +47,10 @@ Add `realtimeJobId`, `realtimeBusyJobId`, and `realtimeCancelling` to the module
 
 When realtime search starts and the backend returns job metadata, store the content tracking job id. If the backend returns a busy error, show a global-busy strip without a cancel button.
 
+- [ ] **Step 2a: Add total post limit**
+
+Add a realtime-only numeric input that sends the combined post limit to the backend. The backend stores the combined limit and splits it across selected platforms.
+
 - [ ] **Step 3: Add cancel action**
 
 Wire the cancel button to `POST /api/content-tracking/realtime-jobs/{job_id}/cancel`, clear local realtime state on success, and display a Chinese status message.

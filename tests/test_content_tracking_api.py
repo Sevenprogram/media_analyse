@@ -261,6 +261,8 @@ def test_content_realtime_discovery_defaults_to_supported_platforms(monkeypatch)
     assert response.status_code == 200
     assert response.json()["job_id"] == 11
     assert calls["created_job"]["platforms"] == ["xhs", "dy"]
+    assert calls["created_job"]["comment_policy"]["content_tracking_total_limit"] == 50
+    assert calls["created_job"]["comment_policy"]["max_posts_per_job"] == 25
     assert calls["scheduled"]["job_id"] == 11
 
 
@@ -349,8 +351,38 @@ def test_search_similar_realtime_schedules_job_and_refreshes(monkeypatch):
     assert body["candidates"][0]["evidence"]["source"] == "realtime_imported"
     assert calls["created_job"]["topic"] == "content_realtime_discovery"
     assert calls["created_job"]["platforms"] == ["xhs", "dy"]
+    assert calls["created_job"]["comment_policy"]["content_tracking_total_limit"] == 50
+    assert calls["created_job"]["comment_policy"]["max_posts_per_job"] == 25
     assert calls["scheduled"]["job_id"] == 42
     assert calls["waited"] == 42
+
+
+def test_content_realtime_total_limit_is_split_across_selected_platforms(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+    calls = {"created_job": None}
+
+    class FakeRepository:
+        async def create_job(self, payload):
+            calls["created_job"] = payload
+            return {"id": 21, **payload}
+
+    async def fake_schedule(job_id, background=True, force_schedule=True):
+        return {"status": "accepted", "job_id": job_id}
+
+    import api.routers.content_tracking as content_router
+
+    monkeypatch.setattr(content_router, "ResearchRepository", FakeRepository)
+    monkeypatch.setattr(content_router, "schedule_and_execute_research_job", fake_schedule)
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/content-tracking/realtime-discovery",
+        json={"keywords": ["K12"], "platforms": ["xhs", "dy"], "realtime": True, "limit": 31},
+    )
+
+    assert response.status_code == 200
+    assert calls["created_job"]["comment_policy"]["content_tracking_total_limit"] == 31
+    assert calls["created_job"]["comment_policy"]["max_posts_per_job"] == 16
 
 
 def test_search_similar_realtime_rejects_unsupported_platform(monkeypatch):

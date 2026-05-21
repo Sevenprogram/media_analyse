@@ -7,6 +7,7 @@ Content tracking realtime search needs a visible running strip and a cancel acti
 ## Behavior
 
 - When content tracking starts realtime search, the UI stores the created `content_realtime_discovery` job id and shows a compact running strip with stage, progress, job id, and a cancel button.
+- The realtime form includes a total post limit. The limit is a combined target across selected platforms; the backend splits it across platforms before creating crawler requests.
 - If another research execution is already running, the UI shows a compact busy strip saying a different task is running. It does not show a cancel button because the task was not started by content tracking.
 - Cancel is allowed only for the current content tracking realtime job. The backend verifies the target job exists and has `topic == "content_realtime_discovery"` before attempting to stop it.
 - If the target job is the active research execution, the backend stops the crawler and cancels the active execution task. If it is only pending or queued, the backend marks it cancelled.
