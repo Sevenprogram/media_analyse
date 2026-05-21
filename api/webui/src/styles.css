@@ -5037,6 +5037,42 @@ fieldset {
   color: #7c3f00;
 }
 
+.content-realtime-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.content-realtime-toggle input {
+  margin-top: 3px;
+}
+
+.content-realtime-toggle span {
+  display: grid;
+  gap: 3px;
+}
+
+.content-realtime-toggle strong {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.content-realtime-toggle small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.content-realtime-toggle.disabled {
+  opacity: 0.62;
+}
+
 .content-action-row,
 .tracker-create-row {
   display: flex;
@@ -5044,6 +5080,48 @@ fieldset {
   gap: 8px;
   align-items: center;
   margin-top: 12px;
+}
+
+.content-realtime-progress {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.content-realtime-progress-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.content-realtime-progress-header strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.content-realtime-progress-track {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--panel-soft);
+}
+
+.content-realtime-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 180ms ease;
+}
+
+.content-realtime-progress small {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .content-status {
