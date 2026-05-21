@@ -42,6 +42,16 @@ Each creator row shows a compact source label:
 
 If TikHub fails, local results still render. The response includes realtime diagnostics so the UI can show a non-blocking warning such as `Realtime search failed; database results are shown`.
 
+When realtime search is enabled, the search interaction should show visible progress rather than a single loading spinner. The form area displays a compact progress bar and current stage label:
+
+- `Searching database`
+- `Searching realtime platforms`
+- `Saving creator profiles`
+- `Merging results`
+- `Complete`
+
+The progress indicator is determinate when the backend can report known stages, and stage-based when exact TikHub page counts are unknown. The user should be able to understand that local results are still being protected even while realtime work is slower.
+
 ## Request And Response Shape
 
 Extend `CreatorSearchRequest` with:
@@ -89,6 +99,20 @@ The top-level response adds diagnostics:
 - `ok`
 - `partial`
 - `failed`
+
+For better interaction feedback, the backend should also expose lightweight progress metadata when practical:
+
+```json
+{
+  "progress": {
+    "stage": "merging_results",
+    "label": "Merging results",
+    "percent": 85
+  }
+}
+```
+
+For the first implementation this can be request-lifecycle progress calculated by the frontend from known phases. A future enhancement can stream progress through polling or WebSocket events if TikHub searches become long-running.
 
 ## Backend Architecture
 
@@ -212,10 +236,18 @@ Update `ResearchModulePages.tsx` creator discovery form:
 - Add a checkbox bound to `includeRealtime`.
 - Send `include_realtime` in the search payload.
 - Show source badges on each result row.
-- Show a search status that distinguishes database and realtime work when realtime is enabled.
+- Show a progress bar and current stage label that distinguishes database search, realtime platform search, persistence, merge, and completion when realtime is enabled.
 - Show a non-blocking warning if realtime diagnostics report `failed` or `partial`.
 
 The checkbox should be off by default to avoid surprise TikHub usage, latency, and quota consumption.
+
+Progress UI behavior:
+
+- Local-only search can keep a simple loading state.
+- Realtime search shows the progress bar immediately after submit.
+- The submit button remains disabled while the search is running.
+- Existing results remain visible but visually marked as stale or updating until the new search finishes.
+- On partial realtime failure, progress reaches complete and the warning explains which realtime source failed.
 
 ## Testing
 
@@ -233,6 +265,7 @@ Frontend tests or smoke checks:
 - Checkbox defaults off.
 - Search payload includes `include_realtime` only when checked.
 - Result badges render for database, realtime, and mixed sources.
+- Progress bar advances through database, realtime, persistence, merge, and complete stages.
 - Warning appears for failed or partial realtime search.
 
 ## Rollout
