@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from research.enums import PARSER_SOURCE_RULE
+from research.realtime_creator_discovery import discover_realtime_creators
 
 
 def parse_search_intent(
@@ -344,6 +345,20 @@ async def search_creators(repository, request: dict[str, Any]) -> dict[str, Any]
         )
     results.sort(key=lambda item: item["match_score"], reverse=True)
     results = _dedupe_creator_results(results)
+    realtime_diagnostics = _realtime_skipped_diagnostics()
+    if request.get("include_realtime"):
+        try:
+            realtime = await discover_realtime_creators(repository, request)
+            realtime_diagnostics = realtime["diagnostics"]
+            results = _merge_creator_result_sources(results, realtime.get("results") or [])
+        except Exception as exc:
+            realtime_diagnostics = {
+                **_realtime_skipped_diagnostics(),
+                "enabled": True,
+                "status": "failed",
+                "platforms": request.get("platforms") or [],
+                "error": str(exc),
+            }
     diagnostics["guidance"] = _creator_search_guidance(
         profile_count=diagnostics["profile_count"],
         result_count=len(results),
@@ -353,7 +368,7 @@ async def search_creators(repository, request: dict[str, Any]) -> dict[str, Any]
     return {
         "intent": intent,
         "diagnostics": diagnostics,
-        "realtime": _realtime_skipped_diagnostics(),
+        "realtime": realtime_diagnostics,
         "progress": _complete_progress(),
         "results": results[: int(request.get("limit") or 50)],
     }
@@ -388,6 +403,64 @@ def _realtime_skipped_diagnostics() -> dict[str, Any]:
 
 def _complete_progress() -> dict[str, Any]:
     return {"stage": "complete", "label": "Complete", "percent": 100}
+
+
+def _merge_creator_result_sources(
+    local_results: list[dict[str, Any]],
+    realtime_results: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    index: dict[str, dict[str, Any]] = {}
+    for item in local_results:
+        key = _creator_identity_key(item)
+        index[key] = item
+        merged.append(item)
+    for realtime in realtime_results:
+        key = _creator_identity_key(realtime)
+        local = index.get(key)
+        if local is None:
+            merged.append(realtime)
+            index[key] = realtime
+            continue
+        local.update(_fill_missing_profile_fields(local, realtime))
+        local["source_type"] = "mixed"
+        local["source_labels"] = ["Database", "Realtime"]
+        local["realtime_unverified"] = False
+        if not local.get("representative_posts") and realtime.get("representative_posts"):
+            local["representative_posts"] = realtime["representative_posts"]
+        if realtime.get("matched_tags"):
+            local["matched_tags"] = (local.get("matched_tags") or []) + realtime["matched_tags"]
+    merged.sort(key=lambda item: float(item.get("match_score") or 0), reverse=True)
+    return _dedupe_creator_results(merged)
+
+
+def _creator_identity_key(item: dict[str, Any]) -> str:
+    platform = str(item.get("platform") or "")
+    creator_id = str(item.get("creator_id") or "")
+    if platform and creator_id:
+        return f"id:{platform}:{creator_id}"
+    profile_url = str(item.get("profile_url") or "").strip()
+    if profile_url:
+        return f"url:{profile_url}"
+    display_name = str(item.get("display_name") or "").strip()
+    return f"name:{platform}:{display_name}"
+
+
+def _fill_missing_profile_fields(local: dict[str, Any], realtime: dict[str, Any]) -> dict[str, Any]:
+    fields = (
+        "display_name",
+        "profile_url",
+        "bio",
+        "follower_count",
+        "recent_post_count_30d",
+        "avg_engagement_rate",
+        "hot_post_rate",
+    )
+    return {
+        field: realtime[field]
+        for field in fields
+        if local.get(field) in (None, "", 0) and realtime.get(field) not in (None, "", 0)
+    }
 
 
 def _dedupe_creator_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
