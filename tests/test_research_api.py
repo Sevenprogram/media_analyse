@@ -1,3 +1,5 @@
+from datetime import date
+
 from fastapi.testclient import TestClient
 
 import config
@@ -520,8 +522,141 @@ def test_run_now_growth_project_queues_collection_job(monkeypatch):
     assert body["target_posts_per_platform"] == 25
     assert body["target_posts_total"] == 25
     assert body["collection_window_days"] == 3
+    assert body["prefer_latest_posts"] is False
     assert created["request"].comment_policy.max_posts_per_job == 25
+    assert created["request"].comment_policy.prefer_latest_posts is False
     assert (created["request"].end_date - created["request"].start_date).days == 2
+
+
+def test_run_now_growth_project_can_prefer_latest_posts(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+    created = {}
+
+    class FakeService:
+        async def get_growth_project(self, project_id):
+            return {
+                "project": {
+                    "id": project_id,
+                    "name": "Education summer",
+                    "platforms": ["xhs"],
+                },
+                "keywords": [{"keyword": "K12 education"}],
+                "collection_records": [],
+            }
+
+        async def create_job(self, request):
+            created["request"] = request
+            return {
+                "id": 24,
+                "name": request.name,
+                "topic": request.topic,
+                "platforms": request.platforms,
+                "keywords": request.keywords,
+                "status": "pending",
+            }
+
+    class FakeRepository:
+        async def list_growth_project_records(self, include_archived=False):
+            return [{"id": 7, "name": "Education summer"}]
+
+        async def update_growth_project(self, project_id, payload):
+            return {"id": project_id, **payload}
+
+        async def update_growth_project_collection_plans(self, project_id, payload):
+            return []
+
+    async def fake_enqueue(job_id, *, project_id=None):
+        return {
+            "status": "queued",
+            "job_id": job_id,
+            "queue_position": 1,
+            "queue": {"running_job_id": None, "queued_jobs": [], "queue_length": 1},
+        }
+
+    monkeypatch.setattr(research_router, "get_service", lambda: FakeService())
+    monkeypatch.setattr(research_router, "ResearchRepository", FakeRepository)
+    monkeypatch.setattr(research_router, "enqueue_research_collection_job", fake_enqueue)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/research/growth-projects/education_summer/collection/run-now",
+        json={
+            "target_posts_per_platform": 25,
+            "collection_window_days": 7,
+            "prefer_latest_posts": True,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["prefer_latest_posts"] is True
+    assert body["collection_window_days"] == 7
+    assert created["request"].comment_policy.prefer_latest_posts is True
+    assert (created["request"].end_date - created["request"].start_date).days == 6
+
+
+def test_run_now_growth_project_all_time_disables_time_window(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+    created = {}
+
+    class FakeService:
+        async def get_growth_project(self, project_id):
+            return {
+                "project": {
+                    "id": project_id,
+                    "name": "Education summer",
+                    "platforms": ["dy"],
+                },
+                "keywords": [{"keyword": "K12 education"}],
+                "collection_records": [],
+            }
+
+        async def create_job(self, request):
+            created["request"] = request
+            return {
+                "id": 23,
+                "name": request.name,
+                "topic": request.topic,
+                "platforms": request.platforms,
+                "keywords": request.keywords,
+                "status": "pending",
+            }
+
+    class FakeRepository:
+        async def list_growth_project_records(self, include_archived=False):
+            return [{"id": 7, "name": "Education summer"}]
+
+        async def update_growth_project(self, project_id, payload):
+            return {"id": project_id, **payload}
+
+        async def update_growth_project_collection_plans(self, project_id, payload):
+            return []
+
+    async def fake_enqueue(job_id, *, project_id=None):
+        return {
+            "status": "queued",
+            "job_id": job_id,
+            "queue_position": 1,
+            "queue": {"running_job_id": None, "queued_jobs": [], "queue_length": 1},
+        }
+
+    monkeypatch.setattr(research_router, "get_service", lambda: FakeService())
+    monkeypatch.setattr(research_router, "ResearchRepository", FakeRepository)
+    monkeypatch.setattr(research_router, "enqueue_research_collection_job", fake_enqueue)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/research/growth-projects/education_summer/collection/run-now",
+        json={"target_posts_per_platform": 25, "collection_window_days": None},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "queued"
+    assert body["collection_window_days"] is None
+    assert created["request"].start_date == date(1970, 1, 1)
+    assert created["request"].comment_policy.disable_time_window is True
+    assert created["request"].comment_policy.max_posts_per_job == 25
 
 
 def test_growth_project_collection_progress_route(monkeypatch):

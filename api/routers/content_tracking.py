@@ -64,6 +64,7 @@ def _content_realtime_comment_policy(
         "enable_sub_comments": False,
         "max_posts_per_job": per_platform_limit,
         "content_tracking_total_limit": total_limit,
+        "prefer_latest_posts": request.prefer_latest_posts,
     }
 
 

@@ -26,6 +26,8 @@ class CommentPolicy(BaseModel):
     max_posts_per_job: int | None = Field(default=None, ge=1)
     stop_after_hours: int | None = Field(default=None, ge=1)
     ethical_note: str | None = None
+    disable_time_window: bool = False
+    prefer_latest_posts: bool = False
 
     @classmethod
     def default(cls) -> "CommentPolicy":
@@ -217,7 +219,8 @@ class GrowthProjectUpdate(BaseModel):
 
 class GrowthProjectRunNowRequest(BaseModel):
     target_posts_per_platform: int = Field(default=50, ge=10, le=500)
-    collection_window_days: int = Field(default=3, ge=1, le=365)
+    collection_window_days: int | None = Field(default=3, ge=1, le=365)
+    prefer_latest_posts: bool = False
 
 
 class ResearchJobUpdate(BaseModel):
@@ -742,6 +745,7 @@ class SimilarContentSearchRequest(BaseModel):
     exclude_tracked: bool = True
     limit: int = Field(default=50, ge=1, le=200)
     collection_window_days: int = Field(default=3, ge=1, le=30)
+    prefer_latest_posts: bool = False
 
     @field_validator("keywords")
     @classmethod

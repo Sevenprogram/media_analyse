@@ -34,6 +34,7 @@ from tenacity import RetryError
 
 import config
 from base.base_crawler import AbstractCrawler
+from media_platform.recent_search import within_recent_days
 from model.m_xiaohongshu import NoteUrlInfo, CreatorUrlInfo
 from proxy.proxy_ip_pool import IpInfoModel, create_ip_pool
 from store import xhs as xhs_store
@@ -152,7 +153,7 @@ class XiaoHongShuCrawler(AbstractCrawler):
                         keyword=keyword,
                         search_id=search_id,
                         page=page,
-                        sort=(SearchSortType(config.SORT_TYPE) if config.SORT_TYPE != "" else SearchSortType.GENERAL),
+                        sort=self._search_sort_type(),
                     )
                     utils.logger.info(f"[XiaoHongShuCrawler.search] Search notes response: {notes_res}")
                     if not notes_res or not notes_res.get("has_more", False):
@@ -169,7 +170,7 @@ class XiaoHongShuCrawler(AbstractCrawler):
                     ]
                     note_details = await asyncio.gather(*task_list)
                     for note_detail in note_details:
-                        if note_detail:
+                        if note_detail and self._within_requested_time_window(note_detail):
                             await xhs_store.update_xhs_note(note_detail)
                             await self.get_notice_media(note_detail)
                             note_ids.append(note_detail.get("note_id"))
@@ -184,6 +185,19 @@ class XiaoHongShuCrawler(AbstractCrawler):
                 except DataFetchError:
                     utils.logger.error("[XiaoHongShuCrawler.search] Get note detail error")
                     break
+
+    def _search_sort_type(self) -> SearchSortType:
+        if bool(getattr(config, "CRAWLER_PREFER_LATEST_POSTS", False)):
+            return SearchSortType.LATEST
+        return SearchSortType(config.SORT_TYPE) if config.SORT_TYPE != "" else SearchSortType.GENERAL
+
+    def _within_requested_time_window(self, note_detail: Dict) -> bool:
+        if not bool(getattr(config, "CRAWLER_PREFER_LATEST_POSTS", False)):
+            return True
+        return within_recent_days(
+            note_detail.get("time"),
+            getattr(config, "CRAWLER_COLLECTION_WINDOW_DAYS", None),
+        )
 
     async def get_creators_and_notes(self) -> None:
         """Get creator's notes and retrieve their comment information."""

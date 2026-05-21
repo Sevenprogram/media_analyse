@@ -384,12 +384,20 @@ def test_content_realtime_total_limit_is_split_across_selected_platforms(monkeyp
     client = TestClient(app)
     response = client.post(
         "/api/content-tracking/realtime-discovery",
-        json={"keywords": ["K12"], "platforms": ["xhs", "dy"], "realtime": True, "limit": 31, "collection_window_days": 7},
+        json={
+            "keywords": ["K12"],
+            "platforms": ["xhs", "dy"],
+            "realtime": True,
+            "limit": 31,
+            "collection_window_days": 7,
+            "prefer_latest_posts": True,
+        },
     )
 
     assert response.status_code == 200
     assert calls["created_job"]["comment_policy"]["content_tracking_total_limit"] == 31
     assert calls["created_job"]["comment_policy"]["max_posts_per_job"] == 16
+    assert calls["created_job"]["comment_policy"]["prefer_latest_posts"] is True
     assert (calls["created_job"]["end_date"] - calls["created_job"]["start_date"]).days == 6
 
 

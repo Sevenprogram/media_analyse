@@ -115,6 +115,7 @@ async def cancel_creator_search_task(task_id: str):
     task["status"] = "cancelled"
     task["progress"] = {"stage": "cancelled", "label": "Cancelled", "percent": task["progress"].get("percent", 0)}
     task["updated_at"] = _now_iso()
+    _append_creator_search_log(task, stage="cancelled", level="warning", message="达人搜索任务已取消")
     return task
 
 
@@ -125,6 +126,14 @@ def _new_creator_search_task(task_id: str, payload: dict) -> dict:
         "status": "pending",
         "request": payload,
         "progress": {"stage": "queued", "label": "Queued", "percent": 5},
+        "logs": [
+            {
+                "created_at": now,
+                "stage": "queued",
+                "level": "info",
+                "message": _creator_search_log_message("queued", payload=payload),
+            }
+        ],
         "result": None,
         "error": None,
         "created_at": now,
@@ -149,17 +158,65 @@ async def _run_creator_search_task(task_id: str, payload: dict) -> None:
         task["status"] = "completed"
         task["progress"] = result.get("progress") or {"stage": "complete", "label": "Complete", "percent": 100}
         task["updated_at"] = _now_iso()
+        _append_creator_search_log(
+            task,
+            stage="complete",
+            message=_creator_search_log_message("complete", result=result),
+        )
     except Exception as exc:
         task["status"] = "failed"
         task["error"] = str(exc)
         task["progress"] = {"stage": "failed", "label": "Failed", "percent": 100}
         task["updated_at"] = _now_iso()
+        _append_creator_search_log(task, stage="failed", level="error", message=str(exc))
 
 
 def _update_creator_search_task(task: dict, status: str, stage: str, label: str, percent: int) -> None:
     task["status"] = status
     task["progress"] = {"stage": stage, "label": label, "percent": percent}
     task["updated_at"] = _now_iso()
+    _append_creator_search_log(
+        task,
+        stage=stage,
+        message=_creator_search_log_message(stage, payload=task.get("request") or {}),
+    )
+
+
+def _append_creator_search_log(task: dict, *, stage: str, message: str, level: str = "info") -> None:
+    logs = task.setdefault("logs", [])
+    entry = {
+        "created_at": _now_iso(),
+        "stage": stage,
+        "level": level,
+        "message": message,
+    }
+    if logs and logs[-1].get("stage") == stage and logs[-1].get("message") == message:
+        logs[-1] = entry
+    else:
+        logs.append(entry)
+    del logs[:-50]
+
+
+def _creator_search_log_message(
+    stage: str,
+    *,
+    payload: dict | None = None,
+    result: dict | None = None,
+) -> str:
+    payload = payload or {}
+    if stage == "queued":
+        platforms = ", ".join(payload.get("platforms") or []) or "未选择平台"
+        return f"达人搜索任务已提交；平台：{platforms}；上限：{payload.get('limit') or 50}"
+    if stage == "database":
+        return "正在检索本地达人画像、标签和近期内容证据"
+    if stage == "realtime":
+        return "正在请求实时平台发现，并准备与本地结果合并"
+    if stage == "merging":
+        return "正在合并结果、去重并计算达人分层"
+    if stage == "complete":
+        count = len((result or {}).get("results") or [])
+        return f"达人搜索完成；返回 {count} 个结果"
+    return stage
 
 
 def _now_iso() -> str:

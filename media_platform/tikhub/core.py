@@ -2,6 +2,7 @@ import asyncio
 from typing import Any, Optional
 
 import config
+from media_platform.recent_search import within_recent_days, xhs_filter_note_time
 from store import bilibili as bilibili_store
 from store import douyin as douyin_store
 from store import kuaishou as kuaishou_store
@@ -71,6 +72,8 @@ class TikHubCrawler:
 
                 for item in items:
                     mapped = self.mapper.map_content(item, source_keyword=keyword)
+                    if not self._within_requested_time_window(mapped):
+                        continue
                     await self._save_content(mapped)
                     total_saved_count += 1
                     if config.ENABLE_GET_COMMENTS:
@@ -191,6 +194,13 @@ class TikHubCrawler:
     ) -> dict[str, Any]:
         params = dict(endpoint.default_params)
         params[endpoint.keyword_param] = keyword
+        if self.platform == "xhs" and bool(getattr(config, "CRAWLER_PREFER_LATEST_POSTS", False)):
+            params["sort_type"] = getattr(config, "CRAWLER_SORT_TYPE", "") or "time_descending"
+            filter_note_time = getattr(config, "CRAWLER_FILTER_NOTE_TIME", "") or xhs_filter_note_time(
+                getattr(config, "CRAWLER_COLLECTION_WINDOW_DAYS", None)
+            )
+            if filter_note_time:
+                params["filter_note_time"] = filter_note_time
         if endpoint.cursor_param and cursor:
             params[endpoint.cursor_param] = cursor
         elif endpoint.cursor_param:
@@ -198,6 +208,14 @@ class TikHubCrawler:
         elif endpoint.page_param:
             params[endpoint.page_param] = page
         return params
+
+    def _within_requested_time_window(self, mapped_content: Any) -> bool:
+        if self.platform != "xhs" or not bool(getattr(config, "CRAWLER_PREFER_LATEST_POSTS", False)):
+            return True
+        return within_recent_days(
+            mapped_content.get("time") if isinstance(mapped_content, dict) else None,
+            getattr(config, "CRAWLER_COLLECTION_WINDOW_DAYS", None),
+        )
 
     def _content_params(self, endpoint: EndpointSpec, content_id: str) -> dict[str, Any]:
         params = dict(endpoint.default_params)

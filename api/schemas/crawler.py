@@ -74,6 +74,10 @@ class CrawlerStartRequest(BaseModel):
     save_option: SaveDataOptionEnum = SaveDataOptionEnum.JSONL
     cookies: str = ""
     headless: bool = False
+    prefer_latest_posts: bool = False
+    sort_type: str = ""
+    filter_note_time: str = ""
+    collection_window_days: int | None = None
 
 
 class CrawlerStatusResponse(BaseModel):

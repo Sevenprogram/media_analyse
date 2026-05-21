@@ -1,4 +1,5 @@
 import asyncio
+from datetime import date, datetime
 from typing import Any, Protocol
 
 from api.schemas import (
@@ -86,9 +87,17 @@ def build_crawler_start_requests(
     enable_comments = bool(comment_policy.get("enable_comments", True))
     enable_sub_comments = bool(comment_policy.get("enable_sub_comments", False))
     max_notes_count = _positive_int(comment_policy.get("max_posts_per_job"))
+    prefer_latest_posts = bool(comment_policy.get("prefer_latest_posts"))
+    collection_window_days = _collection_window_days_for_job(job, comment_policy=comment_policy)
 
     requests: list[CrawlerStartRequest] = []
     for platform in job["platforms"]:
+        platform_value = str(platform)
+        latest_search = _latest_search_config(
+            platform=platform_value,
+            prefer_latest_posts=prefer_latest_posts,
+            collection_window_days=collection_window_days,
+        )
         requests.append(
             CrawlerStartRequest(
                 platform=_to_platform_enum(platform),
@@ -104,6 +113,10 @@ def build_crawler_start_requests(
                 save_option=options.save_option,
                 cookies=options.cookies,
                 headless=options.headless,
+                prefer_latest_posts=latest_search["prefer_latest_posts"],
+                sort_type=latest_search["sort_type"],
+                filter_note_time=latest_search["filter_note_time"],
+                collection_window_days=collection_window_days,
             )
         )
     return requests
@@ -122,6 +135,12 @@ def build_crawler_start_request_for_unit(
     enable_comments = bool(comment_policy.get("enable_comments", True))
     enable_sub_comments = bool(comment_policy.get("enable_sub_comments", False))
     max_notes_count = _max_notes_count_for_unit(job)
+    collection_window_days = _collection_window_days_for_job(job, comment_policy=comment_policy)
+    latest_search = _latest_search_config(
+        platform=str(unit["platform"]),
+        prefer_latest_posts=bool(comment_policy.get("prefer_latest_posts")),
+        collection_window_days=collection_window_days,
+    )
 
     return CrawlerStartRequest(
         platform=_to_platform_enum(unit["platform"]),
@@ -137,6 +156,10 @@ def build_crawler_start_request_for_unit(
         save_option=options.save_option,
         cookies=options.cookies,
         headless=options.headless,
+        prefer_latest_posts=latest_search["prefer_latest_posts"],
+        sort_type=latest_search["sort_type"],
+        filter_note_time=latest_search["filter_note_time"],
+        collection_window_days=collection_window_days,
     )
 
 
@@ -155,9 +178,67 @@ def execution_plan_to_dict(requests: list[CrawlerStartRequest]) -> list[dict[str
             "save_option": request.save_option.value,
             "headless": request.headless,
             "login_type": request.login_type.value,
+            "prefer_latest_posts": request.prefer_latest_posts,
+            "sort_type": request.sort_type,
+            "filter_note_time": request.filter_note_time,
+            "collection_window_days": request.collection_window_days,
         }
         for request in requests
     ]
+
+
+def _latest_search_config(
+    *,
+    platform: str,
+    prefer_latest_posts: bool,
+    collection_window_days: int | None,
+) -> dict[str, Any]:
+    if not prefer_latest_posts or platform != "xhs":
+        return {"prefer_latest_posts": False, "sort_type": "", "filter_note_time": ""}
+    return {
+        "prefer_latest_posts": True,
+        "sort_type": "time_descending",
+        "filter_note_time": _xhs_filter_note_time(collection_window_days),
+    }
+
+
+def _xhs_filter_note_time(collection_window_days: int | None) -> str:
+    if collection_window_days is None:
+        return ""
+    if collection_window_days <= 1:
+        return "一天内"
+    if collection_window_days <= 7:
+        return "一周内"
+    return "半年内"
+
+
+def _collection_window_days_for_job(
+    job: dict[str, Any],
+    *,
+    comment_policy: dict[str, Any],
+) -> int | None:
+    if comment_policy.get("disable_time_window"):
+        return None
+    start_date = _coerce_date(job.get("start_date"))
+    end_date = _coerce_date(job.get("end_date"))
+    if start_date is None or end_date is None:
+        return None
+    return max(1, (end_date - start_date).days + 1)
+
+
+def _coerce_date(value: Any) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value[:10])
+        except ValueError:
+            return None
+    return None
 
 
 class ResearchExecutionManager:
@@ -264,6 +345,10 @@ class ResearchExecutionManager:
                 "keywords": request.keywords,
                 "specified_ids": request.specified_ids,
                 "creator_ids": request.creator_ids,
+                "prefer_latest_posts": request.prefer_latest_posts,
+                "sort_type": request.sort_type,
+                "filter_note_time": request.filter_note_time,
+                "collection_window_days": request.collection_window_days,
             },
         )
         started = await self.crawler_manager.start(request)

@@ -97,6 +97,13 @@ START_PAGE = 1
 # Control the number of crawled videos/posts
 CRAWLER_MAX_NOTES_COUNT = 15
 
+# Optional per-run search controls. API-triggered crawls set these through
+# command-line arguments so normal CLI/default behavior remains unchanged.
+CRAWLER_PREFER_LATEST_POSTS = False
+CRAWLER_SORT_TYPE = ""
+CRAWLER_FILTER_NOTE_TIME = ""
+CRAWLER_COLLECTION_WINDOW_DAYS = None
+
 # Controlling the number of concurrent crawlers
 MAX_CONCURRENCY_NUM = 1
 

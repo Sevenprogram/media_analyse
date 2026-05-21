@@ -306,10 +306,10 @@ async def cancel_active_research_execution_job(job_id: int) -> dict:
             "active_job_id": _running_research_job_ids()[0] if _running_research_job_ids() else None,
             "crawler_stopped": False,
         }
-    manager = record.get("crawler_manager") or crawler_manager
-    stopped_crawler = await manager.stop()
     if _task_is_live(task):
         task.cancel()
+    manager = record.get("crawler_manager") or crawler_manager
+    stopped_crawler = await manager.stop()
     return {
         "status": "stopping",
         "job_id": job_id,
@@ -856,14 +856,20 @@ async def run_growth_project_collection_now(
             "target_posts_per_platform": request.target_posts_per_platform,
             "target_posts_total": request.target_posts_per_platform * max(1, len(summary["platforms"])),
             "collection_window_days": request.collection_window_days,
+            "prefer_latest_posts": request.prefer_latest_posts,
             "queue_position": _queue_position(active_job_id),
             "queue": queue,
             "message": "Growth project already has an active collection job",
         }
     comment_policy = _comment_policy_for_growth_project(project)
     comment_policy.max_posts_per_job = request.target_posts_per_platform
+    comment_policy.prefer_latest_posts = request.prefer_latest_posts
     end_date = date.today()
-    start_date = end_date - timedelta(days=request.collection_window_days - 1)
+    if request.collection_window_days is None:
+        start_date = date(1970, 1, 1)
+        comment_policy.disable_time_window = True
+    else:
+        start_date = end_date - timedelta(days=request.collection_window_days - 1)
     job = await service.create_job(
         ResearchJobCreate(
             name=f"{summary['name']} collection {date.today().isoformat()}",
@@ -891,6 +897,7 @@ async def run_growth_project_collection_now(
         "target_posts_per_platform": request.target_posts_per_platform,
         "target_posts_total": request.target_posts_per_platform * max(1, len(summary["platforms"])),
         "collection_window_days": request.collection_window_days,
+        "prefer_latest_posts": request.prefer_latest_posts,
         **queue,
     }
 

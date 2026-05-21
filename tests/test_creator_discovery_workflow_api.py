@@ -612,6 +612,7 @@ def test_creator_search_task_wait_returns_completed_result(monkeypatch):
     task = response.json()
     assert task["status"] == "completed"
     assert task["progress"]["stage"] == "complete"
+    assert [item["stage"] for item in task["logs"]] == ["queued", "database", "merging", "complete"]
     assert task["result"]["results"][0]["creator_id"] == "task-local-1"
 
     status_response = client.get(f"/api/creator-search/search-tasks/{task['task_id']}")

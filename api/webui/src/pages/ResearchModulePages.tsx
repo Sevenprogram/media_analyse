@@ -69,8 +69,16 @@ type CreatorSearchTask = {
   status: string;
   request?: UnknownRecord;
   progress?: CreatorSearchProgress;
+  logs?: CreatorSearchLog[];
   result?: CreatorSearchResponse | null;
   error?: string | null;
+};
+
+type CreatorSearchLog = {
+  created_at?: string | null;
+  stage?: string;
+  level?: string;
+  message?: string;
 };
 
 type CreatorSearchProgress = {
@@ -806,6 +814,24 @@ export function CreatorDiscoveryPage() {
               <div className="creator-search-progress-track">
                 <i style={{ width: `${Math.min(100, Math.max(4, searchProgress?.percent || 4))}%` }} />
               </div>
+              {(currentSearchTask?.logs || []).length > 0 && (
+                <div className="creator-search-log-list" aria-label="creator search logs">
+                  <div className="collection-progress-log-head">
+                    <span>运行日志</span>
+                    {searching && <strong>任务仍在运行，正在筛选达人</strong>}
+                  </div>
+                  {(currentSearchTask?.logs || []).slice().reverse().slice(0, 12).map((log, index) => (
+                    <div
+                      className={`collection-progress-log-row ${log.level === "error" ? "error" : ""}`}
+                      key={`${log.created_at || log.stage || "log"}-${index}`}
+                    >
+                      <span>{formatDateTime(log.created_at)}</span>
+                      <strong>{creatorSearchLogStageLabel(log.stage)}</strong>
+                      <p>{log.message || "-"}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </form>
@@ -924,6 +950,19 @@ function creatorTaskStatusLabel(status: string) {
     cancelled: "已取消",
   };
   return labels[status] || status;
+}
+
+function creatorSearchLogStageLabel(stage?: string) {
+  const labels: Record<string, string> = {
+    queued: "已排队",
+    database: "本地检索",
+    realtime: "实时搜索",
+    merging: "合并结果",
+    complete: "任务完成",
+    failed: "任务失败",
+    cancelled: "已取消",
+  };
+  return labels[stage || ""] || stage || "日志";
 }
 
 function creatorSourceLabels(row: UnknownRecord) {
@@ -1645,7 +1684,13 @@ export function CompetitorMonitorPage() {
             finalTask = await api<UnknownRecord>(`/api/competitors/fetch-tasks/${taskId}`);
           } catch (err) {
             if (err instanceof ApiError && err.status === 404) {
-              throw new Error("上次采集任务已过期，可能是后端刚重启或任务被清理；请重新点击立即获取数据。");
+              removePersistedCompetitorFetchTask(competitorId);
+              setFetchStatusById((current) => {
+                const next = { ...current };
+                delete next[competitorId];
+                return next;
+              });
+              return;
             }
             throw err;
           }
@@ -2188,6 +2233,7 @@ type ContentTrackingState = {
   realtimeCancelling: boolean;
   realtimeLimit: number;
   realtimeWindowDays: number;
+  realtimePreferLatestPosts: boolean;
   realtimeLogs: ResearchJobEvent[];
   realtimeLogError: string | null;
 };
@@ -2218,6 +2264,7 @@ const contentTrackingState: ContentTrackingState = {
   realtimeCancelling: false,
   realtimeLimit: 50,
   realtimeWindowDays: 3,
+  realtimePreferLatestPosts: false,
   realtimeLogs: [],
   realtimeLogError: null,
 };
@@ -2279,6 +2326,7 @@ export function ContentTrackingPage() {
   const [realtimeCancelling, setRealtimeCancelling] = useContentTrackingField("realtimeCancelling");
   const [realtimeLimit, setRealtimeLimit] = useContentTrackingField("realtimeLimit");
   const [realtimeWindowDays, setRealtimeWindowDays] = useContentTrackingField("realtimeWindowDays");
+  const [realtimePreferLatestPosts, setRealtimePreferLatestPosts] = useContentTrackingField("realtimePreferLatestPosts");
   const [realtimeLogs, setRealtimeLogs] = useContentTrackingField("realtimeLogs");
   const [realtimeLogError, setRealtimeLogError] = useContentTrackingField("realtimeLogError");
 
@@ -2407,6 +2455,7 @@ export function ContentTrackingPage() {
             realtime: true,
             limit: realtimeLimit,
             collection_window_days: realtimeWindowDays,
+            prefer_latest_posts: realtimePreferLatestPosts,
           }),
         });
         if (discovery.status === "busy") {
@@ -2462,6 +2511,7 @@ export function ContentTrackingPage() {
             realtime: false,
             limit: 50,
             collection_window_days: realtimeWindowDays,
+            prefer_latest_posts: realtimePreferLatestPosts,
           }),
         });
         const analysisPromise = api<UnknownRecord>("/api/content-tracking/analyze", {
@@ -2687,6 +2737,18 @@ export function ContentTrackingPage() {
               <option value={7}>近 7 天</option>
               <option value={30}>近 30 天</option>
             </select>
+          </label>
+          <label className={`content-realtime-limit ${!realtimeSearchEnabled ? "disabled" : ""}`}>
+            <span>
+              <strong>优先爬取最新帖子</strong>
+              <small>小红书按发布时间倒序，并结合时间范围过滤。</small>
+            </span>
+            <input
+              type="checkbox"
+              checked={realtimePreferLatestPosts}
+              disabled={!realtimeSearchEnabled || Boolean(running)}
+              onChange={(event) => setRealtimePreferLatestPosts(event.target.checked)}
+            />
           </label>
           <div className="content-action-row">
             <Button type="button" variant="primary" onClick={() => void runExtractKeywords()} disabled={Boolean(running)}>

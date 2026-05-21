@@ -298,7 +298,7 @@ function App() {
             onCreateProject={createGrowthProject}
             onUpdateProject={updateGrowthProject}
             onDeleteProject={deleteGrowthProject}
-            onStartCollection={(projectId, targetPostsPerPlatform, collectionWindowDays) => controlGrowthProject(projectId, "run-now", { target_posts_per_platform: targetPostsPerPlatform, collection_window_days: collectionWindowDays })}
+            onStartCollection={(projectId, targetPostsPerPlatform, collectionWindowDays, preferLatestPosts) => controlGrowthProject(projectId, "run-now", { target_posts_per_platform: targetPostsPerPlatform, collection_window_days: collectionWindowDays, prefer_latest_posts: preferLatestPosts })}
             onPauseCollection={(projectId) => controlGrowthProject(projectId, "pause")}
             onStopCurrentRun={(projectId) => controlGrowthProject(projectId, "stop-current-run")}
             onArchiveProject={(projectId) => controlGrowthProject(projectId, "archive")}

@@ -284,6 +284,39 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
                 rich_help_panel="Basic Configuration",
             ),
         ] = config.CRAWLER_MAX_NOTES_COUNT,
+        prefer_latest_posts: Annotated[
+            str,
+            typer.Option(
+                "--prefer_latest_posts",
+                help="Prefer latest-published search results when the platform supports it",
+                rich_help_panel="Basic Configuration",
+                show_default=True,
+            ),
+        ] = str(getattr(config, "CRAWLER_PREFER_LATEST_POSTS", False)),
+        sort_type: Annotated[
+            str,
+            typer.Option(
+                "--sort_type",
+                help="Platform search sort type override, for example time_descending",
+                rich_help_panel="Basic Configuration",
+            ),
+        ] = getattr(config, "CRAWLER_SORT_TYPE", ""),
+        filter_note_time: Annotated[
+            str,
+            typer.Option(
+                "--filter_note_time",
+                help="Platform search time filter override, for example 一周内",
+                rich_help_panel="Basic Configuration",
+            ),
+        ] = getattr(config, "CRAWLER_FILTER_NOTE_TIME", ""),
+        collection_window_days: Annotated[
+            Optional[int],
+            typer.Option(
+                "--collection_window_days",
+                help="Exact collection window in days for local post filtering",
+                rich_help_panel="Basic Configuration",
+            ),
+        ] = getattr(config, "CRAWLER_COLLECTION_WINDOW_DAYS", None),
         max_concurrency_num: Annotated[
             int,
             typer.Option(
@@ -332,6 +365,7 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
         enable_sub_comment = _to_bool(get_sub_comment)
         enable_headless = _to_bool(headless)
         enable_ip_proxy_value = _to_bool(enable_ip_proxy)
+        prefer_latest_posts_value = _to_bool(prefer_latest_posts)
         init_db_value = init_db.value if init_db else None
 
         # Parse specified_id and creator_id into lists
@@ -352,6 +386,10 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
         config.COOKIES = cookies
         config.CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES = max_comments_count_singlenotes
         config.CRAWLER_MAX_NOTES_COUNT = max_notes_count
+        config.CRAWLER_PREFER_LATEST_POSTS = prefer_latest_posts_value
+        config.CRAWLER_SORT_TYPE = sort_type
+        config.CRAWLER_FILTER_NOTE_TIME = filter_note_time
+        config.CRAWLER_COLLECTION_WINDOW_DAYS = collection_window_days
         config.MAX_CONCURRENCY_NUM = max_concurrency_num
         config.SAVE_DATA_PATH = save_data_path
         config.ENABLE_IP_PROXY = enable_ip_proxy_value

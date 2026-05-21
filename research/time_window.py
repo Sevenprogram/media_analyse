@@ -42,3 +42,22 @@ def filter_by_time_window(
         else:
             outside += 1
     return accepted, outside, missing
+
+
+def time_window_from_job(job: dict[str, Any] | None) -> TimeWindow | None:
+    if not job:
+        return None
+    comment_policy = job.get("comment_policy") or {}
+    if comment_policy.get("disable_time_window"):
+        return None
+    start_date = job.get("start_date")
+    end_date = job.get("end_date")
+    if start_date is None or end_date is None:
+        return None
+    return TimeWindow.from_dates(start_date, end_date)
+
+
+def timestamp_bounds(window: TimeWindow | None) -> tuple[int, int] | None:
+    if window is None:
+        return None
+    return int(window.start.timestamp()), int(window.end.timestamp())

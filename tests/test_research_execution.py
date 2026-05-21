@@ -1,4 +1,5 @@
 import asyncio
+from datetime import date
 
 import pytest
 
@@ -73,6 +74,10 @@ def test_execution_plan_to_dict_hides_cookies():
             "save_option": "postgres",
             "headless": True,
             "login_type": "qrcode",
+            "prefer_latest_posts": False,
+            "sort_type": "",
+            "filter_note_time": "",
+            "collection_window_days": None,
         }
     ]
 
@@ -98,6 +103,31 @@ def test_build_crawler_start_requests_supports_video_platforms():
     requests = build_crawler_start_requests(job)
 
     assert [request.platform.value for request in requests] == ["xhs", "dy", "ks", "bili"]
+
+
+def test_build_crawler_start_requests_enables_latest_xhs_search():
+    job = _job(
+        platforms=["xhs", "dy"],
+        start_date=date(2026, 5, 20),
+        end_date=date(2026, 5, 22),
+        comment_policy={
+            "enable_comments": True,
+            "enable_sub_comments": False,
+            "prefer_latest_posts": True,
+            "max_posts_per_job": 10,
+        },
+    )
+
+    requests = build_crawler_start_requests(job)
+
+    assert requests[0].platform.value == "xhs"
+    assert requests[0].prefer_latest_posts is True
+    assert requests[0].sort_type == "time_descending"
+    assert requests[0].filter_note_time == "一周内"
+    assert requests[0].collection_window_days == 3
+    assert requests[1].platform.value == "dy"
+    assert requests[1].prefer_latest_posts is False
+    assert requests[1].sort_type == ""
 
 
 def test_crawler_exit_message_explains_windows_control_c_exit():
@@ -349,6 +379,8 @@ def _job(
     target_ids=None,
     creator_ids=None,
     comment_policy=None,
+    start_date=None,
+    end_date=None,
 ):
     return {
         "id": 1,
@@ -357,6 +389,8 @@ def _job(
         "keywords": keywords if keywords is not None else ["topic"],
         "target_ids": target_ids or [],
         "creator_ids": creator_ids or [],
+        "start_date": start_date,
+        "end_date": end_date,
         "comment_policy": comment_policy
         if comment_policy is not None
         else {"enable_comments": True, "enable_sub_comments": False},

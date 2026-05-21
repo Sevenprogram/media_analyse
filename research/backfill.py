@@ -27,7 +27,7 @@ from database.models import (
 )
 from research.repository import ResearchRepository
 from research.runner import ResearchJobRunner
-from research.time_window import TimeWindow
+from research.time_window import time_window_from_job, timestamp_bounds
 
 
 class ExistingPlatformBackfill:
@@ -75,7 +75,7 @@ class ExistingPlatformBackfill:
         limit: int | None = 1000,
     ) -> dict[str, int]:
         job = await self.repository.get_job(job_id)
-        time_window = TimeWindow.from_dates(job["start_date"], job["end_date"]) if job else None
+        time_window = time_window_from_job(job)
 
         async with get_session() as session:
             note_stmt = select(WeiboNote)
@@ -119,7 +119,7 @@ class ExistingPlatformBackfill:
         limit: int | None = 1000,
     ) -> dict[str, int]:
         job = await self.repository.get_job(job_id)
-        time_window = TimeWindow.from_dates(job["start_date"], job["end_date"]) if job else None
+        time_window = time_window_from_job(job)
 
         async with get_session() as session:
             content_stmt = select(ZhihuContent)
@@ -163,7 +163,7 @@ class ExistingPlatformBackfill:
         limit: int | None = 1000,
     ) -> dict[str, int]:
         job = await self.repository.get_job(job_id)
-        time_window = TimeWindow.from_dates(job["start_date"], job["end_date"]) if job else None
+        time_window = time_window_from_job(job)
 
         async with get_session() as session:
             note_stmt = select(XhsNote)
@@ -173,6 +173,12 @@ class ExistingPlatformBackfill:
                 note_stmt = note_stmt.where(XhsNote.user_id.in_(_text_values(creator_ids)))
             elif keywords:
                 note_stmt = note_stmt.where(XhsNote.source_keyword.in_(keywords))
+            bounds = timestamp_bounds(time_window)
+            if bounds:
+                start_ts, end_ts = bounds
+                note_stmt = note_stmt.where(XhsNote.time >= start_ts, XhsNote.time <= end_ts)
+            if ((job or {}).get("comment_policy") or {}).get("prefer_latest_posts"):
+                note_stmt = note_stmt.order_by(XhsNote.time.desc())
             if limit:
                 note_stmt = note_stmt.limit(limit)
             notes = list((await session.execute(note_stmt)).scalars().all())
@@ -208,7 +214,7 @@ class ExistingPlatformBackfill:
         limit: int | None = 1000,
     ) -> dict[str, int]:
         job = await self.repository.get_job(job_id)
-        time_window = TimeWindow.from_dates(job["start_date"], job["end_date"]) if job else None
+        time_window = time_window_from_job(job)
 
         async with get_session() as session:
             aweme_stmt = select(DouyinAweme)
@@ -261,7 +267,7 @@ class ExistingPlatformBackfill:
         limit: int | None = 1000,
     ) -> dict[str, int]:
         job = await self.repository.get_job(job_id)
-        time_window = TimeWindow.from_dates(job["start_date"], job["end_date"]) if job else None
+        time_window = time_window_from_job(job)
 
         async with get_session() as session:
             video_stmt = select(KuaishouVideo)
@@ -304,7 +310,7 @@ class ExistingPlatformBackfill:
         limit: int | None = 1000,
     ) -> dict[str, int]:
         job = await self.repository.get_job(job_id)
-        time_window = TimeWindow.from_dates(job["start_date"], job["end_date"]) if job else None
+        time_window = time_window_from_job(job)
 
         async with get_session() as session:
             video_stmt = select(BilibiliVideo)
@@ -351,7 +357,7 @@ class ExistingPlatformBackfill:
         limit: int | None = 1000,
     ) -> dict[str, int]:
         job = await self.repository.get_job(job_id)
-        time_window = TimeWindow.from_dates(job["start_date"], job["end_date"]) if job else None
+        time_window = time_window_from_job(job)
 
         async with get_session() as session:
             note_stmt = select(TiebaNote)

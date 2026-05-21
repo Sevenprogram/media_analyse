@@ -232,6 +232,15 @@ class CrawlerManager:
         if config.max_notes_count:
             cmd.extend(["--max_notes_count", str(config.max_notes_count)])
 
+        if config.prefer_latest_posts:
+            cmd.extend(["--prefer_latest_posts", "true"])
+        if config.sort_type:
+            cmd.extend(["--sort_type", config.sort_type])
+        if config.filter_note_time:
+            cmd.extend(["--filter_note_time", config.filter_note_time])
+        if config.collection_window_days is not None:
+            cmd.extend(["--collection_window_days", str(config.collection_window_days)])
+
         cmd.extend(["--get_comment", "true" if config.enable_comments else "false"])
         cmd.extend(["--get_sub_comment", "true" if config.enable_sub_comments else "false"])
 

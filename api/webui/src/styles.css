@@ -3228,6 +3228,16 @@ fieldset {
   transition: width 180ms ease;
 }
 
+.creator-search-log-list {
+  display: grid;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding-right: 4px;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
 .creator-source-badges {
   display: flex;
   flex-wrap: wrap;
@@ -4925,6 +4935,44 @@ fieldset {
   opacity: 0.64;
 }
 
+.collection-latest-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #ffffff;
+  color: var(--text);
+}
+
+.collection-latest-toggle input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--teal);
+}
+
+.collection-latest-toggle span {
+  display: grid;
+  gap: 1px;
+}
+
+.collection-latest-toggle strong {
+  font-size: 13px;
+  line-height: 1.15;
+}
+
+.collection-latest-toggle small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.collection-latest-toggle:has(input:disabled) {
+  opacity: 0.64;
+}
+
 .project-action-notice {
   display: flex;
   align-items: center;
@@ -5664,6 +5712,12 @@ fieldset {
 
 .content-realtime-limit select {
   width: 120px;
+}
+
+.content-realtime-limit input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--teal);
 }
 
 .content-action-row,

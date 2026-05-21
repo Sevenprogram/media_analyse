@@ -85,6 +85,7 @@ type ProjectActionNotice = {
 };
 
 const COLLECTION_WINDOW_OPTIONS = [
+  { value: null, label: "不限时间" },
   { value: 1, label: "近 1 天" },
   { value: 3, label: "近 3 天" },
   { value: 7, label: "近 7 天" },
@@ -144,7 +145,7 @@ export function GrowthProjectWorkbenchPage({
   onCreateProject: (payload: GrowthProjectCreatePayload) => Promise<void>;
   onUpdateProject: (projectId: string, payload: GrowthProjectUpdatePayload) => Promise<void>;
   onDeleteProject: (projectId: string) => Promise<void>;
-  onStartCollection: (projectId: string, targetPostsPerPlatform?: number, collectionWindowDays?: number) => Promise<void>;
+  onStartCollection: (projectId: string, targetPostsPerPlatform?: number, collectionWindowDays?: number | null, preferLatestPosts?: boolean) => Promise<void>;
   onPauseCollection: (projectId: string) => Promise<void>;
   onStopCurrentRun: (projectId: string) => Promise<void>;
   onArchiveProject: (projectId: string) => Promise<void>;
@@ -330,7 +331,7 @@ function ProjectDetailPanel({
   progress: GrowthProjectCollectionProgress | null;
   onUpdateProject: (projectId: string, payload: GrowthProjectUpdatePayload) => Promise<void>;
   onDeleteProject: (projectId: string) => Promise<void>;
-  onStartCollection: (projectId: string, targetPostsPerPlatform?: number, collectionWindowDays?: number) => Promise<void>;
+  onStartCollection: (projectId: string, targetPostsPerPlatform?: number, collectionWindowDays?: number | null, preferLatestPosts?: boolean) => Promise<void>;
   onPauseCollection: (projectId: string) => Promise<void>;
   onStopCurrentRun: (projectId: string) => Promise<void>;
   onArchiveProject: (projectId: string) => Promise<void>;
@@ -343,7 +344,8 @@ function ProjectDetailPanel({
   const [editing, setEditing] = React.useState(false);
   const [actionNotice, setActionNotice] = React.useState<ProjectActionNotice | null>(null);
   const [targetPostsPerPlatform, setTargetPostsPerPlatform] = React.useState(50);
-  const [collectionWindowDays, setCollectionWindowDays] = React.useState(3);
+  const [collectionWindowDays, setCollectionWindowDays] = React.useState<number | null>(3);
+  const [preferLatestPosts, setPreferLatestPosts] = React.useState(false);
 
   React.useEffect(() => {
     setActionNotice(null);
@@ -390,18 +392,20 @@ function ProjectDetailPanel({
   async function runStartCollection() {
     const target = clampTargetPosts(targetPostsPerPlatform);
     const windowDays = clampCollectionWindowDays(collectionWindowDays);
+    const windowLabel = collectionWindowLabel(windowDays);
+    const latestLabel = preferLatestPosts ? "，优先爬取最新帖子" : "";
     setTargetPostsPerPlatform(target);
     setCollectionWindowDays(windowDays);
     setBusy("start");
     setActionNotice({
       tone: "info",
-      message: `已收到点击，正在提交采集任务：近 ${windowDays} 天，每个平台目标 ${target} 条。`,
+      message: `已收到点击，正在提交采集任务：${windowLabel}${latestLabel}，每个平台目标 ${target} 条。`,
     });
     try {
-      await onStartCollection(project.id, target, windowDays);
+      await onStartCollection(project.id, target, windowDays, preferLatestPosts);
       setActionNotice({
         tone: "success",
-        message: `采集任务已提交：近 ${windowDays} 天，${project.platforms.length || 1} 个平台，每个平台目标 ${target} 条。`,
+        message: `采集任务已提交：${windowLabel}${latestLabel}，${project.platforms.length || 1} 个平台，每个平台目标 ${target} 条。`,
       });
     } catch (err) {
       setActionNotice({
@@ -439,14 +443,26 @@ function ProjectDetailPanel({
         <label className="collection-target-input">
           <span>时间范围</span>
           <select
-            value={collectionWindowDays}
+            value={collectionWindowDays ?? "all"}
             disabled={!!busy || (collectionActive && !collectionFailed)}
-            onChange={(event) => setCollectionWindowDays(clampCollectionWindowDays(Number(event.target.value)))}
+            onChange={(event) => setCollectionWindowDays(clampCollectionWindowDays(event.target.value))}
           >
             {COLLECTION_WINDOW_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>{option.label}</option>
+              <option key={option.value ?? "all"} value={option.value ?? "all"}>{option.label}</option>
             ))}
           </select>
+        </label>
+        <label className="collection-latest-toggle">
+          <input
+            type="checkbox"
+            checked={preferLatestPosts}
+            disabled={!!busy || (collectionActive && !collectionFailed)}
+            onChange={(event) => setPreferLatestPosts(event.target.checked)}
+          />
+          <span>
+            <strong>优先爬取最新帖子</strong>
+            <small>小红书会按发布时间倒序，并结合时间范围过滤。</small>
+          </span>
         </label>
         <Button
           variant={collectionFailed ? "warning" : "primary"}
@@ -1146,10 +1162,17 @@ function clampTargetPosts(value: number) {
   return Math.max(10, Math.min(500, Math.round(Number(value) || 50)));
 }
 
-function clampCollectionWindowDays(value: number) {
+function clampCollectionWindowDays(value: number | string | null) {
+  if (value === null || value === "all") {
+    return null;
+  }
   const allowed = COLLECTION_WINDOW_OPTIONS.map((option) => option.value);
   const parsed = Math.round(Number(value) || 3);
   return allowed.includes(parsed) ? parsed : 3;
+}
+
+function collectionWindowLabel(value: number | null) {
+  return value === null ? "不限时间" : `近 ${value} 天`;
 }
 
 function sourceLabel(source: string) {

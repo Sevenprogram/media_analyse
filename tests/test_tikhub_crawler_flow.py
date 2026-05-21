@@ -2,6 +2,7 @@ import pytest
 
 import config
 from media_platform.tikhub.core import TikHubCrawler
+from media_platform.tikhub.endpoints import Capability, get_endpoint
 from media_platform.tikhub.errors import TikHubValidationError
 
 
@@ -67,6 +68,20 @@ async def test_search_flow_calls_client_and_store(monkeypatch):
 
     assert saved[0]["note_id"] == "n1"
     assert comments[0]["id"] == "c1"
+
+
+def test_xhs_latest_search_params_override_tikhub_defaults(monkeypatch):
+    monkeypatch.setattr(config, "CRAWLER_PREFER_LATEST_POSTS", True, raising=False)
+    monkeypatch.setattr(config, "CRAWLER_SORT_TYPE", "time_descending", raising=False)
+    monkeypatch.setattr(config, "CRAWLER_FILTER_NOTE_TIME", "一周内", raising=False)
+    monkeypatch.setattr(config, "CRAWLER_COLLECTION_WINDOW_DAYS", 3, raising=False)
+
+    crawler = TikHubCrawler(platform="xhs", client=FakeClient(), raw_writer=FakeRawWriter())
+    params = crawler._search_params(get_endpoint("xhs", Capability.SEARCH), "K12", 1, "")
+
+    assert params["keyword"] == "K12"
+    assert params["sort_type"] == "time_descending"
+    assert params["filter_note_time"] == "一周内"
 
 
 @pytest.mark.asyncio
