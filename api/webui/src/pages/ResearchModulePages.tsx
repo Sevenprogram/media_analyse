@@ -56,7 +56,25 @@ const COMPETITOR_FETCH_TASKS_KEY = "mediaCrawler.competitorFetchTasks";
 type CreatorSearchResponse = {
   intent?: UnknownRecord | null;
   diagnostics?: UnknownRecord;
+  realtime?: CreatorSearchRealtimeDiagnostics;
+  progress?: CreatorSearchProgress;
   results: UnknownRecord[];
+};
+
+type CreatorSearchProgress = {
+  stage: string;
+  label: string;
+  percent: number;
+};
+
+type CreatorSearchRealtimeDiagnostics = {
+  enabled?: boolean;
+  status?: string;
+  platforms?: string[];
+  unsupported_platforms?: string[];
+  created_profiles?: number;
+  created_candidates?: number;
+  error?: string | null;
 };
 
 function useEndpoint<T>(path: string, fallback: T) {
@@ -465,6 +483,9 @@ export function CreatorDiscoveryPage() {
   const [limit, setLimit] = React.useState("50");
   const [searchResult, setSearchResult] = React.useState<CreatorSearchResponse | null>(null);
   const [searching, setSearching] = React.useState(false);
+  const [includeRealtime, setIncludeRealtime] = React.useState(false);
+  const [searchProgress, setSearchProgress] = React.useState<CreatorSearchProgress | null>(null);
+  const [resultsUpdating, setResultsUpdating] = React.useState(false);
   const [searchError, setSearchError] = React.useState<string | null>(null);
   const [selectedCreators, setSelectedCreators] = React.useState<Set<string>>(new Set());
   const [message, setMessage] = React.useState<string | null>(null);
@@ -478,10 +499,16 @@ export function CreatorDiscoveryPage() {
   async function runCreatorSearch(event?: React.FormEvent) {
     event?.preventDefault();
     setSearching(true);
+    setResultsUpdating(Boolean(searchResult));
+    setSearchProgress(includeRealtime ? creatorSearchStage("database") : null);
     setSearchError(null);
     setMessage(null);
     setSelectedCreators(new Set());
     try {
+      if (includeRealtime) {
+        await sleepMs(150);
+        setSearchProgress(creatorSearchStage("realtime"));
+      }
       const response = await api<CreatorSearchResponse>("/api/creator-search/search", {
         method: "POST",
         body: JSON.stringify({
@@ -490,13 +517,22 @@ export function CreatorDiscoveryPage() {
           follower_min: optionalNumber(followerMin),
           recent_activity_min: optionalNumber(activityMin),
           limit: optionalNumber(limit) || 50,
+          include_realtime: includeRealtime,
         }),
       });
+      if (includeRealtime) {
+        setSearchProgress(creatorSearchStage("persistence"));
+        await sleepMs(100);
+        setSearchProgress(creatorSearchStage("merging"));
+        await sleepMs(100);
+      }
+      setSearchProgress(response.progress || creatorSearchStage("complete"));
       setSearchResult(response);
     } catch (err) {
       setSearchError(err instanceof Error ? err.message : String(err));
     } finally {
       setSearching(false);
+      setResultsUpdating(false);
     }
   }
 
@@ -579,11 +615,37 @@ export function CreatorDiscoveryPage() {
             <span>返回数量</span>
             <input value={limit} onChange={(event) => setLimit(event.target.value)} inputMode="numeric" />
           </label>
+          <label className="creator-realtime-toggle">
+            <input
+              type="checkbox"
+              checked={includeRealtime}
+              onChange={(event) => setIncludeRealtime(event.target.checked)}
+              disabled={searching}
+            />
+            <span>实时搜索小红书/抖音</span>
+          </label>
           <div className="creator-search-actions">
             <Button variant="primary" disabled={searching || !query.trim() || !platforms.length}>{searching ? <Loader2 size={16} className="spin" /> : <Search size={16} />}筛选达人</Button>
             <Button type="button" variant="ghost" onClick={() => void runCreatorSearch()} disabled={searching || !query.trim()}><RefreshCw size={16} />刷新结果</Button>
           </div>
+          {includeRealtime && (searching || searchProgress) && (
+            <div className="creator-search-progress">
+              <div>
+                <span>{searchProgress?.label || "Preparing realtime search"}</span>
+                <strong>{formatNumber(searchProgress?.percent || 0)}%</strong>
+              </div>
+              <div className="creator-search-progress-track">
+                <i style={{ width: `${Math.min(100, Math.max(4, searchProgress?.percent || 4))}%` }} />
+              </div>
+            </div>
+          )}
         </form>
+        {searchResult?.realtime && ["failed", "partial"].includes(text(searchResult.realtime.status, "")) && (
+          <div className="creator-realtime-warning">
+            <AlertTriangle size={16} />
+            <span>{text(searchResult.realtime.error, "实时搜索部分失败，已展示可用的数据库结果。")}</span>
+          </div>
+        )}
         {searchError && <p className="inline-alert danger">{searchError}</p>}
         {message && <p className="inline-alert">{message}</p>}
       </Card>
@@ -601,7 +663,7 @@ export function CreatorDiscoveryPage() {
               <Button size="sm" variant="ghost" onClick={enrichSelectedMetrics} disabled={!selectedRows.length}><RefreshCw size={15} />补全主页指标</Button>
             </div>
           </CardHeader>
-          {resultRows.length ? <CreatorResultList rows={resultRows} selected={selectedCreators} onToggle={(row, checked) => setSelectedCreators(toggleSelected(selectedCreators, creatorRowKey(row), checked))} /> : <EmptyState title="没有匹配达人" body="降低筛选条件，或先补充采集样本。" />}
+          {resultRows.length ? <CreatorResultList rows={resultRows} selected={selectedCreators} updating={resultsUpdating} onToggle={(row, checked) => setSelectedCreators(toggleSelected(selectedCreators, creatorRowKey(row), checked))} /> : <EmptyState title="没有匹配达人" body="降低筛选条件，或先补充采集样本。" />}
         </Card>
       )}
 
@@ -629,9 +691,9 @@ export function CreatorDiscoveryPage() {
   );
 }
 
-function CreatorResultList({ rows, selected, onToggle }: { rows: UnknownRecord[]; selected: Set<string>; onToggle: (row: UnknownRecord, checked: boolean) => void }) {
+function CreatorResultList({ rows, selected, updating, onToggle }: { rows: UnknownRecord[]; selected: Set<string>; updating?: boolean; onToggle: (row: UnknownRecord, checked: boolean) => void }) {
   return (
-    <div className="creator-result-list">
+    <div className={`creator-result-list ${updating ? "is-updating" : ""}`}>
       {rows.map((row) => {
         const key = creatorRowKey(row);
         const tags = array(row.matched_tags).slice(0, 4);
@@ -643,6 +705,11 @@ function CreatorResultList({ rows, selected, onToggle }: { rows: UnknownRecord[]
               <div className="creator-result-title">
                 <strong>{row.profile_url ? <a href={text(row.profile_url, "")} target="_blank" rel="noreferrer">{text(row.display_name || row.creator_id)}</a> : text(row.display_name || row.creator_id)}</strong>
                 <Badge tone="muted">{labelPlatform(text(row.platform))}</Badge>
+              </div>
+              <div className="creator-source-badges">
+                {creatorSourceLabels(row).map((label) => (
+                  <Badge key={label} tone={label === "Realtime" ? "warning" : "success"}>{label === "Database" ? "数据库" : "实时"}</Badge>
+                ))}
               </div>
               <div className="creator-result-meta">
                 <span>粉丝 {formatOptionalNumber(candidateMetric(row, "follower_count"))}</span>
@@ -664,6 +731,26 @@ function CreatorResultList({ rows, selected, onToggle }: { rows: UnknownRecord[]
 
 function creatorRowKey(row: UnknownRecord) {
   return `${text(row.platform, "unknown")}:${text(row.creator_id || row.account_id, "unknown")}`;
+}
+
+function creatorSearchStage(stage: string): CreatorSearchProgress {
+  const stages: Record<string, CreatorSearchProgress> = {
+    database: { stage: "database", label: "Searching database", percent: 20 },
+    realtime: { stage: "realtime", label: "Searching realtime platforms", percent: 50 },
+    persistence: { stage: "persistence", label: "Saving creator profiles", percent: 75 },
+    merging: { stage: "merging", label: "Merging results", percent: 90 },
+    complete: { stage: "complete", label: "Complete", percent: 100 },
+  };
+  return stages[stage] || stages.database;
+}
+
+function creatorSourceLabels(row: UnknownRecord) {
+  const labels = textArray(row.source_labels);
+  if (labels.length) return labels;
+  const source = text(row.source_type, "local");
+  if (source === "realtime") return ["Realtime"];
+  if (source === "mixed") return ["Database", "Realtime"];
+  return ["Database"];
 }
 
 function toggleSelected(current: Set<string>, key: string, checked: boolean) {

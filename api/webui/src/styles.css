@@ -3144,6 +3144,76 @@ fieldset {
   color: var(--muted);
 }
 
+.creator-realtime-toggle {
+  align-items: center;
+  display: inline-flex !important;
+  gap: 8px;
+  min-height: 36px;
+}
+
+.creator-realtime-toggle input {
+  height: 16px;
+  width: 16px;
+}
+
+.creator-search-progress {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  grid-column: 1 / -1;
+  padding: 10px 12px;
+}
+
+.creator-search-progress > div:first-child {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.creator-search-progress span,
+.creator-search-progress strong {
+  font-size: 13px;
+}
+
+.creator-search-progress-track {
+  background: #e5e7eb;
+  border-radius: 999px;
+  height: 8px;
+  overflow: hidden;
+}
+
+.creator-search-progress-track i {
+  background: #04786f;
+  display: block;
+  height: 100%;
+  transition: width 180ms ease;
+}
+
+.creator-source-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.creator-realtime-warning {
+  align-items: center;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 8px;
+  color: #9a3412;
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 12px;
+}
+
+.creator-result-list.is-updating,
+.module-list.is-updating {
+  opacity: 0.62;
+}
+
 .competitor-add-form {
   display: grid;
   grid-template-columns: minmax(120px, 0.35fr) minmax(280px, 1.4fr) minmax(180px, 0.7fr) minmax(180px, 0.7fr) auto;
