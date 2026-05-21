@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from api.routers.research import (
+    cancel_active_research_execution_job,
     require_research_database,
     schedule_and_execute_research_job,
     wait_for_research_job_status,
@@ -23,6 +24,7 @@ from research.content_tracking import (
 from research.content_fingerprint import analyze_posts_for_tracking
 from research.ai_provider import OpenAICompatibleProvider
 from research.repository import ResearchRepository
+from research.enums import JOB_CANCELLED
 from research.schemas import (
     ContentTrackingAIAnalysisRequest,
     ContentKeywordExtractionRequest,
@@ -349,7 +351,43 @@ async def start_realtime_content_discovery(request: SimilarContentSearchRequest)
         background=True,
         force_schedule=True,
     )
+    if execution.get("status") == "busy":
+        await repository.update_job(job["id"], {"status": JOB_CANCELLED})
+        return {
+            "status": "busy",
+            "job_id": None,
+            "busy_job_id": execution.get("job_id"),
+            "message": execution.get("message") or "A research execution is already running",
+            "execution": execution,
+        }
     return {"status": execution["status"], "job_id": job["id"], "execution": execution}
+
+
+@router.post("/realtime-jobs/{job_id}/cancel")
+async def cancel_realtime_content_discovery(job_id: int):
+    require_research_database()
+    repository = ResearchRepository()
+    job = await repository.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Content discovery job not found")
+    if job.get("topic") != "content_realtime_discovery":
+        raise HTTPException(status_code=400, detail="Only content tracking realtime jobs can be cancelled here")
+
+    active = await cancel_active_research_execution_job(job_id)
+    if active["status"] == "stopping":
+        return {
+            "status": "stopping",
+            "job_id": job_id,
+            "crawler_stopped": active.get("crawler_stopped", False),
+        }
+
+    updated = await repository.update_job(job_id, {"status": JOB_CANCELLED})
+    return {
+        "status": "cancelled",
+        "job_id": job_id,
+        "job": updated,
+        "crawler_stopped": False,
+    }
 
 
 @router.get("/discovery/{job_id}/status")

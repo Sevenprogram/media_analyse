@@ -218,6 +218,25 @@ async def schedule_and_execute_research_job(
         _research_execution_job_id = None
     return {"status": "completed", "job_id": job_id, "schedule": schedule}
 
+async def cancel_active_research_execution_job(job_id: int) -> dict:
+    global _research_execution_task
+    running = bool(_research_execution_task and not _research_execution_task.done())
+    if not running or _research_execution_job_id != job_id:
+        return {
+            "status": "not_running",
+            "job_id": job_id,
+            "active_job_id": _research_execution_job_id if running else None,
+            "crawler_stopped": False,
+        }
+    stopped_crawler = await crawler_manager.stop()
+    if _research_execution_task and not _research_execution_task.done():
+        _research_execution_task.cancel()
+    return {
+        "status": "stopping",
+        "job_id": job_id,
+        "crawler_stopped": stopped_crawler,
+    }
+
 
 async def enqueue_research_collection_job(job_id: int, *, project_id: str | None = None) -> dict:
     global _research_queue_worker_task

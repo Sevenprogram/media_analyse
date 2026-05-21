@@ -19,6 +19,7 @@ import {
   Search,
   Settings,
   Users,
+  XCircle,
 } from "lucide-react";
 import {
   Bar,
@@ -1988,6 +1989,9 @@ type ContentTrackingState = {
   realtimeProgress: number;
   realtimeStage: string;
   realtimeMetadata: UnknownRecord | null;
+  realtimeJobId: number | null;
+  realtimeBusyJobId: number | null;
+  realtimeCancelling: boolean;
 };
 
 const contentTrackingState: ContentTrackingState = {
@@ -2011,6 +2015,9 @@ const contentTrackingState: ContentTrackingState = {
   realtimeProgress: 0,
   realtimeStage: "",
   realtimeMetadata: null,
+  realtimeJobId: null,
+  realtimeBusyJobId: null,
+  realtimeCancelling: false,
 };
 
 const contentTrackingListeners = new Set<() => void>();
@@ -2065,6 +2072,9 @@ export function ContentTrackingPage() {
   const [realtimeProgress, setRealtimeProgress] = useContentTrackingField("realtimeProgress");
   const [realtimeStage, setRealtimeStage] = useContentTrackingField("realtimeStage");
   const [realtimeMetadata, setRealtimeMetadata] = useContentTrackingField("realtimeMetadata");
+  const [realtimeJobId, setRealtimeJobId] = useContentTrackingField("realtimeJobId");
+  const [realtimeBusyJobId, setRealtimeBusyJobId] = useContentTrackingField("realtimeBusyJobId");
+  const [realtimeCancelling, setRealtimeCancelling] = useContentTrackingField("realtimeCancelling");
 
   const selectedTerms = [...selectedKeywords];
   const platformPayload = platform === "all" ? [] : [platform];
@@ -2112,6 +2122,9 @@ export function ContentTrackingPage() {
     setRealtimeProgress(0);
     setRealtimeStage("");
     setRealtimeMetadata(null);
+    setRealtimeJobId(null);
+    setRealtimeBusyJobId(null);
+    setRealtimeCancelling(false);
   }
 
   async function runLocalSearch() {
@@ -2128,34 +2141,74 @@ export function ContentTrackingPage() {
     setError(null);
     setMessage(null);
     setHasSearched(true);
+    setRealtimeBusyJobId(null);
+    setRealtimeCancelling(false);
     if (realtimeSearchEnabled) {
+      setRealtimeJobId(null);
+      setRealtimeMetadata(null);
       setRealtimeStep(10, "准备实时搜索");
     } else {
       resetRealtimeProgress();
     }
     try {
+      let similar: { candidates: UnknownRecord[]; realtime?: UnknownRecord; job_id?: number; status?: string };
+      let analysis: UnknownRecord;
       if (realtimeSearchEnabled) {
-        setRealtimeStep(35, platform === "all" ? "正在搜索小红书和抖音" : platform === "xhs" ? "正在搜索小红书" : "正在搜索抖音");
-      }
-      const similarPromise = api<{ candidates: UnknownRecord[]; realtime?: UnknownRecord }>("/api/content-tracking/search-similar", {
-        method: "POST",
-        body: JSON.stringify({
-          keywords: terms,
-          platforms: platformPayload,
-          realtime: realtimeSearchEnabled,
-          limit: 50,
-        }),
-      });
-      if (realtimeSearchEnabled) {
-        setRealtimeStep(65, "正在写入内容库");
-      }
-      const analysisPromise = api<UnknownRecord>("/api/content-tracking/analyze", {
-        method: "POST",
-        body: JSON.stringify({ query: terms.join(" "), platform: platformQuery, limit: 30 }),
-      });
-      const [similar, analysis] = await Promise.all([similarPromise, analysisPromise]);
-      if (realtimeSearchEnabled) {
+        setRealtimeStep(25, "正在创建实时搜索任务");
+        const discovery = await api<{ status: string; job_id?: number | null; busy_job_id?: number | null; message?: string; execution?: UnknownRecord }>("/api/content-tracking/realtime-discovery", {
+          method: "POST",
+          body: JSON.stringify({
+            keywords: terms,
+            platforms: platformPayload,
+            realtime: true,
+            limit: 50,
+          }),
+        });
+        if (discovery.status === "busy") {
+          setRealtimeBusyJobId(discovery.busy_job_id || null);
+          setRealtimeStep(0, "当前已有任务运行中");
+          setError("当前已有任务运行中，请稍后再试");
+          return;
+        }
+        const jobId = Number(discovery.job_id || 0);
+        if (!jobId) throw new Error("实时搜索任务创建失败");
+        setRealtimeJobId(jobId);
+        setRealtimeMetadata({ job_id: jobId, status: discovery.status, matched_count: 0 });
+        setRealtimeStep(55, "正在写入内容库");
+        similar = await api<{ candidates: UnknownRecord[]; job_id: number; status: string }>(`/api/content-tracking/discovery/${jobId}/wait-refresh`, { method: "POST" });
+        if (contentTrackingState.realtimeJobId !== jobId) return;
+        if (similar.status === "cancelled") {
+          setRealtimeStep(0, "");
+          setRealtimeMetadata(null);
+          setMessage("已取消本次实时搜索");
+          return;
+        }
         setRealtimeStep(85, "正在刷新本地结果");
+        analysis = await api<UnknownRecord>("/api/content-tracking/analyze", {
+          method: "POST",
+          body: JSON.stringify({ query: terms.join(" "), platform: platformQuery, limit: 30 }),
+        });
+        similar.realtime = {
+          enabled: true,
+          job_id: jobId,
+          status: similar.status,
+          matched_count: similar.candidates?.length || 0,
+        };
+      } else {
+        const similarPromise = api<{ candidates: UnknownRecord[]; realtime?: UnknownRecord }>("/api/content-tracking/search-similar", {
+          method: "POST",
+          body: JSON.stringify({
+            keywords: terms,
+            platforms: platformPayload,
+            realtime: false,
+            limit: 50,
+          }),
+        });
+        const analysisPromise = api<UnknownRecord>("/api/content-tracking/analyze", {
+          method: "POST",
+          body: JSON.stringify({ query: terms.join(" "), platform: platformQuery, limit: 30 }),
+        });
+        [similar, analysis] = await Promise.all([similarPromise, analysisPromise]);
       }
       setCandidates(similar.candidates || []);
       setComments(array(analysis.comments));
@@ -2169,12 +2222,36 @@ export function ContentTrackingPage() {
         setMessage(`本地库找到 ${similar.candidates?.length || 0} 条同类内容`);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (err instanceof ApiError && err.status === 409) {
+        setRealtimeStep(0, "当前已有任务运行中");
+        setError("当前已有任务运行中，请稍后再试");
+      } else {
+        setError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
       setRunning(null);
     }
   }
 
+  async function cancelRealtimeSearch() {
+    if (!realtimeJobId || realtimeCancelling) return;
+    setRealtimeCancelling(true);
+    setError(null);
+    setRealtimeStep(realtimeProgress || 65, "正在取消实时搜索");
+    try {
+      await api<UnknownRecord>(`/api/content-tracking/realtime-jobs/${realtimeJobId}/cancel`, { method: "POST" });
+      setRealtimeJobId(null);
+      setRealtimeMetadata(null);
+      setRealtimeBusyJobId(null);
+      setRealtimeStep(0, "");
+      setRunning(null);
+      setMessage("已取消本次实时搜索");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRealtimeCancelling(false);
+    }
+  }
   async function runAiAnalysis() {
     const terms = selectedTerms.length ? selectedTerms : keywordFallback(sourceText);
     if (!terms.length) {
@@ -2329,20 +2406,32 @@ export function ContentTrackingPage() {
               {running === "ai" ? <Loader2 size={16} className="spin" /> : <Bot size={16} />}AI 分析
             </Button>
           </div>
-          {realtimeSearchEnabled && (running === "search" || realtimeProgress > 0) && (
-            <div className="content-realtime-progress" aria-live="polite">
+          {(realtimeSearchEnabled && (running === "search" || realtimeProgress > 0 || realtimeJobId || realtimeBusyJobId)) && (
+            <div className={`content-realtime-progress ${realtimeBusyJobId ? "busy" : ""}`} aria-live="polite">
               <div className="content-realtime-progress-header">
-                <span>{realtimeStage || "等待实时搜索"}</span>
+                <span>{realtimeStage || (realtimeBusyJobId ? "当前已有任务运行中" : "等待实时搜索")}</span>
                 <strong>{realtimeProgress}%</strong>
               </div>
               <div className="content-realtime-progress-track">
                 <span style={{ width: `${realtimeProgress}%` }} />
               </div>
-              {realtimeMetadata && (
+              <div className="content-realtime-meta-row">
                 <small>
-                  Job #{text(realtimeMetadata.job_id)} · {text(realtimeMetadata.status, "-")} · 匹配 {formatOptionalNumber(realtimeMetadata.matched_count)} 条
+                  {realtimeJobId
+                    ? `内容跟踪实时搜索 Job #${realtimeJobId}`
+                    : realtimeBusyJobId
+                      ? `其他任务正在运行 Job #${realtimeBusyJobId}`
+                      : realtimeMetadata
+                        ? `Job #${text(realtimeMetadata.job_id)} · ${text(realtimeMetadata.status, "-")} · 匹配 ${formatOptionalNumber(realtimeMetadata.matched_count)} 条`
+                        : "等待任务创建"}
                 </small>
-              )}
+                {realtimeJobId && running === "search" && (
+                  <Button type="button" variant="ghost" size="sm" onClick={() => void cancelRealtimeSearch()} disabled={realtimeCancelling}>
+                    {realtimeCancelling ? <Loader2 size={14} className="spin" /> : <XCircle size={14} />}
+                    {realtimeCancelling ? "取消中" : "取消搜索"}
+                  </Button>
+                )}
+              </div>
             </div>
           )}
           {(message || error) && <div className={`content-status ${error ? "error" : ""}`}>{error || message}</div>}

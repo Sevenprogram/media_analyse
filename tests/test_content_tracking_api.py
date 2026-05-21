@@ -391,6 +391,86 @@ def test_search_similar_realtime_busy_returns_409(monkeypatch):
     assert "already running" in response.json()["detail"]
 
 
+def test_content_realtime_discovery_busy_returns_non_cancellable_busy_state(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+    calls = {"cancelled": None}
+
+    class FakeRepository:
+        async def create_job(self, payload):
+            return {"id": 7, **payload}
+
+        async def update_job(self, job_id, payload):
+            calls["cancelled"] = (job_id, payload)
+            return {"id": job_id, **payload}
+
+    async def fake_schedule(job_id, background=True, force_schedule=True):
+        return {"status": "busy", "job_id": 99, "message": "A research execution is already running"}
+
+    import api.routers.content_tracking as content_router
+
+    monkeypatch.setattr(content_router, "ResearchRepository", FakeRepository)
+    monkeypatch.setattr(content_router, "schedule_and_execute_research_job", fake_schedule)
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/content-tracking/realtime-discovery",
+        json={"keywords": ["K12"], "platforms": ["xhs"], "realtime": True},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "busy"
+    assert body["job_id"] is None
+    assert body["busy_job_id"] == 99
+    assert calls["cancelled"] == (7, {"status": "cancelled"})
+
+
+def test_cancel_content_realtime_job_stops_active_execution(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+    calls = {"cancelled": None}
+
+    class FakeRepository:
+        async def get_job(self, job_id):
+            return {"id": job_id, "topic": "content_realtime_discovery", "status": "running"}
+
+        async def update_job(self, job_id, payload):
+            calls["cancelled"] = (job_id, payload)
+            return {"id": job_id, **payload}
+
+    async def fake_cancel(job_id):
+        return {"status": "stopping", "job_id": job_id, "crawler_stopped": True}
+
+    import api.routers.content_tracking as content_router
+
+    monkeypatch.setattr(content_router, "ResearchRepository", FakeRepository)
+    monkeypatch.setattr(content_router, "cancel_active_research_execution_job", fake_cancel)
+
+    client = TestClient(app)
+    response = client.post("/api/content-tracking/realtime-jobs/42/cancel")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "stopping", "job_id": 42, "crawler_stopped": True}
+    assert calls["cancelled"] is None
+
+
+def test_cancel_content_realtime_job_rejects_other_topic(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+
+    class FakeRepository:
+        async def get_job(self, job_id):
+            return {"id": job_id, "topic": "creator_realtime_discovery", "status": "running"}
+
+    import api.routers.content_tracking as content_router
+
+    monkeypatch.setattr(content_router, "ResearchRepository", FakeRepository)
+
+    client = TestClient(app)
+    response = client.post("/api/content-tracking/realtime-jobs/42/cancel")
+
+    assert response.status_code == 400
+    assert "content tracking realtime" in response.json()["detail"]
+
+
 def test_content_tracking_ai_analysis_uses_env_gateway(monkeypatch):
     monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
     monkeypatch.setenv("AI_GATEWAY_API_KEY", "test-key")
