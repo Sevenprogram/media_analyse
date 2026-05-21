@@ -578,6 +578,7 @@ def test_growth_project_collection_progress_route(monkeypatch):
     assert body["progress"]["sample_counts"]["posts"] == 12
     assert body["progress"]["target_counts"]["posts"] == 60
     assert body["progress"]["latest_event"]["message"] == "done"
+    assert body["progress"]["events"][0]["message"] == "done"
 
 
 def test_growth_project_collection_progress_marks_orphan_running_job_failed(monkeypatch):

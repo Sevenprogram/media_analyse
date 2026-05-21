@@ -75,7 +75,7 @@ _research_execution_job_id: int | None = None
 _research_executions: dict[int, dict] = {}
 _research_execution_queue: list[dict] = []
 _research_queue_worker_task: asyncio.Task | None = None
-_research_execution_concurrency: int = 4
+_research_execution_concurrency: int = 1
 AI_ANALYSIS_TASKS: dict[int, dict] = {}
 EXPORT_BASE_DIR = Path("exports")
 GLOBAL_DEFAULTS_KEY = "research_defaults"
@@ -213,7 +213,7 @@ def get_research_execution_concurrency() -> dict:
     return {
         "max_concurrent": _research_execution_concurrency,
         "running": len(_running_research_job_ids()),
-        "default": 4,
+        "default": 1,
         "min": 1,
         "max": 16,
     }
@@ -347,6 +347,9 @@ async def _run_research_execution_queue() -> None:
         job_id = int(queued["job_id"])
         repository = ResearchRepository()
         try:
+            job = await repository.get_job(job_id)
+            if job and job.get("status") in {JOB_CANCELLED, JOB_FAILED, JOB_COMPLETED}:
+                continue
             execution = await schedule_and_execute_research_job(job_id, background=True)
             if execution.get("status") == "busy":
                 _research_execution_queue.insert(0, queued)
@@ -835,6 +838,28 @@ async def run_growth_project_collection_now(
     if not keywords:
         raise HTTPException(status_code=400, detail="Growth project has no keywords to collect")
     request = request or GrowthProjectRunNowRequest()
+    active_job_id = _active_project_collection_job_id(project_id=project_id, project=project)
+    if active_job_id is not None:
+        progress = await _job_progress_snapshot(active_job_id)
+        queue = _collection_queue_snapshot()
+        active_status = _project_collection_progress_status(
+            running_job_id=active_job_id if active_job_id in _running_research_job_ids() else None,
+            queued_jobs=[item for item in queue["queued_jobs"] if int(item["job_id"]) == int(active_job_id)],
+            queue=queue,
+            progress=progress,
+        )
+        return {
+            "status": active_status,
+            "project_id": project_id,
+            "job_id": active_job_id,
+            "job": progress.get("job"),
+            "target_posts_per_platform": request.target_posts_per_platform,
+            "target_posts_total": request.target_posts_per_platform * max(1, len(summary["platforms"])),
+            "collection_window_days": request.collection_window_days,
+            "queue_position": _queue_position(active_job_id),
+            "queue": queue,
+            "message": "Growth project already has an active collection job",
+        }
     comment_policy = _comment_policy_for_growth_project(project)
     comment_policy.max_posts_per_job = request.target_posts_per_platform
     end_date = date.today()
@@ -861,6 +886,7 @@ async def run_growth_project_collection_now(
     queue = await enqueue_research_collection_job(int(job["id"]), project_id=project_id)
     return {
         "status": "queued",
+        "project_id": project_id,
         "job": job,
         "target_posts_per_platform": request.target_posts_per_platform,
         "target_posts_total": request.target_posts_per_platform * max(1, len(summary["platforms"])),
@@ -902,6 +928,27 @@ async def get_growth_project_collection_progress(project_id: str):
     }
 
 
+def _active_project_collection_job_id(*, project_id: str, project: dict) -> int | None:
+    job_ids = [
+        int(record["id"])
+        for record in project.get("collection_records", [])
+        if record.get("id") is not None
+    ]
+    if not job_ids:
+        return None
+    running = [job_id for job_id in _running_research_job_ids() if job_id in job_ids]
+    if running:
+        return running[0]
+    queued = [
+        int(item["job_id"])
+        for item in _collection_queue_snapshot()["queued_jobs"]
+        if item.get("project_id") == project_id and int(item["job_id"]) in job_ids
+    ]
+    if queued:
+        return queued[0]
+    return None
+
+
 @router.post("/growth-projects/{project_id}/collection/pause")
 async def pause_growth_project_collection(project_id: str):
     require_research_database()
@@ -928,6 +975,16 @@ async def stop_growth_project_current_run(project_id: str):
     project = await service.get_growth_project(project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Growth project not found")
+    project_job_ids = {
+        int(record["id"])
+        for record in project.get("collection_records", [])
+        if record.get("id") is not None
+    }
+    _research_execution_queue[:] = [
+        item
+        for item in _research_execution_queue
+        if not (item.get("project_id") == project_id or int(item["job_id"]) in project_job_ids)
+    ]
     stopped = []
     stopped_crawler = False
     for record in project.get("collection_records", []):
@@ -1141,6 +1198,8 @@ def _empty_progress() -> dict:
         "progress_basis": "samples",
         "job": None,
         "latest_event": None,
+        "events": [],
+        "crawler": None,
     }
 
 
@@ -1153,7 +1212,7 @@ async def _job_progress_snapshot(job_id: int | None) -> dict:
         return _empty_progress()
     units = await repository.list_crawl_units(int(job_id))
     stats = await repository.get_job_stats(int(job_id))
-    events = await repository.list_events(int(job_id), limit=1)
+    events = await repository.list_events(int(job_id), limit=20)
     target_posts_per_platform = int((job.get("comment_policy") or {}).get("max_posts_per_job") or 0)
     target_posts_total = target_posts_per_platform * max(1, len(job.get("platforms") or []))
     posts_count = int(stats.get("posts") or 0)
@@ -1198,7 +1257,36 @@ async def _job_progress_snapshot(job_id: int | None) -> dict:
         "progress_basis": "samples" if target_posts_total else "steps",
         "job": job,
         "latest_event": events[0] if events else None,
+        "events": events,
+        "crawler": _active_crawler_snapshot(int(job_id)),
     }
+
+
+def _active_crawler_snapshot(job_id: int | None) -> dict | None:
+    if job_id is None:
+        return None
+    record = _live_research_executions().get(int(job_id))
+    if record is None:
+        return None
+    manager = record.get("crawler_manager")
+    if manager is None:
+        return None
+    status = manager.get_status() if hasattr(manager, "get_status") else {}
+    logs = getattr(manager, "logs", None) or []
+    latest_log = _serialize_crawler_log(logs[-1]) if logs else None
+    return {
+        **status,
+        "latest_log": latest_log,
+        "log_count": len(logs),
+    }
+
+
+def _serialize_crawler_log(log: object) -> dict:
+    if hasattr(log, "model_dump"):
+        return log.model_dump(mode="json")
+    if isinstance(log, dict):
+        return log
+    return {"message": str(log)}
 
 
 def _sample_progress_percent(
@@ -1834,12 +1922,13 @@ async def download_research_export_file(job_id: int, file_path: str):
 
 @router.get("/execution/status")
 async def get_research_execution_status():
-    crawler_status = crawler_manager.get_status()
     running_job_ids = _running_research_job_ids()
+    active_job_id = running_job_ids[0] if running_job_ids else None
+    crawler_status = _active_crawler_snapshot(active_job_id) or crawler_manager.get_status()
     return {
         **crawler_status,
         "research_execution_running": bool(running_job_ids),
-        "research_execution_job_id": running_job_ids[0] if running_job_ids else None,
+        "research_execution_job_id": active_job_id,
         "research_execution_job_ids": running_job_ids,
         "research_execution_concurrency": get_research_execution_concurrency(),
     }

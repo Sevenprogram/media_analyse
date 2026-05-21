@@ -5099,6 +5099,64 @@ fieldset {
   background: #ffffff;
 }
 
+.collection-progress-log-list {
+  display: grid;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.collection-progress-log-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.collection-progress-log-head strong {
+  color: var(--brand);
+  font-weight: 700;
+}
+
+.collection-progress-log-row {
+  display: grid;
+  grid-template-columns: 72px 112px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 7px 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: #ffffff;
+  font-size: 12px;
+}
+
+.collection-progress-log-row span {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.collection-progress-log-row strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.collection-progress-log-row p {
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+.collection-progress-log-row.error {
+  border-color: #fecaca;
+  background: #fff7f7;
+}
+
+@media (max-width: 720px) {
+  .collection-progress-log-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 .ui-dialog:has(.project-post-dialog) {
   width: min(880px, calc(100vw - 32px));
 }

@@ -381,9 +381,34 @@ export type GrowthProjectCollectionProgress = {
     progress_basis?: "samples" | "steps" | string;
     job?: ResearchJob | null;
     latest_event?: {
+      id?: number;
+      job_id?: number;
+      platform?: string | null;
       event_type?: string;
       message?: string;
+      stats_json?: Record<string, unknown> | null;
       created_at?: string | null;
+    } | null;
+    events?: Array<{
+      id?: number;
+      job_id?: number;
+      platform?: string | null;
+      event_type?: string;
+      message?: string;
+      stats_json?: Record<string, unknown> | null;
+      created_at?: string | null;
+    }>;
+    crawler?: {
+      status?: string;
+      platform?: string | null;
+      crawler_type?: string | null;
+      started_at?: string | null;
+      latest_log?: {
+        level?: string;
+        message?: string;
+        timestamp?: string;
+      } | null;
+      log_count?: number;
     } | null;
   };
 };

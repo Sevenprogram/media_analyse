@@ -63,7 +63,7 @@ def setup_function():
     research_router._research_executions.clear()
     research_router._research_execution_task = None
     research_router._research_execution_job_id = None
-    research_router._research_execution_concurrency = 4
+    research_router._research_execution_concurrency = 1
     research_router.AI_ANALYSIS_TASKS.clear()
     creator_search_router.CREATOR_SEARCH_TASKS.clear()
 
@@ -129,7 +129,7 @@ def test_background_task_settings_updates_research_execution_concurrency():
     response = client.get("/api/background-tasks/settings")
 
     assert response.status_code == 200
-    assert response.json()["research_execution"]["max_concurrent"] == 4
+    assert response.json()["research_execution"]["max_concurrent"] == 1
 
     response = client.put(
         "/api/background-tasks/settings/research-execution-concurrency",

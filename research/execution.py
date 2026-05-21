@@ -22,6 +22,9 @@ from research.enums import (
 from research.platforms import get_research_platform
 from research.postprocess import run_post_crawl_analysis
 
+CRAWLER_PROCESS_POLL_SECONDS = 1
+CRAWLER_HEARTBEAT_SECONDS = 15
+
 
 class EventRepository(Protocol):
     async def update_job_status(self, job_id: int, status: str) -> dict[str, Any] | None:
@@ -36,6 +39,9 @@ class EventRepository(Protocol):
         message: str,
         stats: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        ...
+
+    async def get_job_stats(self, job_id: int) -> dict[str, Any]:
         ...
 
 
@@ -272,7 +278,7 @@ class ResearchExecutionManager:
             raise RuntimeError(f"Crawler manager rejected start for {platform}")
 
         try:
-            await self._wait_for_process()
+            await self._wait_for_process(job_id=job["id"], platform=platform, request=request)
         except Exception:
             await self._persist_crawler_output(job_id=job["id"], platform=platform)
             raise
@@ -346,12 +352,70 @@ class ResearchExecutionManager:
             )
         return enabled_requests
 
-    async def _wait_for_process(self) -> None:
+    async def _wait_for_process(
+        self,
+        *,
+        job_id: int,
+        platform: str,
+        request: CrawlerStartRequest,
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        last_heartbeat_at = started_at
         process = self.crawler_manager.process
         while process and process.poll() is None:
-            await asyncio.sleep(1)
+            await asyncio.sleep(CRAWLER_PROCESS_POLL_SECONDS)
+            now = loop.time()
+            if now - last_heartbeat_at >= CRAWLER_HEARTBEAT_SECONDS:
+                await self._create_crawler_heartbeat(
+                    job_id=job_id,
+                    platform=platform,
+                    request=request,
+                    elapsed_seconds=round(now - started_at),
+                )
+                last_heartbeat_at = now
         if process and process.returncode not in (0, None):
             raise RuntimeError(_crawler_exit_message(int(process.returncode)))
+
+    async def _create_crawler_heartbeat(
+        self,
+        *,
+        job_id: int,
+        platform: str,
+        request: CrawlerStartRequest,
+        elapsed_seconds: int,
+    ) -> None:
+        stats = await self._heartbeat_stats(job_id)
+        latest_log = _latest_log_message(getattr(self.crawler_manager, "logs", None) or [])
+        await self.repository.create_event(
+            job_id=job_id,
+            platform=platform,
+            event_type="crawler_heartbeat",
+            message=_crawler_heartbeat_message(
+                platform=platform,
+                elapsed_seconds=elapsed_seconds,
+                stats=stats,
+                latest_log=latest_log,
+            ),
+            stats={
+                "elapsed_seconds": elapsed_seconds,
+                "crawler_type": request.crawler_type.value,
+                "keywords": request.keywords,
+                "specified_ids": request.specified_ids,
+                "creator_ids": request.creator_ids,
+                "latest_log": latest_log,
+                "sample_counts": stats,
+            },
+        )
+
+    async def _heartbeat_stats(self, job_id: int) -> dict[str, Any]:
+        get_stats = getattr(self.repository, "get_job_stats", None)
+        if get_stats is None:
+            return {}
+        try:
+            return await get_stats(job_id)
+        except Exception:
+            return {}
 
     async def _persist_crawler_output(self, *, job_id: int, platform: str) -> None:
         raw_logs = getattr(self.crawler_manager, "logs", None) or []
@@ -427,6 +491,34 @@ def _crawler_output_summary(lines: list[dict[str, Any]]) -> str:
         if message:
             return message
     return "Crawler output captured"
+
+
+def _latest_log_message(raw_logs: list[Any]) -> str | None:
+    for item in reversed(raw_logs):
+        message = str(_log_entry_to_dict(item).get("message") or "").strip()
+        if message:
+            return message
+    return None
+
+
+def _crawler_heartbeat_message(
+    *,
+    platform: str,
+    elapsed_seconds: int,
+    stats: dict[str, Any],
+    latest_log: str | None,
+) -> str:
+    parts = [f"{platform} 采集仍在运行，已等待 {elapsed_seconds}s"]
+    if stats:
+        parts.append(
+            "当前样本 "
+            f"posts={int(stats.get('posts') or 0)}, "
+            f"comments={int(stats.get('comments') or 0)}, "
+            f"raw={int(stats.get('raw_records') or 0)}"
+        )
+    if latest_log:
+        parts.append(f"最新输出：{latest_log}")
+    return "; ".join(parts)
 
 
 def _max_notes_count_for_unit(job: dict[str, Any]) -> int | None:

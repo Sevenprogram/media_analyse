@@ -841,6 +841,7 @@ function CollectionProgressPanel({ progress, onOpenPosts }: { progress: GrowthPr
   const stepPercent = Math.max(0, Math.min(100, Math.round(progress.progress.step_percent ?? progress.progress.percent ?? 0)));
   const activeJobId = progress.current_job_id || progress.running_job_id || progress.progress.job?.id || null;
   const latestMessage = progress.progress.latest_event?.message || "";
+  const events = (progress.progress.events || []).slice(0, 8);
   const failed = progress.status === "failed" || isFailureMessage(latestMessage);
   const hasNoSamplesYet = progress.status === "running" && targetPosts > 0 && sample.posts === 0;
   const queueText = progress.status === "queued"
@@ -899,9 +900,26 @@ function CollectionProgressPanel({ progress, onOpenPosts }: { progress: GrowthPr
       {progress.progress.job && (
         <p>当前任务：{progress.progress.job.name || `#${progress.progress.job.id}`}</p>
       )}
-      {latestMessage && (
+      {events.length ? (
+        <div className="collection-progress-log-list" aria-label="collection logs">
+          <div className="collection-progress-log-head">
+            <span>运行日志</span>
+            {hasNoSamplesYet && <strong>任务仍在运行，正在等待首批帖子入库</strong>}
+          </div>
+          {events.map((event, index) => (
+            <div
+              className={`collection-progress-log-row ${isFailureMessage(event.message || "") ? "error" : ""}`}
+              key={`${event.id || event.created_at || event.event_type || "event"}-${index}`}
+            >
+              <span>{formatDateTime(event.created_at)}</span>
+              <strong>{collectionEventLabel(event.event_type, event.platform)}</strong>
+              <p>{event.message || "-"}</p>
+            </div>
+          ))}
+        </div>
+      ) : latestMessage ? (
         <p className={failed ? "collection-error-message" : undefined}>最近日志：{latestMessage}</p>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -1078,6 +1096,23 @@ function progressStatusLabel(status: string) {
     cancelled: "已取消",
   };
   return labels[status] || status;
+}
+
+function collectionEventLabel(eventType?: string, platform?: string | null) {
+  const labels: Record<string, string> = {
+    execution_started: "任务启动",
+    crawler_started: "平台启动",
+    crawler_heartbeat: "运行心跳",
+    crawler_output_captured: "输出捕获",
+    crawler_finished: "平台完成",
+    backfill_completed: "入库完成",
+    post_crawl_analysis_completed: "分析完成",
+    execution_completed: "任务完成",
+    execution_failed: "任务失败",
+    execution_cancelled: "任务取消",
+  };
+  const stage = labels[eventType || ""] || eventType || "日志";
+  return platform ? `${labelPlatform(platform)} · ${stage}` : stage;
 }
 
 function isFailureMessage(message: string) {

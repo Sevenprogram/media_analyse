@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 
+import research.execution as execution_module
 from research.enums import JOB_CANCELLED, JOB_COMPLETED, JOB_FAILED, JOB_RUNNING
 from research.execution import (
     ResearchExecutionManager,
@@ -189,6 +190,26 @@ async def test_execute_persists_crawler_output_when_process_fails():
 
 
 @pytest.mark.asyncio
+async def test_execute_emits_crawler_heartbeat_while_process_runs(monkeypatch):
+    monkeypatch.setattr(execution_module, "CRAWLER_PROCESS_POLL_SECONDS", 0)
+    monkeypatch.setattr(execution_module, "CRAWLER_HEARTBEAT_SECONDS", 0)
+    repository = FakeExecutionRepository()
+    manager = ResearchExecutionManager(
+        crawler_manager=RunningCrawlerManager(),
+        repository=repository,
+        backfill=None,
+    )
+
+    await manager.execute(job=_job(), options=ResearchExecutionOptions(backfill_after_crawl=False))
+
+    heartbeat = next(event for event in repository.events if event["event_type"] == "crawler_heartbeat")
+    assert heartbeat["platform"] == "wb"
+    assert "posts=2" in heartbeat["message"]
+    assert heartbeat["stats"]["sample_counts"]["posts"] == 2
+    assert heartbeat["stats"]["latest_log"] == "search page still loading"
+
+
+@pytest.mark.asyncio
 async def test_execute_marks_job_failed_when_crawler_start_is_rejected():
     repository = FakeExecutionRepository()
     manager = ResearchExecutionManager(
@@ -238,6 +259,9 @@ class FakeExecutionRepository:
         self.events.append(payload)
         return payload
 
+    async def get_job_stats(self, job_id):
+        return {"posts": 2, "comments": 1, "raw_records": 3}
+
 
 class FakeCrawlerManager:
     process = None
@@ -281,6 +305,27 @@ class ExitedCrawlerManager:
         self.logs = [
             {"timestamp": "10:00:00", "level": "info", "message": "Starting crawler"},
             {"timestamp": "10:00:01", "level": "error", "message": "bad platform response"},
+        ]
+
+    async def start(self, config):
+        return True
+
+
+class RunningThenExitedProcess:
+    def __init__(self):
+        self.returncode = 0
+        self.polls = 0
+
+    def poll(self):
+        self.polls += 1
+        return None if self.polls == 1 else self.returncode
+
+
+class RunningCrawlerManager:
+    def __init__(self):
+        self.process = RunningThenExitedProcess()
+        self.logs = [
+            {"timestamp": "10:00:00", "level": "info", "message": "search page still loading"},
         ]
 
     async def start(self, config):
