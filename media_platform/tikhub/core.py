@@ -14,6 +14,7 @@ from var import crawler_type_var, source_keyword_var
 
 from .client import TikHubClient
 from .endpoints import Capability, EndpointSpec, get_endpoint, supports_capability
+from .errors import TikHubValidationError
 from .mappers import get_mapper
 from .mappers.xhs import author_from_item
 from .raw_writer import TikHubRawWriter
@@ -51,12 +52,12 @@ class TikHubCrawler:
     async def search(self) -> None:
         endpoint = get_endpoint(self.platform, Capability.SEARCH)
         max_count = max(int(config.CRAWLER_MAX_NOTES_COUNT), 1)
+        total_saved_count = 0
         for keyword in [item.strip() for item in config.KEYWORDS.split(",") if item.strip()]:
             source_keyword_var.set(keyword)
-            saved_count = 0
             page = int(config.START_PAGE)
             cursor = ""
-            while saved_count < max_count:
+            while total_saved_count < max_count:
                 params = self._search_params(endpoint, keyword, page, cursor)
                 data = await self.client.request(
                     endpoint.method,
@@ -71,10 +72,10 @@ class TikHubCrawler:
                 for item in items:
                     mapped = self.mapper.map_content(item, source_keyword=keyword)
                     await self._save_content(mapped)
-                    saved_count += 1
+                    total_saved_count += 1
                     if config.ENABLE_GET_COMMENTS:
                         await self._fetch_and_save_comments(mapped)
-                    if saved_count >= max_count:
+                    if total_saved_count >= max_count:
                         break
 
                 cursor = self._next_cursor(data)
@@ -82,6 +83,8 @@ class TikHubCrawler:
                     break
                 page += 1
                 await asyncio.sleep(config.CRAWLER_MAX_SLEEP_SEC)
+            if total_saved_count >= max_count:
+                break
 
     async def get_specified_notes(self) -> None:
         endpoint = get_endpoint(self.platform, Capability.DETAIL)
@@ -148,12 +151,29 @@ class TikHubCrawler:
         if not content_id:
             await self._write_raw("content_missing_id", mapped_content)
             return
+        if self.platform == "xhs" and content_id.startswith("tikhub_xhs_"):
+            utils.logger.warning(
+                f"[TikHubCrawler] Skip xhs comments for synthetic note id: {content_id}"
+            )
+            await self._write_raw("comment_skipped_synthetic_id", mapped_content, content_id)
+            return
 
-        data = await self.client.request(
-            endpoint.method,
-            endpoint.path,
-            params=self._content_params(endpoint, content_id),
-        )
+        try:
+            data = await self.client.request(
+                endpoint.method,
+                endpoint.path,
+                params=self._content_params(endpoint, content_id),
+            )
+        except TikHubValidationError as exc:
+            utils.logger.warning(
+                f"[TikHubCrawler] Comment fetch rejected for {self.platform} content {content_id}: {exc}"
+            )
+            await self._write_raw(
+                "comment_fetch_rejected",
+                {"content": mapped_content, "error": str(exc)},
+                content_id,
+            )
+            return
         comments = [
             self.mapper.map_comment(item, content_id=content_id)
             for item in self._extract_comments(data)

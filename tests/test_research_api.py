@@ -459,6 +459,7 @@ def test_create_growth_project_creates_initial_research_job(monkeypatch):
 
 def test_run_now_growth_project_queues_collection_job(monkeypatch):
     monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+    created = {}
 
     class FakeService:
         async def get_growth_project(self, project_id):
@@ -473,6 +474,7 @@ def test_run_now_growth_project_queues_collection_job(monkeypatch):
             }
 
         async def create_job(self, request):
+            created["request"] = request
             return {
                 "id": 22,
                 "name": request.name,
@@ -505,13 +507,21 @@ def test_run_now_growth_project_queues_collection_job(monkeypatch):
     monkeypatch.setattr(research_router, "enqueue_research_collection_job", fake_enqueue)
     client = TestClient(app)
 
-    response = client.post("/api/research/growth-projects/education_summer/collection/run-now")
+    response = client.post(
+        "/api/research/growth-projects/education_summer/collection/run-now",
+        json={"target_posts_per_platform": 25},
+    )
 
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "queued"
     assert body["queue_position"] == 2
     assert body["job"]["keywords"] == ["K12 education"]
+    assert body["target_posts_per_platform"] == 25
+    assert body["target_posts_total"] == 25
+    assert body["collection_window_days"] == 3
+    assert created["request"].comment_policy.max_posts_per_job == 25
+    assert (created["request"].end_date - created["request"].start_date).days == 2
 
 
 def test_growth_project_collection_progress_route(monkeypatch):
@@ -527,7 +537,13 @@ def test_growth_project_collection_progress_route(monkeypatch):
 
     class FakeRepository:
         async def get_job(self, job_id):
-            return {"id": job_id, "status": "running", "name": "Education collection"}
+            return {
+                "id": job_id,
+                "status": "running",
+                "name": "Education collection",
+                "platforms": ["dy", "xhs"],
+                "comment_policy": {"max_posts_per_job": 30},
+            }
 
         async def list_crawl_units(self, job_id):
             return [
@@ -555,9 +571,201 @@ def test_growth_project_collection_progress_route(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "running"
-    assert body["progress"]["percent"] == 50
+    assert body["progress"]["percent"] == 20
+    assert body["progress"]["sample_percent"] == 20
+    assert body["progress"]["step_percent"] == 50
+    assert body["progress"]["progress_basis"] == "samples"
     assert body["progress"]["sample_counts"]["posts"] == 12
+    assert body["progress"]["target_counts"]["posts"] == 60
     assert body["progress"]["latest_event"]["message"] == "done"
+
+
+def test_growth_project_collection_progress_marks_orphan_running_job_failed(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+
+    class FakeService:
+        async def get_growth_project(self, project_id):
+            return {
+                "project": {"id": project_id, "name": "Education", "platforms": ["xhs"]},
+                "keywords": [{"keyword": "K12 education"}],
+                "collection_records": [{"id": 76, "status": "running"}],
+            }
+
+    class FakeRepository:
+        async def get_job(self, job_id):
+            return {
+                "id": job_id,
+                "status": "running",
+                "name": "Education collection",
+                "platforms": ["xhs"],
+                "comment_policy": {"max_posts_per_job": 10},
+            }
+
+        async def list_crawl_units(self, job_id):
+            return []
+
+        async def get_job_stats(self, job_id):
+            return {"posts": 0, "comments": 0, "raw_records": 0, "authors": 0}
+
+        async def list_events(self, job_id, limit=1):
+            return []
+
+    monkeypatch.setattr(research_router, "get_service", lambda: FakeService())
+    monkeypatch.setattr(research_router, "ResearchRepository", FakeRepository)
+    monkeypatch.setattr(research_router, "_research_execution_job_id", None)
+    monkeypatch.setattr(research_router, "_research_execution_task", None)
+    monkeypatch.setattr(research_router, "_research_execution_queue", [])
+    monkeypatch.setattr(research_router, "_execution_busy", lambda: False)
+    client = TestClient(app)
+
+    response = client.get("/api/research/growth-projects/education/collection/progress")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["progress"]["sample_counts"]["posts"] == 0
+    assert body["progress"]["target_counts"]["posts"] == 10
+
+
+def test_growth_project_collection_progress_marks_completed_zero_sample_job_empty(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+
+    class FakeService:
+        async def get_growth_project(self, project_id):
+            return {
+                "project": {"id": project_id, "name": "Education", "platforms": ["xhs"]},
+                "keywords": [{"keyword": "K12 education"}],
+                "collection_records": [{"id": 77, "status": "completed"}],
+            }
+
+    class FakeRepository:
+        async def get_job(self, job_id):
+            return {
+                "id": job_id,
+                "status": "completed",
+                "name": "Education collection",
+                "platforms": ["xhs"],
+                "comment_policy": {"max_posts_per_job": 10},
+            }
+
+        async def list_crawl_units(self, job_id):
+            return []
+
+        async def get_job_stats(self, job_id):
+            return {"posts": 0, "comments": 0, "raw_records": 0, "authors": 1}
+
+        async def list_events(self, job_id, limit=1):
+            return [{"event_type": "execution_completed", "message": "Research job execution completed"}]
+
+    monkeypatch.setattr(research_router, "get_service", lambda: FakeService())
+    monkeypatch.setattr(research_router, "ResearchRepository", FakeRepository)
+    monkeypatch.setattr(research_router, "_research_execution_job_id", None)
+    monkeypatch.setattr(research_router, "_research_execution_task", None)
+    monkeypatch.setattr(research_router, "_research_execution_queue", [])
+    monkeypatch.setattr(research_router, "_execution_busy", lambda: False)
+    client = TestClient(app)
+
+    response = client.get("/api/research/growth-projects/education/collection/progress")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "empty"
+    assert body["progress"]["sample_counts"]["posts"] == 0
+    assert body["progress"]["target_counts"]["posts"] == 10
+
+
+def test_stop_growth_project_current_run_stops_running_crawler(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+    stopped = {"crawler": False, "task": False}
+
+    class FakeService:
+        async def get_growth_project(self, project_id):
+            return {
+                "project": {"id": project_id, "name": "Education", "platforms": ["xhs"]},
+                "collection_records": [{"id": 31, "status": "running"}],
+            }
+
+    class FakeRepository:
+        async def update_job(self, job_id, payload):
+            return {"id": job_id, **payload}
+
+        async def list_growth_project_records(self, include_archived=False):
+            return [{"id": 7, "name": "Education"}]
+
+        async def update_growth_project(self, project_id, payload):
+            return {"id": project_id, **payload}
+
+    class FakeCrawlerManager:
+        async def stop(self):
+            stopped["crawler"] = True
+            return True
+
+    class FakeTask:
+        def done(self):
+            return False
+
+        def cancel(self):
+            stopped["task"] = True
+
+    monkeypatch.setattr(research_router, "get_service", lambda: FakeService())
+    monkeypatch.setattr(research_router, "ResearchRepository", FakeRepository)
+    monkeypatch.setattr(research_router, "crawler_manager", FakeCrawlerManager())
+    monkeypatch.setattr(research_router, "_research_execution_job_id", 31)
+    monkeypatch.setattr(research_router, "_research_execution_task", FakeTask())
+    client = TestClient(app)
+
+    response = client.post("/api/research/growth-projects/education/collection/stop-current-run")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "stopped"
+    assert body["crawler_stopped"] is True
+    assert stopped == {"crawler": True, "task": True}
+
+
+def test_growth_project_posts_route_pages_project_posts(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+
+    class FakeService:
+        async def get_growth_project(self, project_id):
+            return {
+                "project": {
+                    "id": project_id,
+                    "name": "Education",
+                    "job_ids": [11, 12],
+                }
+            }
+
+    class FakeRepository:
+        async def list_posts_page(self, *, job_ids=None, job_id=None, limit=20, offset=0):
+            assert job_ids == [11, 12]
+            assert job_id is None
+            assert limit == 20
+            assert offset == 20
+            return {
+                "posts": [
+                    {"id": post_id, "platform_post_id": f"p{post_id}"}
+                    for post_id in range(21, 27)
+                ],
+                "total": 26,
+                "limit": limit,
+                "offset": offset,
+            }
+
+    monkeypatch.setattr(research_router, "get_service", lambda: FakeService())
+    monkeypatch.setattr(research_router, "ResearchRepository", FakeRepository)
+    client = TestClient(app)
+
+    response = client.get("/api/research/growth-projects/education/posts?limit=20&offset=20")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 26
+    assert body["limit"] == 20
+    assert body["offset"] == 20
+    assert body["has_more"] is False
+    assert body["posts"][0]["platform_post_id"] == "p21"
+    assert body["posts"][-1]["platform_post_id"] == "p26"
 
 
 def test_update_growth_project_route(monkeypatch):

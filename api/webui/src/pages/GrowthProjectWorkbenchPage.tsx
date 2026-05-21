@@ -6,6 +6,7 @@ import {
   Bot,
   Copy,
   Database,
+  ExternalLink,
   FileJson,
   Pause,
   Pencil,
@@ -17,7 +18,7 @@ import {
   Square,
   Trash2,
 } from "lucide-react";
-import { Badge, Button, Card, CardDescription, CardHeader, CardTitle, Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui";
+import { Badge, Button, Card, CardDescription, CardHeader, CardTitle, ConfirmDialog, Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui";
 import { api } from "../utils/api";
 import { formatDateTime, formatNumber, labelPlatform } from "../utils/format";
 import type { GrowthProjectCollectionProgress, GrowthProjectCreatePayload, GrowthProjectDetail, GrowthProjectSummary, GrowthProjectUpdatePayload, ScenePackOption } from "../types";
@@ -78,6 +79,47 @@ const PLATFORM_OPTIONS = [
   { value: "tieba", label: "贴吧" },
 ];
 
+type ProjectActionNotice = {
+  tone: "info" | "success" | "error";
+  message: string;
+};
+
+const COLLECTION_WINDOW_OPTIONS = [
+  { value: 1, label: "近 1 天" },
+  { value: 3, label: "近 3 天" },
+  { value: 7, label: "近 7 天" },
+  { value: 30, label: "近 30 天" },
+];
+
+type UnknownRecord = Record<string, unknown>;
+
+type ProjectPostsDialogSource =
+  | { kind: "project"; projectId: string }
+  | { kind: "job"; jobId: number };
+
+type ProjectPostsPage = {
+  posts: UnknownRecord[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+};
+
+type ProjectPostsDialogState = {
+  source: ProjectPostsDialogSource;
+  title: string;
+  description: string;
+  posts: UnknownRecord[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+  loading: boolean;
+  error: string | null;
+};
+
+const POST_DIALOG_PAGE_SIZE = 20;
+
 export function GrowthProjectWorkbenchPage({
   projects,
   selectedProjectId,
@@ -102,7 +144,7 @@ export function GrowthProjectWorkbenchPage({
   onCreateProject: (payload: GrowthProjectCreatePayload) => Promise<void>;
   onUpdateProject: (projectId: string, payload: GrowthProjectUpdatePayload) => Promise<void>;
   onDeleteProject: (projectId: string) => Promise<void>;
-  onStartCollection: (projectId: string) => Promise<void>;
+  onStartCollection: (projectId: string, targetPostsPerPlatform?: number, collectionWindowDays?: number) => Promise<void>;
   onPauseCollection: (projectId: string) => Promise<void>;
   onStopCurrentRun: (projectId: string) => Promise<void>;
   onArchiveProject: (projectId: string) => Promise<void>;
@@ -110,7 +152,63 @@ export function GrowthProjectWorkbenchPage({
   onOpenAi: () => void;
 }) {
   const [showCreate, setShowCreate] = React.useState(false);
+  const [postsDialog, setPostsDialog] = React.useState<ProjectPostsDialogState | null>(null);
   const selected = projects.find((project) => project.id === selectedProjectId) || projects[0] || null;
+
+  async function loadPostsPage(source: ProjectPostsDialogSource, title: string, offset = 0) {
+    const current = postsDialog?.source.kind === source.kind ? postsDialog : null;
+    setPostsDialog({
+      source,
+      title,
+      description: "正在读取采集内容...",
+      posts: current?.posts || [],
+      total: current?.total || 0,
+      limit: POST_DIALOG_PAGE_SIZE,
+      offset,
+      hasMore: current?.hasMore || false,
+      loading: true,
+      error: null,
+    });
+    try {
+      const endpoint = source.kind === "project"
+        ? `/api/research/growth-projects/${encodeURIComponent(source.projectId)}/posts?limit=${POST_DIALOG_PAGE_SIZE}&offset=${offset}`
+        : `/api/research/jobs/${source.jobId}/posts?limit=${POST_DIALOG_PAGE_SIZE}&offset=${offset}`;
+      const page = await api<ProjectPostsPage>(endpoint);
+      setPostsDialog({
+        source,
+        title,
+        description: postPageDescription(page.total, page.offset, page.posts.length),
+        posts: page.posts || [],
+        total: page.total || 0,
+        limit: page.limit || POST_DIALOG_PAGE_SIZE,
+        offset: page.offset || 0,
+        hasMore: Boolean(page.has_more),
+        loading: false,
+        error: null,
+      });
+    } catch (err) {
+      setPostsDialog({
+        source,
+        title,
+        description: "采集内容读取失败。",
+        posts: [],
+        total: 0,
+        limit: POST_DIALOG_PAGE_SIZE,
+        offset,
+        hasMore: false,
+        loading: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  function openProjectPosts(title: string, projectId: string) {
+    void loadPostsPage({ kind: "project", projectId }, title, 0);
+  }
+
+  function openJobPosts(title: string, jobId: number) {
+    void loadPostsPage({ kind: "job", jobId }, title, 0);
+  }
 
   return (
     <section className="module-page growth-workbench">
@@ -135,6 +233,7 @@ export function GrowthProjectWorkbenchPage({
                 project={project}
                 active={project.id === selected?.id}
                 onClick={() => onSelectProject(project.id)}
+                onOpenPosts={() => openProjectPosts(`${project.name} · 采集内容`, project.id)}
               />
             ))
           ) : (
@@ -153,13 +252,20 @@ export function GrowthProjectWorkbenchPage({
           onArchiveProject={onArchiveProject}
           onOpenData={onOpenData}
           onOpenAi={onOpenAi}
+          onOpenProjectPosts={(title, projectId) => openProjectPosts(title, projectId)}
+          onOpenJobPosts={(title, jobId) => openJobPosts(title, jobId)}
         />
       </div>
+      <ProjectPostsDialog
+        state={postsDialog}
+        onClose={() => setPostsDialog(null)}
+        onPageChange={(offset) => postsDialog && void loadPostsPage(postsDialog.source, postsDialog.title, offset)}
+      />
     </section>
   );
 }
 
-function GrowthProjectCard({ project, active, onClick }: { project: GrowthProjectSummary; active: boolean; onClick: () => void }) {
+function GrowthProjectCard({ project, active, onClick, onOpenPosts }: { project: GrowthProjectSummary; active: boolean; onClick: () => void; onOpenPosts: () => void }) {
   const metrics = project.metrics;
   const action = ACTION_LABELS[project.recommended_action.kind] || project.recommended_action.label;
 
@@ -184,7 +290,17 @@ function GrowthProjectCard({ project, active, onClick }: { project: GrowthProjec
       </div>
       <div className="growth-project-metrics">
         <span>{formatNumber(metrics.jobs)} 任务</span>
-        <span>{formatNumber(metrics.posts)} 帖子</span>
+        <button
+          type="button"
+          className="growth-project-metric-button"
+          disabled={!metrics.posts}
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenPosts();
+          }}
+        >
+          {formatNumber(metrics.posts)} 帖子
+        </button>
         <span>{formatNumber(metrics.comments)} 评论</span>
         <span>{formatNumber(metrics.raw_records)} raw</span>
         {metrics.failed_jobs > 0 && <span className="danger">{formatNumber(metrics.failed_jobs)} 失败</span>}
@@ -206,21 +322,33 @@ function ProjectDetailPanel({
   onArchiveProject,
   onOpenData,
   onOpenAi,
+  onOpenProjectPosts,
+  onOpenJobPosts,
 }: {
   detail: GrowthProjectDetail | null;
   selected: GrowthProjectSummary | null;
   progress: GrowthProjectCollectionProgress | null;
   onUpdateProject: (projectId: string, payload: GrowthProjectUpdatePayload) => Promise<void>;
   onDeleteProject: (projectId: string) => Promise<void>;
-  onStartCollection: (projectId: string) => Promise<void>;
+  onStartCollection: (projectId: string, targetPostsPerPlatform?: number, collectionWindowDays?: number) => Promise<void>;
   onPauseCollection: (projectId: string) => Promise<void>;
   onStopCurrentRun: (projectId: string) => Promise<void>;
   onArchiveProject: (projectId: string) => Promise<void>;
   onOpenData: () => void;
   onOpenAi: () => void;
+  onOpenProjectPosts: (title: string, projectId: string) => void;
+  onOpenJobPosts: (title: string, jobId: number) => void;
 }) {
   const [busy, setBusy] = React.useState<string | null>(null);
   const [editing, setEditing] = React.useState(false);
+  const [actionNotice, setActionNotice] = React.useState<ProjectActionNotice | null>(null);
+  const [targetPostsPerPlatform, setTargetPostsPerPlatform] = React.useState(50);
+  const [collectionWindowDays, setCollectionWindowDays] = React.useState(3);
+
+  React.useEffect(() => {
+    setActionNotice(null);
+    setEditing(false);
+  }, [selected?.id]);
 
   if (!selected) {
     return (
@@ -233,11 +361,53 @@ function ProjectDetailPanel({
 
   const project = detail?.project || selected;
   const action = ACTION_LABELS[project.recommended_action.kind] || project.recommended_action.label;
+  const collectionActive = progress?.status === "queued" || progress?.status === "running";
+  const latestMessage = progress?.progress.latest_event?.message || "";
+  const collectionFailed = progress?.status === "failed" || isFailureMessage(latestMessage);
 
   async function runAction(kind: string, fn: (projectId: string) => Promise<void>) {
     setBusy(kind);
+    setActionNotice({
+      tone: "info",
+      message: kind === "start" ? "已收到点击，正在提交采集任务。" : "正在提交操作。",
+    });
     try {
       await fn(project.id);
+      setActionNotice({
+        tone: "success",
+        message: actionSuccessMessage(kind),
+      });
+    } catch (err) {
+      setActionNotice({
+        tone: "error",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function runStartCollection() {
+    const target = clampTargetPosts(targetPostsPerPlatform);
+    const windowDays = clampCollectionWindowDays(collectionWindowDays);
+    setTargetPostsPerPlatform(target);
+    setCollectionWindowDays(windowDays);
+    setBusy("start");
+    setActionNotice({
+      tone: "info",
+      message: `已收到点击，正在提交采集任务：近 ${windowDays} 天，每个平台目标 ${target} 条。`,
+    });
+    try {
+      await onStartCollection(project.id, target, windowDays);
+      setActionNotice({
+        tone: "success",
+        message: `采集任务已提交：近 ${windowDays} 天，${project.platforms.length || 1} 个平台，每个平台目标 ${target} 条。`,
+      });
+    } catch (err) {
+      setActionNotice({
+        tone: "error",
+        message: err instanceof Error ? err.message : String(err),
+      });
     } finally {
       setBusy(null);
     }
@@ -252,13 +422,53 @@ function ProjectDetailPanel({
       </div>
 
       <div className="project-control-bar">
-        <Button variant="primary" disabled={!!busy} onClick={() => runAction("start", onStartCollection)}><Play size={16} />立即采集</Button>
+        <label className="collection-target-input">
+          <span>每个平台</span>
+          <input
+            type="number"
+            min={10}
+            max={500}
+            step={10}
+            value={targetPostsPerPlatform}
+            disabled={!!busy || (collectionActive && !collectionFailed)}
+            onChange={(event) => setTargetPostsPerPlatform(Number(event.target.value) || 50)}
+            onBlur={() => setTargetPostsPerPlatform((value) => clampTargetPosts(value))}
+          />
+          <span>条</span>
+        </label>
+        <label className="collection-target-input">
+          <span>时间范围</span>
+          <select
+            value={collectionWindowDays}
+            disabled={!!busy || (collectionActive && !collectionFailed)}
+            onChange={(event) => setCollectionWindowDays(clampCollectionWindowDays(Number(event.target.value)))}
+          >
+            {COLLECTION_WINDOW_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+        <Button
+          variant={collectionFailed ? "warning" : "primary"}
+          disabled={!!busy || (collectionActive && !collectionFailed)}
+          onClick={runStartCollection}
+        >
+          {busy === "start" ? <RefreshCw size={16} className="spin" /> : <Play size={16} />}
+          {startCollectionLabel(busy, collectionActive, collectionFailed)}
+        </Button>
         <Button variant="ghost" disabled={!!busy} onClick={() => setEditing((current) => !current)}><Pencil size={16} />编辑项目</Button>
         <Button variant="ghost" disabled={!!busy} onClick={() => runAction("pause", onPauseCollection)}><Pause size={16} />暂停采集</Button>
         <Button variant="ghost" disabled={!!busy} onClick={() => runAction("stop", onStopCurrentRun)}><Square size={16} />停止本轮</Button>
         <Button variant="ghost" disabled={!!busy} onClick={() => runAction("archive", onArchiveProject)}><Archive size={16} />归档项目</Button>
         <Button variant="ghost" disabled={!!busy} onClick={() => runAction("delete", onDeleteProject)}><Trash2 size={16} />删除项目</Button>
       </div>
+
+      {actionNotice && (
+        <div className={`project-action-notice ${actionNotice.tone}`}>
+          {actionNotice.tone === "error" ? <AlertTriangle size={16} /> : <Activity size={16} />}
+          <span>{actionNotice.message}</span>
+        </div>
+      )}
 
       {editing && (
         <GrowthProjectEditForm
@@ -269,7 +479,10 @@ function ProjectDetailPanel({
         />
       )}
 
-      <CollectionProgressPanel progress={progress} />
+      <CollectionProgressPanel
+        progress={progress}
+        onOpenPosts={(jobId) => onOpenJobPosts(`${project.name} · 当前任务采集内容`, jobId)}
+      />
 
       <Tabs defaultValue="overview" className="project-tabs">
         <TabsList className="project-tab-list">
@@ -289,7 +502,7 @@ function ProjectDetailPanel({
             </div>
           </CardHeader>
           <div className="project-overview-grid">
-            <Metric label="帖子" value={project.metrics.posts} icon={<FileJson size={16} />} />
+            <Metric label="帖子" value={project.metrics.posts} icon={<FileJson size={16} />} onClick={() => onOpenProjectPosts(`${project.name} · 采集内容`, project.id)} />
             <Metric label="评论" value={project.metrics.comments} icon={<FileJson size={16} />} />
             <Metric label="达人" value={project.metrics.creators} icon={<Search size={16} />} />
             <Metric label="失败任务" value={project.metrics.failed_jobs} icon={<Activity size={16} />} />
@@ -308,7 +521,7 @@ function ProjectDetailPanel({
 
         <TabsContent value="samples" className="project-tab-content">
           <div className="project-overview-grid">
-            <Metric label="帖子" value={detail?.sample_data.posts ?? project.metrics.posts} icon={<FileJson size={16} />} />
+            <Metric label="帖子" value={detail?.sample_data.posts ?? project.metrics.posts} icon={<FileJson size={16} />} onClick={() => onOpenProjectPosts(`${project.name} · 采集内容`, project.id)} />
             <Metric label="评论" value={detail?.sample_data.comments ?? project.metrics.comments} icon={<FileJson size={16} />} />
             <Metric label="达人" value={detail?.sample_data.creators ?? project.metrics.creators} icon={<Search size={16} />} />
             <Metric label="Raw" value={detail?.sample_data.raw_records ?? project.metrics.raw_records} icon={<Database size={16} />} />
@@ -345,6 +558,99 @@ function ProjectDetailPanel({
       </Tabs>
     </Card>
   );
+}
+
+function ProjectPostsDialog({
+  state,
+  onClose,
+  onPageChange,
+}: {
+  state: ProjectPostsDialogState | null;
+  onClose: () => void;
+  onPageChange: (offset: number) => void;
+}) {
+  const prevOffset = state ? Math.max(0, state.offset - state.limit) : 0;
+  const nextOffset = state ? state.offset + state.limit : 0;
+  return (
+    <ConfirmDialog
+      open={Boolean(state)}
+      onOpenChange={(open) => !open && onClose()}
+      title={state?.title || "采集内容"}
+      description={state?.description || ""}
+    >
+      <div className="project-post-dialog">
+        {state?.loading ? (
+          <CardDescription>正在加载采集内容...</CardDescription>
+        ) : state?.error ? (
+          <EmptyState title="采集内容读取失败" body={state.error} />
+        ) : state?.posts.length ? (
+          state.posts.map((post, index) => <ProjectPostRow key={`${postText(post.platform_post_id || post.id || post.url, "post")}-${index}`} post={post} index={index} />)
+        ) : (
+          <EmptyState title="暂无采集内容" body="这个任务还没有可展示的帖子样本。" />
+        )}
+        {state && state.total > state.limit && (
+          <div className="project-post-pagination">
+            <span>{postPageDescription(state.total, state.offset, state.posts.length)}</span>
+            <div>
+              <Button type="button" variant="ghost" disabled={state.loading || state.offset <= 0} onClick={() => onPageChange(prevOffset)}>上一页</Button>
+              <Button type="button" variant="ghost" disabled={state.loading || !state.hasMore} onClick={() => onPageChange(nextOffset)}>下一页</Button>
+            </div>
+          </div>
+        )}
+        <div className="project-post-dialog-actions">
+          <Button type="button" variant="ghost" onClick={onClose}>关闭</Button>
+        </div>
+      </div>
+    </ConfirmDialog>
+  );
+}
+
+function ProjectPostRow({ post, index }: { post: UnknownRecord; index: number }) {
+  const engagement = postRecord(post.engagement_json || post.engagement);
+  const url = postText(post.url || post.note_url || post.aweme_url, "");
+  const title = postText(post.title || post.desc || post.platform_post_id || post.id, `采集内容 ${index + 1}`);
+  return (
+    <article className="project-post-row">
+      <div className="project-post-row-head">
+        <div>
+          <strong>{title}</strong>
+          <span>{labelPlatform(postText(post.platform, ""))} · {postText(post.publish_time || post.created_at, "未知发布时间")} · ID {postText(post.platform_post_id || post.id, "-")}</span>
+        </div>
+        {url && (
+          <Button asChild variant="ghost" size="sm">
+            <a href={url} target="_blank" rel="noreferrer"><ExternalLink size={14} />打开链接</a>
+          </Button>
+        )}
+      </div>
+      <p>{postText(post.content || post.desc || post.summary, "当前帖子未保存正文，仅展示标题和链接。")}</p>
+      <div className="project-post-metrics">
+        <span>点赞 {formatNumber(postNumber(engagement.liked_count ?? engagement.like_count))}</span>
+        <span>评论 {formatNumber(postNumber(engagement.comment_count ?? engagement.comments_count))}</span>
+        <span>收藏 {formatNumber(postNumber(engagement.collected_count ?? engagement.favorite_count))}</span>
+        <span>分享 {formatNumber(postNumber(engagement.share_count ?? engagement.shared_count))}</span>
+      </div>
+    </article>
+  );
+}
+
+function postPageDescription(total: number, offset: number, count: number) {
+  if (!total) return "共 0 条帖子";
+  const start = offset + 1;
+  const end = offset + count;
+  return `共 ${formatNumber(total)} 条，当前 ${formatNumber(start)}-${formatNumber(end)}`;
+}
+
+function postRecord(value: unknown): UnknownRecord {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as UnknownRecord : {};
+}
+
+function postText(value: unknown, fallback = "-") {
+  return value === null || value === undefined || value === "" ? fallback : String(value);
+}
+
+function postNumber(value: unknown) {
+  const next = Number(value);
+  return Number.isFinite(next) ? next : 0;
 }
 
 function KeywordGroups({ keywords }: { keywords: Array<{ keyword: string; type: string; source: string }> }) {
@@ -507,52 +813,109 @@ function GrowthProjectEditForm({
   );
 }
 
-function CollectionProgressPanel({ progress }: { progress: GrowthProjectCollectionProgress | null }) {
+function CollectionProgressPanel({ progress, onOpenPosts }: { progress: GrowthProjectCollectionProgress | null; onOpenPosts?: (jobId: number) => void }) {
   if (!progress) {
     return (
       <div className="collection-progress-panel muted">
-        <span>采集进度</span>
-        <strong>等待刷新</strong>
+        <div className="collection-progress-head">
+          <div>
+            <span>采集进度</span>
+            <strong>等待刷新</strong>
+          </div>
+          <Badge tone="muted">0%</Badge>
+        </div>
+        <div className="collection-progress-data-strip">
+          <div><span>帖子</span><strong>0</strong></div>
+          <div><span>评论</span><strong>0</strong></div>
+          <div><span>Raw</span><strong>0</strong></div>
+          <div><span>达人</span><strong>0</strong></div>
+        </div>
       </div>
     );
   }
-  const percent = Math.max(0, Math.min(100, Math.round(progress.progress.percent || 0)));
   const sample = progress.progress.sample_counts;
+  const targetPosts = Number(progress.progress.target_counts?.posts || 0);
+  const samplePercent = targetPosts
+    ? Math.max(0, Math.min(100, Math.round((sample.posts / targetPosts) * 100)))
+    : Math.max(0, Math.min(100, Math.round(progress.progress.sample_percent ?? progress.progress.percent ?? 0)));
+  const stepPercent = Math.max(0, Math.min(100, Math.round(progress.progress.step_percent ?? progress.progress.percent ?? 0)));
+  const activeJobId = progress.current_job_id || progress.running_job_id || progress.progress.job?.id || null;
+  const latestMessage = progress.progress.latest_event?.message || "";
+  const failed = progress.status === "failed" || isFailureMessage(latestMessage);
+  const hasNoSamplesYet = progress.status === "running" && targetPosts > 0 && sample.posts === 0;
   const queueText = progress.status === "queued"
     ? `排队中，第 ${progress.queued_jobs[0]?.queue_position || 1} 位`
-    : progress.status === "running"
+    : failed
+      ? "采集异常"
+      : hasNoSamplesYet
+      ? "采集中，等待首批帖子入库"
+      : progress.status === "running"
       ? "采集中"
       : progressStatusLabel(progress.status);
+  const badgeTone = failed
+    ? "danger"
+    : progress.status === "completed"
+      ? "success"
+      : progress.status === "running"
+        ? "warning"
+        : progress.status === "queued"
+          ? "muted"
+          : "default";
   return (
-    <div className="collection-progress-panel">
+    <div className={`collection-progress-panel ${failed ? "failed" : progress.status}`}>
       <div className="collection-progress-head">
         <div>
           <span>采集进度</span>
           <strong>{queueText}</strong>
         </div>
-        <Badge tone={progress.status === "running" ? "warning" : progress.status === "queued" ? "muted" : "default"}>{percent}%</Badge>
+        <Badge tone={badgeTone}>{samplePercent}%</Badge>
       </div>
       <div className="collection-progress-track" aria-label="collection progress">
-        <div style={{ width: `${percent}%` }} />
+        <div style={{ width: `${samplePercent}%` }} />
+      </div>
+      <div className="collection-progress-primary">
+        <span>帖子入库进度</span>
+        <strong>{targetPosts ? `${formatNumber(sample.posts)} / ${formatNumber(targetPosts)}` : formatNumber(sample.posts)}</strong>
+      </div>
+      <div className="collection-progress-data-strip" aria-label="collected sample counts">
+        <button
+          type="button"
+          className="collection-progress-count-button"
+          disabled={!sample.posts || !activeJobId}
+          onClick={() => activeJobId && onOpenPosts?.(activeJobId)}
+        >
+          <span>帖子</span>
+          <strong>{targetPosts ? `${formatNumber(sample.posts)} / ${formatNumber(targetPosts)}` : formatNumber(sample.posts)}</strong>
+        </button>
+        <div><span>评论</span><strong>{formatNumber(sample.comments)}</strong></div>
+        <div><span>Raw</span><strong>{formatNumber(sample.raw_records)}</strong></div>
+        <div><span>达人</span><strong>{formatNumber(sample.creators)}</strong></div>
       </div>
       <div className="collection-progress-metrics">
-        <span>帖子 {formatNumber(sample.posts)}</span>
-        <span>评论 {formatNumber(sample.comments)}</span>
-        <span>Raw {formatNumber(sample.raw_records)}</span>
-        <span>达人 {formatNumber(sample.creators)}</span>
         <span>队列 {formatNumber(progress.queue.queue_length)}</span>
+        {progress.current_job_id && <span>任务 #{progress.current_job_id}</span>}
+        <span>任务步骤 {formatNumber(stepPercent)}%</span>
       </div>
       {progress.progress.job && (
         <p>当前任务：{progress.progress.job.name || `#${progress.progress.job.id}`}</p>
       )}
-      {progress.progress.latest_event?.message && (
-        <p>最近日志：{progress.progress.latest_event.message}</p>
+      {latestMessage && (
+        <p className={failed ? "collection-error-message" : undefined}>最近日志：{latestMessage}</p>
       )}
     </div>
   );
 }
 
-function Metric({ label, value, icon }: { label: string; value: number; icon: React.ReactNode }) {
+function Metric({ label, value, icon, onClick }: { label: string; value: number; icon: React.ReactNode; onClick?: () => void }) {
+  if (onClick) {
+    return (
+      <button type="button" className="project-mini-metric is-clickable" disabled={!value} onClick={onClick}>
+        {icon}
+        <span>{label}</span>
+        <strong>{formatNumber(value)}</strong>
+      </button>
+    );
+  }
   return (
     <div className="project-mini-metric">
       {icon}
@@ -710,10 +1073,48 @@ function progressStatusLabel(status: string) {
     queued: "排队中",
     running: "采集中",
     completed: "已完成",
+    empty: "未采到样本",
     failed: "失败",
     cancelled: "已取消",
   };
   return labels[status] || status;
+}
+
+function isFailureMessage(message: string) {
+  const text = message.toLowerCase();
+  return text.includes("exited with code: 1")
+    || text.includes("crawler exited")
+    || text.includes("failed")
+    || text.includes("失败")
+    || text.includes("异常");
+}
+
+function startCollectionLabel(busy: string | null, collectionActive: boolean, collectionFailed: boolean) {
+  if (busy === "start") return "提交中...";
+  if (collectionFailed) return "重试采集";
+  if (collectionActive) return "采集中...";
+  return "立即采集";
+}
+
+function actionSuccessMessage(kind: string) {
+  const labels: Record<string, string> = {
+    start: "采集任务已提交，下面会持续刷新已采集数量。",
+    pause: "已提交暂停采集操作。",
+    stop: "已提交停止本轮操作。",
+    archive: "项目已归档。",
+    delete: "项目已删除。",
+  };
+  return labels[kind] || "操作已提交。";
+}
+
+function clampTargetPosts(value: number) {
+  return Math.max(10, Math.min(500, Math.round(Number(value) || 50)));
+}
+
+function clampCollectionWindowDays(value: number) {
+  const allowed = COLLECTION_WINDOW_OPTIONS.map((option) => option.value);
+  const parsed = Math.round(Number(value) || 3);
+  return allowed.includes(parsed) ? parsed : 3;
 }
 
 function sourceLabel(source: string) {

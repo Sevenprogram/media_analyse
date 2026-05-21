@@ -9,7 +9,7 @@ import {
   Home,
   KeyRound,
   Layers,
-  Search,
+  ListChecks,
   Settings,
   Table2,
   Users,
@@ -25,6 +25,7 @@ const groups: SidebarGroup[] = [
     items: [
       { id: "overview", label: "总览", icon: Home },
       { id: "tasks", label: "任务工作台", icon: Gauge },
+      { id: "background_tasks", label: "后台任务", icon: ListChecks },
       { id: "opportunities", label: "增长机会决策", icon: BarChart3 },
     ],
   },
@@ -33,7 +34,7 @@ const groups: SidebarGroup[] = [
     items: [
       { id: "creators", label: "达人发现", icon: Users },
       { id: "keyword_library", label: "关键词库", icon: KeyRound },
-      { id: "competitors", label: "友商监控", icon: Activity },
+      { id: "competitors", label: "竞品监控", icon: Activity },
       { id: "content_tracking", label: "内容跟踪", icon: Layers },
     ],
   },

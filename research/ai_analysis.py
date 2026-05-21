@@ -83,7 +83,18 @@ class AIAnalysisRunner:
                     params=params,
                 )
 
-        results = await asyncio.gather(*(run_one(target) for target in targets), return_exceptions=True)
+        try:
+            results = await asyncio.gather(*(run_one(target) for target in targets), return_exceptions=True)
+        except asyncio.CancelledError:
+            await self.repository.update_ai_analysis_job_status(analysis_job_id, "cancelled")
+            await self.repository.create_event(
+                job_id=job["research_job_id"],
+                platform=None,
+                event_type="ai_analysis_cancelled",
+                message=f"AI analysis job {analysis_job_id} cancelled",
+                stats={"targets": len(targets)},
+            )
+            raise
         success_count = sum(1 for item in results if isinstance(item, dict))
         error_count = sum(1 for item in results if isinstance(item, Exception))
         final_status = "completed" if error_count == 0 else "failed"

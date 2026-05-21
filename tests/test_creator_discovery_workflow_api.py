@@ -415,6 +415,98 @@ def test_creator_search_include_realtime_merges_mixed_result(monkeypatch):
     assert payload["realtime"]["status"] == "ok"
 
 
+def test_creator_search_include_realtime_reserves_realtime_results(monkeypatch):
+    monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
+    import api.routers.creator_search as creator_search_router
+    import research.creator_search as creator_search_module
+
+    class FakeRepository:
+        async def list_tag_definitions(self, vertical_id=None, enabled_only=True):
+            return []
+
+        async def list_verticals(self, enabled_only=True):
+            return []
+
+        async def list_creator_profiles(self, platforms=None, limit=None):
+            return [
+                {
+                    "platform": "xhs",
+                    "creator_id": f"local-{index}",
+                    "display_name": f"Local Teacher {index}",
+                    "profile_url": f"https://www.xiaohongshu.com/user/profile/local-{index}",
+                    "follower_count": 1000 + index,
+                    "recent_post_count_30d": 3,
+                    "avg_engagement_rate": None,
+                    "hot_post_rate": None,
+                    "tag_summary_json": {},
+                }
+                for index in range(1, 4)
+            ]
+
+        async def list_entity_tags(self, **kwargs):
+            return []
+
+        async def list_posts_by_creator(self, platform, creator_id, limit=30):
+            return [
+                {
+                    "platform": platform,
+                    "platform_post_id": f"{creator_id}-p1",
+                    "title": "K12 local evidence",
+                    "content": "K12 local evidence",
+                    "publish_time": None,
+                    "engagement_json": {"liked_count": 50},
+                }
+            ]
+
+    async def fake_realtime(repository, request):
+        return {
+            "results": [
+                {
+                    "platform": "xhs",
+                    "creator_id": "realtime-1",
+                    "display_name": "Realtime Teacher",
+                    "profile_url": "https://www.xiaohongshu.com/user/profile/realtime-1",
+                    "follower_count": 500,
+                    "recent_post_count_30d": 1,
+                    "match_score": 1,
+                    "matched_tags": [{"source": "tikhub_realtime", "keyword": "K12"}],
+                    "evidence": [],
+                    "representative_posts": [{"title": "Realtime post"}],
+                    "source_type": "realtime",
+                    "source_labels": ["Realtime"],
+                    "realtime_unverified": True,
+                }
+            ],
+            "diagnostics": {
+                "enabled": True,
+                "status": "ok",
+                "platforms": ["xhs"],
+                "unsupported_platforms": [],
+                "limit": 2,
+                "matched_creators": 1,
+                "persisted_creators": 1,
+                "created_profiles": 1,
+                "created_candidates": 1,
+                "error": None,
+            },
+        }
+
+    monkeypatch.setattr(creator_search_router, "ResearchRepository", FakeRepository)
+    monkeypatch.setattr(creator_search_module, "discover_realtime_creators", fake_realtime)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/creator-search/search",
+        json={"raw_query": "K12", "platforms": ["xhs"], "include_realtime": True, "limit": 2},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["results"]) == 2
+    assert any(row["creator_id"] == "realtime-1" for row in payload["results"])
+    assert sum(1 for row in payload["results"] if row["source_type"] == "realtime") == 1
+
+
 def test_creator_search_realtime_failure_returns_local_results(monkeypatch):
     monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
     import api.routers.creator_search as creator_search_router

@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   Database,
   Download,
+  ExternalLink,
   FileJson,
   Filter,
   Gauge,
@@ -35,7 +36,7 @@ import {
 } from "recharts";
 import { ApiError, api } from "../utils/api";
 import { compactJson, formatDateTime, formatNumber, labelPlatform } from "../utils/format";
-import { Badge, Button, Card, CardDescription, CardHeader, CardTitle } from "../components/ui";
+import { Badge, Button, Card, CardDescription, CardHeader, CardTitle, ConfirmDialog } from "../components/ui";
 import type {
   AIResult,
   AiInsightSummary,
@@ -498,6 +499,8 @@ export function CreatorDiscoveryPage() {
   const [searchProgress, setSearchProgress] = React.useState<CreatorSearchProgress | null>(null);
   const [resultsUpdating, setResultsUpdating] = React.useState(false);
   const [activeTaskId, setActiveTaskId] = React.useState<string | null>(null);
+  const [currentSearchTask, setCurrentSearchTask] = React.useState<CreatorSearchTask | null>(null);
+  const [cancelingSearch, setCancelingSearch] = React.useState(false);
   const [searchError, setSearchError] = React.useState<string | null>(null);
   const [selectedCreators, setSelectedCreators] = React.useState<Set<string>>(new Set());
   const [message, setMessage] = React.useState<string | null>(null);
@@ -546,6 +549,7 @@ export function CreatorDiscoveryPage() {
   }, [activeTaskId]);
 
   function applyCreatorSearchTask(task: CreatorSearchTask) {
+    setCurrentSearchTask(task);
     if (task.request && "include_realtime" in task.request) {
       setIncludeRealtime(Boolean(task.request.include_realtime));
     }
@@ -554,6 +558,7 @@ export function CreatorDiscoveryPage() {
       setSearchResult(task.result);
       setSearching(false);
       setResultsUpdating(false);
+      setCancelingSearch(false);
       setActiveTaskId(null);
       window.localStorage.removeItem(CREATOR_SEARCH_TASK_KEY);
       void candidates.reload();
@@ -563,6 +568,7 @@ export function CreatorDiscoveryPage() {
       setSearchError(task.error || "筛选任务失败");
       setSearching(false);
       setResultsUpdating(false);
+      setCancelingSearch(false);
       setActiveTaskId(null);
       window.localStorage.removeItem(CREATOR_SEARCH_TASK_KEY);
       return;
@@ -571,10 +577,12 @@ export function CreatorDiscoveryPage() {
       setMessage("筛选任务已取消");
       setSearching(false);
       setResultsUpdating(false);
+      setCancelingSearch(false);
       setActiveTaskId(null);
       window.localStorage.removeItem(CREATOR_SEARCH_TASK_KEY);
       return;
     }
+    setCancelingSearch(false);
     setSearching(true);
   }
 
@@ -583,6 +591,8 @@ export function CreatorDiscoveryPage() {
     setSearching(true);
     setResultsUpdating(Boolean(searchResult));
     setSearchProgress(includeRealtime ? creatorSearchStage("database") : null);
+    setCurrentSearchTask(null);
+    setCancelingSearch(false);
     setSearchError(null);
     setMessage(null);
     setSelectedCreators(new Set());
@@ -605,6 +615,23 @@ export function CreatorDiscoveryPage() {
       setSearchError(err instanceof Error ? err.message : String(err));
       setSearching(false);
       setResultsUpdating(false);
+    }
+  }
+
+  async function cancelCreatorSearch() {
+    const taskId = activeTaskId || currentSearchTask?.task_id;
+    if (!taskId || cancelingSearch) return;
+    setCancelingSearch(true);
+    setSearchError(null);
+    setMessage(null);
+    try {
+      const task = await api<CreatorSearchTask>(`/api/creator-search/search-tasks/${taskId}/cancel`, {
+        method: "POST",
+      });
+      applyCreatorSearchTask(task);
+    } catch (err) {
+      setSearchError(err instanceof Error ? err.message : String(err));
+      setCancelingSearch(false);
     }
   }
 
@@ -684,7 +711,7 @@ export function CreatorDiscoveryPage() {
             <input value={activityMin} onChange={(event) => setActivityMin(event.target.value)} inputMode="numeric" />
           </label>
           <label>
-            <span>返回数量</span>
+            <span>达人数量上限</span>
             <input value={limit} onChange={(event) => setLimit(event.target.value)} inputMode="numeric" />
           </label>
           <label className="creator-realtime-toggle">
@@ -700,11 +727,28 @@ export function CreatorDiscoveryPage() {
             <Button variant="primary" disabled={searching || !query.trim() || !platforms.length}>{searching ? <Loader2 size={16} className="spin" /> : <Search size={16} />}筛选达人</Button>
             <Button type="button" variant="ghost" onClick={() => void runCreatorSearch()} disabled={searching || !query.trim()}><RefreshCw size={16} />刷新结果</Button>
           </div>
-          {(searching || searchProgress) && (
-            <div className="creator-search-progress">
-              <div>
-                <span>{searchProgress?.label || "Preparing realtime search"}</span>
-                <strong>{formatNumber(searchProgress?.percent || 0)}%</strong>
+          {(searching || searchProgress || currentSearchTask) && (
+            <div className={`creator-search-progress ${currentSearchTask?.status || "running"}`}>
+              <div className="creator-search-progress-head">
+                <div>
+                  <span>{searchProgress?.label || "Preparing creator search"}</span>
+                  <small>
+                    Task {currentSearchTask?.task_id ? currentSearchTask.task_id.slice(0, 8) : "-"} · {creatorTaskStatusLabel(currentSearchTask?.status || (searching ? "running" : "idle"))}
+                  </small>
+                </div>
+                <div className="creator-search-progress-actions">
+                  <strong>{formatNumber(searchProgress?.percent || 0)}%</strong>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="danger"
+                    onClick={() => void cancelCreatorSearch()}
+                    disabled={!activeTaskId || cancelingSearch || !["pending", "queued", "running"].includes(currentSearchTask?.status || "running")}
+                  >
+                    {cancelingSearch ? <Loader2 size={15} className="spin" /> : <XCircle size={15} />}
+                    取消
+                  </Button>
+                </div>
               </div>
               <div className="creator-search-progress-track">
                 <i style={{ width: `${Math.min(100, Math.max(4, searchProgress?.percent || 4))}%` }} />
@@ -814,6 +858,19 @@ function creatorSearchStage(stage: string): CreatorSearchProgress {
     complete: { stage: "complete", label: "Complete", percent: 100 },
   };
   return stages[stage] || stages.database;
+}
+
+function creatorTaskStatusLabel(status: string) {
+  const labels: Record<string, string> = {
+    idle: "未运行",
+    pending: "等待中",
+    queued: "等待中",
+    running: "运行中",
+    completed: "已完成",
+    failed: "失败",
+    cancelled: "已取消",
+  };
+  return labels[status] || status;
 }
 
 function creatorSourceLabels(row: UnknownRecord) {
@@ -1921,51 +1978,135 @@ function competitorProfileDiagnosticMessage(result: UnknownRecord, diagnostics: 
 }
 
 function CompetitorSnapshotList({ snapshots, competitors }: { snapshots: UnknownRecord[]; competitors: UnknownRecord[] }) {
+  const [activeSnapshot, setActiveSnapshot] = React.useState<UnknownRecord | null>(null);
   const competitorById = new Map(competitors.map((item) => [number(item.id), item]));
+  const activeEvidence = asRecord(activeSnapshot?.evidence);
+  const activePublicFlow = asRecord(activeEvidence.public_flow);
+  const activePosts = activeSnapshot ? competitorSnapshotPosts(activeSnapshot) : [];
+  const activeCompetitor = activeSnapshot ? competitorById.get(number(activeSnapshot.competitor_id)) : undefined;
+  const activeTitle = text(activeCompetitor?.display_name || activeCompetitor?.creator_id || `友商 #${text(activeSnapshot?.competitor_id)}`);
   return (
-    <div className="competitor-snapshot-grid">
-      {snapshots.slice(0, 12).map((snapshot, index) => {
-        const evidence = asRecord(snapshot.evidence);
-        const publicFlow = asRecord(evidence.public_flow);
-        const cumulative = asRecord(publicFlow.cumulative);
-        const delta = asRecord(publicFlow.delta);
-        const anomalies = array(evidence.anomalies);
-        const competitor = competitorById.get(number(snapshot.competitor_id));
-        const title = text(competitor?.display_name || competitor?.creator_id || `友商 #${text(snapshot.competitor_id)}`);
-        return (
-          <article className="competitor-snapshot-card" key={`${text(snapshot.id)}-${index}`}>
-            <div className="competitor-snapshot-head">
-              <div>
-                <strong>{title}</strong>
-                <span>{labelPlatform(text(snapshot.platform))} · {text(snapshot.snapshot_date)}</span>
+    <>
+      <div className="competitor-snapshot-grid">
+        {snapshots.slice(0, 12).map((snapshot, index) => {
+          const evidence = asRecord(snapshot.evidence);
+          const publicFlow = asRecord(evidence.public_flow);
+          const cumulative = asRecord(publicFlow.cumulative);
+          const delta = asRecord(publicFlow.delta);
+          const anomalies = array(evidence.anomalies);
+          const competitor = competitorById.get(number(snapshot.competitor_id));
+          const title = text(competitor?.display_name || competitor?.creator_id || `友商 #${text(snapshot.competitor_id)}`);
+          const postRows = competitorSnapshotPosts(snapshot);
+          return (
+            <article className="competitor-snapshot-card" key={`${text(snapshot.id)}-${index}`}>
+              <div className="competitor-snapshot-head">
+                <div>
+                  <strong>{title}</strong>
+                  <span>{labelPlatform(text(snapshot.platform))} · {text(snapshot.snapshot_date)}</span>
+                </div>
+                <Badge tone={anomalies.length ? "warning" : "muted"}>{anomalies.length ? `${anomalies.length} 个异常` : "正常"}</Badge>
               </div>
-              <Badge tone={anomalies.length ? "warning" : "muted"}>{anomalies.length ? `${anomalies.length} 个异常` : "正常"}</Badge>
-            </div>
-            <div className="competitor-snapshot-metrics">
-              <CandidateMetric label="累计互动" value={formatOptionalNumber(snapshot.total_flow_count)} />
-              <CandidateMetric label="本次新增" value={formatOptionalNumber(delta.total_interaction)} />
-              <CandidateMetric label="点赞新增" value={formatOptionalNumber(delta.like)} />
-              <CandidateMetric label="评论新增" value={formatOptionalNumber(delta.comment)} />
-              <CandidateMetric label="收藏新增" value={formatOptionalNumber(delta.collect)} />
-              <CandidateMetric label="采集内容" value={formatOptionalNumber(publicFlow.deduped_post_count)} />
-            </div>
-            <div className="competitor-snapshot-foot">
-              <span>累计点赞 {formatOptionalNumber(cumulative.like)}</span>
-              <span>累计评论 {formatOptionalNumber(cumulative.comment)}</span>
-              <span>爆文率 {formatPercent(snapshot.hot_post_rate)}</span>
-            </div>
-            {anomalies.length > 0 && (
-              <div className="competitor-anomaly-list">
-                {anomalies.slice(0, 3).map((item, anomalyIndex) => (
-                  <span key={anomalyIndex}>{text(item.title || item.type)}：{text(item.reason, "")}</span>
-                ))}
+              <div className="competitor-snapshot-metrics">
+                <CandidateMetric label="累计互动" value={formatOptionalNumber(snapshot.total_flow_count)} />
+                <CandidateMetric label="本次新增" value={formatOptionalNumber(delta.total_interaction)} />
+                <CandidateMetric label="点赞新增" value={formatOptionalNumber(delta.like)} />
+                <CandidateMetric label="评论新增" value={formatOptionalNumber(delta.comment)} />
+                <CandidateMetric label="收藏新增" value={formatOptionalNumber(delta.collect)} />
+                <button
+                  type="button"
+                  className="candidate-metric competitor-content-trigger"
+                  onClick={() => setActiveSnapshot(snapshot)}
+                  disabled={!postRows.length}
+                >
+                  <span>采集内容</span>
+                  <strong>{formatOptionalNumber(publicFlow.deduped_post_count || postRows.length)}</strong>
+                </button>
               </div>
-            )}
-          </article>
-        );
-      })}
-    </div>
+              <div className="competitor-snapshot-foot">
+                <span>累计点赞 {formatOptionalNumber(cumulative.like)}</span>
+                <span>累计评论 {formatOptionalNumber(cumulative.comment)}</span>
+                <span>爆文率 {formatPercent(snapshot.hot_post_rate)}</span>
+              </div>
+              {anomalies.length > 0 && (
+                <div className="competitor-anomaly-list">
+                  {anomalies.slice(0, 3).map((item, anomalyIndex) => (
+                    <span key={anomalyIndex}>{text(item.title || item.type)}：{text(item.reason, "")}</span>
+                  ))}
+                </div>
+              )}
+            </article>
+          );
+        })}
+      </div>
+      <ConfirmDialog
+        open={Boolean(activeSnapshot)}
+        onOpenChange={(open) => !open && setActiveSnapshot(null)}
+        title={`${activeTitle} · 采集内容`}
+        description={`${labelPlatform(text(activeSnapshot?.platform))} · ${text(activeSnapshot?.snapshot_date)} · 共 ${formatOptionalNumber(activePublicFlow.deduped_post_count || activePosts.length)} 条`}
+      >
+        <div className="competitor-post-dialog">
+          {activePosts.length ? activePosts.map((post, index) => {
+            const metrics = asRecord(post.metrics);
+            const delta = asRecord(post.delta);
+            const url = text(post.url || post.note_url || post.aweme_url, "");
+            return (
+              <article className="competitor-post-row" key={`${text(post.platform_post_id || post.id)}-${index}`}>
+                <div className="competitor-post-row-head">
+                  <div>
+                    <strong>{text(post.title || post.platform_post_id || post.id, `采集内容 ${index + 1}`)}</strong>
+                    <span>{text(post.publish_time, "未知发布时间")} · ID {text(post.platform_post_id || post.id)}</span>
+                  </div>
+                  {url && (
+                    <Button asChild variant="ghost" size="sm">
+                      <a href={url} target="_blank" rel="noreferrer"><ExternalLink size={14} />打开链接</a>
+                    </Button>
+                  )}
+                </div>
+                <p>{text(post.content || post.desc || post.summary, "当前快照未保存正文，仅展示标题和链接。")}</p>
+                <div className="competitor-post-metrics">
+                  <span>互动 {formatOptionalNumber(metrics.total_interaction ?? post.engagement_total)}</span>
+                  <span>点赞 {formatOptionalNumber(metrics.like)}</span>
+                  <span>评论 {formatOptionalNumber(metrics.comment)}</span>
+                  <span>收藏 {formatOptionalNumber(metrics.collect)}</span>
+                  <span>新增 {formatOptionalNumber(delta.total_interaction ?? post.delta_total)}</span>
+                </div>
+              </article>
+            );
+          }) : (
+            <EmptyState title="暂无采集内容明细" body="这个快照里没有保存帖子明细，重新执行一次获取数据后再查看。" />
+          )}
+          <div className="competitor-post-dialog-actions">
+            <Button type="button" variant="ghost" onClick={() => setActiveSnapshot(null)}>关闭</Button>
+          </div>
+        </div>
+      </ConfirmDialog>
+    </>
   );
+}
+
+function competitorSnapshotPosts(snapshot: UnknownRecord): UnknownRecord[] {
+  const evidence = asRecord(snapshot.evidence);
+  const publicFlow = asRecord(evidence.public_flow);
+  const postsById = asRecord(publicFlow.posts_by_id);
+  const deltaByPost = asRecord(publicFlow.delta_by_post);
+  const rows = [...array(evidence.top_posts), ...array(publicFlow.top_delta_posts)];
+  const seen = new Set<string>();
+  return rows
+    .map((row): UnknownRecord => {
+      const postId = text(row.platform_post_id || row.content_id || row.id, "");
+      return {
+        ...row,
+        platform_post_id: postId || row.platform_post_id,
+        metrics: asRecord(postsById[postId]),
+        delta: asRecord(row.delta || deltaByPost[postId]),
+      };
+    })
+    .filter((row) => {
+      const key = text(row.platform_post_id || row.title || row.url, "");
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 }
 
 type ContentTrackingState = {
@@ -2111,7 +2252,13 @@ export function ContentTrackingPage() {
       setAiReport(null);
       setHasSearched(false);
       resetRealtimeProgress();
-      setMessage(rows.length ? (response.source === "ai" ? "AI 已提取 " + rows.length + " 个关键词" : "AI 不可用，已用本地关键词库提取 " + rows.length + " 个关键词") : "AI 和本地关键词库都未提取到关键词，可直接用正文里的词搜索");
+      setMessage(
+        rows.length
+          ? response.source === "ai"
+            ? `AI 已提取 ${rows.length} 个关键词`
+            : `AI 不可用，已用本地关键词库提取 ${rows.length} 个关键词`
+          : "AI 和本地关键词库都未提取到关键词，可直接用正文里的词搜索",
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -2223,6 +2370,7 @@ export function ContentTrackingPage() {
             platforms: platformPayload,
             realtime: false,
             limit: 50,
+            collection_window_days: realtimeWindowDays,
           }),
         });
         const analysisPromise = api<UnknownRecord>("/api/content-tracking/analyze", {

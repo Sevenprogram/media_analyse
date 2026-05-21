@@ -29,10 +29,12 @@ async def discover_realtime_creators(
     ]
     unsupported = [platform for platform in requested_platforms if platform not in REALTIME_PLATFORMS]
     keywords = _keywords_from_request(request)
+    limit = _request_limit(request)
     diagnostics = _diagnostics(
         enabled=True,
         platforms=platforms,
         unsupported_platforms=unsupported,
+        limit=limit,
     )
     if not platforms or not keywords:
         diagnostics["status"] = "skipped"
@@ -59,20 +61,28 @@ async def discover_realtime_creators(
     finally:
         await _close_client(client)
 
-    results = []
+    scored_creators = []
     for creator in creators.values():
         if not _passes_request_filters(creator, request):
             continue
         creator["match_score"] = _score_creator(creator, keywords)
+        scored_creators.append(creator)
+
+    scored_creators.sort(key=lambda item: item["match_score"], reverse=True)
+    limited_creators = scored_creators[:limit]
+    diagnostics["matched_creators"] = len(scored_creators)
+    diagnostics["persisted_creators"] = len(limited_creators)
+
+    results = []
+    for creator in limited_creators:
         profile = await repository.upsert_creator_profile(_profile_payload(creator))
         candidate = await repository.upsert_creator_candidate(_candidate_payload(creator, request))
         diagnostics["created_profiles"] += 1 if profile else 0
         diagnostics["created_candidates"] += 1 if candidate else 0
         results.append(_result_payload(creator))
 
-    results.sort(key=lambda item: item["match_score"], reverse=True)
     diagnostics["status"] = _status(diagnostics["failed_platforms"], results)
-    return {"results": results[: int(request.get("limit") or 50)], "diagnostics": diagnostics}
+    return {"results": results, "diagnostics": diagnostics}
 
 
 async def _call_search(client: Any, endpoint: Any, keyword: str) -> Any:
@@ -90,6 +100,14 @@ def _keywords_from_request(request: dict[str, Any]) -> list[str]:
         return []
     terms = [term.strip() for term in raw.replace("+", " ").replace(",", " ").split()]
     return [term for term in dict.fromkeys(terms) if term] or [raw]
+
+
+def _request_limit(request: dict[str, Any]) -> int:
+    try:
+        limit = int(request.get("limit") or 50)
+    except (TypeError, ValueError):
+        limit = 50
+    return max(1, min(200, limit))
 
 
 def _extract_items(payload: Any) -> list[dict[str, Any]]:
@@ -463,12 +481,16 @@ def _diagnostics(
     enabled: bool,
     platforms: list[str],
     unsupported_platforms: list[str],
+    limit: int,
 ) -> dict[str, Any]:
     return {
         "enabled": enabled,
         "status": "ok",
         "platforms": platforms,
         "unsupported_platforms": unsupported_platforms,
+        "limit": limit,
+        "matched_creators": 0,
+        "persisted_creators": 0,
         "created_profiles": 0,
         "created_candidates": 0,
         "malformed_items": 0,

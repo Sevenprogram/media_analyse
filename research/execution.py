@@ -79,6 +79,7 @@ def build_crawler_start_requests(
     comment_policy = job.get("comment_policy") or {}
     enable_comments = bool(comment_policy.get("enable_comments", True))
     enable_sub_comments = bool(comment_policy.get("enable_sub_comments", False))
+    max_notes_count = _positive_int(comment_policy.get("max_posts_per_job"))
 
     requests: list[CrawlerStartRequest] = []
     for platform in job["platforms"]:
@@ -93,6 +94,7 @@ def build_crawler_start_requests(
                 start_page=options.start_page,
                 enable_comments=enable_comments,
                 enable_sub_comments=enable_sub_comments,
+                max_notes_count=max_notes_count,
                 save_option=options.save_option,
                 cookies=options.cookies,
                 headless=options.headless,
@@ -113,6 +115,7 @@ def build_crawler_start_request_for_unit(
     comment_policy = job.get("comment_policy") or {}
     enable_comments = bool(comment_policy.get("enable_comments", True))
     enable_sub_comments = bool(comment_policy.get("enable_sub_comments", False))
+    max_notes_count = _max_notes_count_for_unit(job)
 
     return CrawlerStartRequest(
         platform=_to_platform_enum(unit["platform"]),
@@ -124,6 +127,7 @@ def build_crawler_start_request_for_unit(
         start_page=options.start_page,
         enable_comments=enable_comments,
         enable_sub_comments=enable_sub_comments,
+        max_notes_count=max_notes_count,
         save_option=options.save_option,
         cookies=options.cookies,
         headless=options.headless,
@@ -141,6 +145,7 @@ def execution_plan_to_dict(requests: list[CrawlerStartRequest]) -> list[dict[str
             "start_page": request.start_page,
             "enable_comments": request.enable_comments,
             "enable_sub_comments": request.enable_sub_comments,
+            "max_notes_count": request.max_notes_count,
             "save_option": request.save_option.value,
             "headless": request.headless,
             "login_type": request.login_type.value,
@@ -266,7 +271,13 @@ class ResearchExecutionManager:
             )
             raise RuntimeError(f"Crawler manager rejected start for {platform}")
 
-        await self._wait_for_process()
+        try:
+            await self._wait_for_process()
+        except Exception:
+            await self._persist_crawler_output(job_id=job["id"], platform=platform)
+            raise
+
+        await self._persist_crawler_output(job_id=job["id"], platform=platform)
 
         await self.repository.create_event(
             job_id=job["id"],
@@ -340,7 +351,31 @@ class ResearchExecutionManager:
         while process and process.poll() is None:
             await asyncio.sleep(1)
         if process and process.returncode not in (0, None):
-            raise RuntimeError(f"Crawler exited with code: {process.returncode}")
+            raise RuntimeError(_crawler_exit_message(int(process.returncode)))
+
+    async def _persist_crawler_output(self, *, job_id: int, platform: str) -> None:
+        raw_logs = getattr(self.crawler_manager, "logs", None) or []
+        lines = [_log_entry_to_dict(item) for item in raw_logs]
+        if not lines:
+            return
+        warning_or_error_lines = [
+            item
+            for item in lines
+            if str(item.get("level") or "").lower() in {"warning", "error"}
+        ]
+        tail = lines[-50:]
+        await self.repository.create_event(
+            job_id=job_id,
+            platform=platform,
+            event_type="crawler_output_captured",
+            message=_crawler_output_summary(lines),
+            stats={
+                "line_count": len(lines),
+                "warning_or_error_count": len(warning_or_error_lines),
+                "tail": tail,
+                "warning_or_error_tail": warning_or_error_lines[-20:],
+            },
+        )
 
 
 def _to_platform_enum(platform: str) -> PlatformEnum:
@@ -352,6 +387,70 @@ def _to_platform_enum(platform: str) -> PlatformEnum:
     if crawler_platform is not None:
         return crawler_platform
     raise ValueError(f"Unsupported research execution platform: {platform}")
+
+
+def _crawler_exit_message(returncode: int) -> str:
+    if returncode == 3221225786:
+        return (
+            "Crawler was interrupted by a Windows control event "
+            "(exit code 3221225786 / 0xC000013A). "
+            "This usually means the API terminal was interrupted, closed, or reloaded while the crawler was running."
+        )
+    return f"Crawler exited with code: {returncode}"
+
+
+def _log_entry_to_dict(entry: Any) -> dict[str, Any]:
+    if hasattr(entry, "model_dump"):
+        dumped = entry.model_dump()
+        return {
+            "timestamp": dumped.get("timestamp"),
+            "level": dumped.get("level"),
+            "message": dumped.get("message"),
+        }
+    if isinstance(entry, dict):
+        return {
+            "timestamp": entry.get("timestamp"),
+            "level": entry.get("level"),
+            "message": entry.get("message"),
+        }
+    return {"timestamp": None, "level": "info", "message": str(entry)}
+
+
+def _crawler_output_summary(lines: list[dict[str, Any]]) -> str:
+    for item in reversed(lines):
+        message = str(item.get("message") or "").strip()
+        level = str(item.get("level") or "").lower()
+        if message and level in {"warning", "error"}:
+            return message
+    for item in reversed(lines):
+        message = str(item.get("message") or "").strip()
+        if message:
+            return message
+    return "Crawler output captured"
+
+
+def _max_notes_count_for_unit(job: dict[str, Any]) -> int | None:
+    per_platform_target = _positive_int((job.get("comment_policy") or {}).get("max_posts_per_job"))
+    if per_platform_target is None:
+        return None
+    collection_mode = job.get("collection_mode") or COLLECTION_SEARCH
+    if collection_mode == COLLECTION_SEARCH:
+        value_count = len([item for item in job.get("keywords") or [] if str(item).strip()])
+    elif collection_mode == COLLECTION_DETAIL:
+        value_count = len([item for item in job.get("target_ids") or [] if str(item).strip()])
+    elif collection_mode == COLLECTION_CREATOR:
+        value_count = len([item for item in job.get("creator_ids") or [] if str(item).strip()])
+    else:
+        value_count = 1
+    return max(1, -(-per_platform_target // max(1, value_count)))
+
+
+def _positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _to_crawler_type_enum(collection_mode: str) -> CrawlerTypeEnum:

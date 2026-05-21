@@ -47,3 +47,21 @@ def test_tier_creator_candidates_embeds_tiering_evidence():
 
     assert result[0]["evidence"]["tiering"]["tier"] == "A"
     assert result[1]["evidence"]["tiering"]["tier"] == "C"
+
+
+def test_tier_creator_candidates_accepts_list_evidence_from_search_results():
+    result = tier_creator_candidates(
+        [
+            {
+                "platform": "xhs",
+                "creator_id": "a",
+                "match_score": 76,
+                "matched_tags": [{"tag_id": 1}],
+                "evidence": [{"platform_post_id": "p1"}],
+            }
+        ]
+    )
+
+    assert result[0]["tier"] == "A"
+    assert result[0]["evidence"]["evidence"] == [{"platform_post_id": "p1"}]
+    assert result[0]["evidence"]["tiering"]["tier"] == "A"

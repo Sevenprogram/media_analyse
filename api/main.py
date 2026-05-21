@@ -36,6 +36,7 @@ from .routers import crawler_router, data_router, websocket_router
 from .routers.accounts import router as accounts_router
 from .routers.admin import router as admin_router
 from .routers.backtests import router as backtests_router
+from .routers.background_tasks import router as background_tasks_router
 from .routers.competitors import router as competitors_router
 from .routers.content_tracking import router as content_tracking_router
 from .routers.creator_search import router as creator_search_router
@@ -88,6 +89,7 @@ app.include_router(research_router, prefix="/api")
 app.include_router(accounts_router, prefix="/api")
 app.include_router(admin_router, prefix="/api")
 app.include_router(backtests_router, prefix="/api")
+app.include_router(background_tasks_router, prefix="/api")
 app.include_router(creator_search_router, prefix="/api")
 app.include_router(competitors_router, prefix="/api")
 app.include_router(keyword_opportunities_router, prefix="/api")

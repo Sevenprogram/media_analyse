@@ -173,6 +173,19 @@ def test_douyin_mapper_emits_store_compatible_content():
     assert mapped["statistics"]["digg_count"] == 1
 
 
+def test_douyin_mapper_generates_numeric_id_when_tikhub_payload_has_no_aweme_id():
+    mapper = get_mapper("dy")
+
+    mapped = mapper.map_content(
+        {
+            "title": "Title without id",
+            "user": {"id": "user-1", "nickname": "Nick"},
+        }
+    )
+
+    assert mapped["aweme_id"].isdigit()
+
+
 def test_tikhub_creator_mappers_preserve_profile_metrics():
     xhs = get_mapper("xhs").map_creator(
         {

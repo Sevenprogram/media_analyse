@@ -6,6 +6,7 @@ from research.enums import JOB_CANCELLED, JOB_COMPLETED, JOB_FAILED, JOB_RUNNING
 from research.execution import (
     ResearchExecutionManager,
     ResearchExecutionOptions,
+    _crawler_exit_message,
     build_crawler_start_requests,
     execution_plan_to_dict,
 )
@@ -67,11 +68,27 @@ def test_execution_plan_to_dict_hides_cookies():
             "start_page": 1,
             "enable_comments": False,
             "enable_sub_comments": False,
+            "max_notes_count": None,
             "save_option": "postgres",
             "headless": True,
             "login_type": "qrcode",
         }
     ]
+
+
+def test_build_crawler_start_requests_applies_per_platform_target():
+    job = _job(
+        platforms=["wb", "zhihu"],
+        comment_policy={
+            "enable_comments": True,
+            "enable_sub_comments": False,
+            "max_posts_per_job": 80,
+        },
+    )
+
+    requests = build_crawler_start_requests(job)
+
+    assert [request.max_notes_count for request in requests] == [80, 80]
 
 
 def test_build_crawler_start_requests_supports_video_platforms():
@@ -80,6 +97,13 @@ def test_build_crawler_start_requests_supports_video_platforms():
     requests = build_crawler_start_requests(job)
 
     assert [request.platform.value for request in requests] == ["xhs", "dy", "ks", "bili"]
+
+
+def test_crawler_exit_message_explains_windows_control_c_exit():
+    message = _crawler_exit_message(3221225786)
+
+    assert "0xC000013A" in message
+    assert "interrupted" in message
 
 
 @pytest.mark.asyncio
@@ -142,6 +166,26 @@ async def test_execute_updates_job_status_to_failed():
 
     assert repository.statuses == [JOB_RUNNING, JOB_FAILED]
     assert repository.events[-1]["event_type"] == "execution_failed"
+
+
+@pytest.mark.asyncio
+async def test_execute_persists_crawler_output_when_process_fails():
+    repository = FakeExecutionRepository()
+    manager = ResearchExecutionManager(
+        crawler_manager=ExitedCrawlerManager(returncode=1),
+        repository=repository,
+        backfill=None,
+    )
+
+    with pytest.raises(RuntimeError, match="Crawler exited with code: 1"):
+        await manager.execute(job=_job(), options=ResearchExecutionOptions(backfill_after_crawl=False))
+
+    output_event = next(
+        event for event in repository.events if event["event_type"] == "crawler_output_captured"
+    )
+    assert output_event["message"] == "bad platform response"
+    assert output_event["stats"]["warning_or_error_count"] == 1
+    assert output_event["stats"]["tail"][-1]["message"] == "bad platform response"
 
 
 @pytest.mark.asyncio
@@ -221,6 +265,26 @@ class CancellingCrawlerManager:
 
     async def start(self, config):
         raise asyncio.CancelledError()
+
+
+class ExitedProcess:
+    def __init__(self, returncode):
+        self.returncode = returncode
+
+    def poll(self):
+        return self.returncode
+
+
+class ExitedCrawlerManager:
+    def __init__(self, returncode):
+        self.process = ExitedProcess(returncode)
+        self.logs = [
+            {"timestamp": "10:00:00", "level": "info", "message": "Starting crawler"},
+            {"timestamp": "10:00:01", "level": "error", "message": "bad platform response"},
+        ]
+
+    async def start(self, config):
+        return True
 
 
 class FakeBackfill:

@@ -2154,6 +2154,36 @@ class ResearchRepository:
             posts = [self._post_to_dict(item) for item in result.scalars().all()]
             return await self._enrich_posts_from_platform_tables(session, posts)
 
+    async def list_posts_page(
+        self,
+        *,
+        job_ids: list[int] | None = None,
+        job_id: int | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        async with get_session() as session:
+            stmt = select(ResearchPost)
+            count_stmt = select(func.count(ResearchPost.id))
+            if job_id is not None:
+                stmt = stmt.where(ResearchPost.job_id == job_id)
+                count_stmt = count_stmt.where(ResearchPost.job_id == job_id)
+            if job_ids is not None:
+                if not job_ids:
+                    return {"posts": [], "total": 0, "limit": limit, "offset": offset}
+                stmt = stmt.where(ResearchPost.job_id.in_(job_ids))
+                count_stmt = count_stmt.where(ResearchPost.job_id.in_(job_ids))
+            total = int(await session.scalar(count_stmt) or 0)
+            stmt = stmt.order_by(
+                ResearchPost.publish_time.desc().nullslast(),
+                ResearchPost.created_at.desc(),
+                ResearchPost.id.desc(),
+            ).offset(offset).limit(limit)
+            result = await session.execute(stmt)
+            posts = [self._post_to_dict(item) for item in result.scalars().all()]
+            posts = await self._enrich_posts_from_platform_tables(session, posts)
+            return {"posts": posts, "total": total, "limit": limit, "offset": offset}
+
     async def list_all_posts(
         self,
         *,

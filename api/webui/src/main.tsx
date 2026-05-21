@@ -6,6 +6,7 @@ import { Button, ConfirmDialog } from "./components/ui";
 import { api } from "./utils/api";
 import { labelOpportunityType, labelPlatform } from "./utils/format";
 import { DataBrowserPage } from "./pages/DataBrowserPage";
+import { BackgroundTasksPage } from "./pages/BackgroundTasksPage";
 import { GrowthProjectWorkbenchPage } from "./pages/GrowthProjectWorkbenchPage";
 import { OpportunityDecisionPage } from "./pages/OpportunityDecisionPage";
 import {
@@ -226,11 +227,18 @@ function App() {
     setSelectedProjectId(null);
   }
 
-  async function controlGrowthProject(projectId: string, action: "run-now" | "pause" | "stop-current-run" | "archive") {
+  async function controlGrowthProject(
+    projectId: string,
+    action: "run-now" | "pause" | "stop-current-run" | "archive",
+    body?: Record<string, unknown>,
+  ) {
     const path = action === "archive"
       ? `/api/research/growth-projects/${encodeURIComponent(projectId)}/archive`
       : `/api/research/growth-projects/${encodeURIComponent(projectId)}/collection/${action}`;
-    await api<Record<string, unknown>>(path, { method: "POST" });
+    await api<Record<string, unknown>>(path, {
+      method: "POST",
+      body: body ? JSON.stringify(body) : undefined,
+    });
     await Promise.allSettled([loadJobs(), loadGrowthProjects(), loadSelectedProject(projectId), loadSelectedProjectProgress(projectId)]);
   }
 
@@ -290,7 +298,7 @@ function App() {
             onCreateProject={createGrowthProject}
             onUpdateProject={updateGrowthProject}
             onDeleteProject={deleteGrowthProject}
-            onStartCollection={(projectId) => controlGrowthProject(projectId, "run-now")}
+            onStartCollection={(projectId, targetPostsPerPlatform, collectionWindowDays) => controlGrowthProject(projectId, "run-now", { target_posts_per_platform: targetPostsPerPlatform, collection_window_days: collectionWindowDays })}
             onPauseCollection={(projectId) => controlGrowthProject(projectId, "pause")}
             onStopCurrentRun={(projectId) => controlGrowthProject(projectId, "stop-current-run")}
             onArchiveProject={(projectId) => controlGrowthProject(projectId, "archive")}
@@ -298,6 +306,7 @@ function App() {
             onOpenAi={() => setTab("ai")}
           />
         )}
+        {tab === "background_tasks" && <BackgroundTasksPage />}
         {tab === "opportunities" && (
           <OpportunityDecisionPage
             dashboard={dashboard}

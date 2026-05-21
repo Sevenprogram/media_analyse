@@ -9,7 +9,9 @@ class DouyinTikHubMapper(BaseTikHubMapper):
     def map_content(self, item: dict[str, Any], source_keyword: str = "") -> dict[str, Any]:
         item = item.get("aweme_info") if isinstance(item.get("aweme_info"), dict) else item
         user = author(item)
-        aweme_id = str(pick(item, "aweme_id", "id"))
+        aweme_id = str(pick(item, "aweme_id", "id", "item_id", "video_id"))
+        if not aweme_id:
+            aweme_id = self.stable_numeric_id(item)
         return {
             "aweme_id": aweme_id,
             "aweme_type": pick(item, "aweme_type", default=0),
@@ -37,6 +39,13 @@ class DouyinTikHubMapper(BaseTikHubMapper):
             "source_keyword": source_keyword,
             "raw_data": raw(item),
         }
+
+    def stable_numeric_id(self, item: dict[str, Any]) -> str:
+        import hashlib
+
+        source = raw(item)
+        digest = hashlib.sha1(source.encode("utf-8")).hexdigest()[:15]
+        return str(int(digest, 16))
 
     def map_comment(self, item: dict[str, Any], content_id: str) -> dict[str, Any]:
         user = author(item)

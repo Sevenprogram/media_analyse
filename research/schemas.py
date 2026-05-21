@@ -215,6 +215,11 @@ class GrowthProjectUpdate(BaseModel):
         return self
 
 
+class GrowthProjectRunNowRequest(BaseModel):
+    target_posts_per_platform: int = Field(default=50, ge=10, le=500)
+    collection_window_days: int = Field(default=3, ge=1, le=365)
+
+
 class ResearchJobUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     topic: str | None = Field(default=None, min_length=1, max_length=500)

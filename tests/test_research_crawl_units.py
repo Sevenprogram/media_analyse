@@ -57,6 +57,22 @@ def test_build_crawler_start_request_for_unit_uses_single_keyword():
     assert request.headless is True
 
 
+def test_build_crawler_start_request_for_unit_splits_platform_target_across_keywords():
+    job = _job(
+        keywords=["policy", "governance", "school"],
+        comment_policy={
+            "enable_comments": True,
+            "enable_sub_comments": False,
+            "max_posts_per_job": 50,
+        },
+    )
+    unit = build_crawl_units_for_job(job)[0]
+
+    request = build_crawler_start_request_for_unit(job, unit)
+
+    assert request.max_notes_count == 17
+
+
 def test_unit_filter_kwargs_matches_collection_mode():
     detail_job = _job(collection_mode="detail", keywords=[], target_ids=["post-1"])
     unit = build_crawl_units_for_job(detail_job)[0]
@@ -301,6 +317,7 @@ def _job(
     keywords=None,
     target_ids=None,
     creator_ids=None,
+    comment_policy=None,
 ):
     return {
         "id": 1,
@@ -309,5 +326,7 @@ def _job(
         "keywords": keywords if keywords is not None else ["topic"],
         "target_ids": target_ids or [],
         "creator_ids": creator_ids or [],
-        "comment_policy": {"enable_comments": True, "enable_sub_comments": False},
+        "comment_policy": comment_policy
+        if comment_policy is not None
+        else {"enable_comments": True, "enable_sub_comments": False},
     }

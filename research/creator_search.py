@@ -365,12 +365,14 @@ async def search_creators(repository, request: dict[str, Any]) -> dict[str, Any]
         matched_tag_count=diagnostics["matched_tag_count"],
         fallback_used=diagnostics["fallback_used"],
     )
+    limit = int(request.get("limit") or 50)
+    final_results = _apply_realtime_result_quota(results, request, realtime_diagnostics, limit)
     return {
         "intent": intent,
         "diagnostics": diagnostics,
         "realtime": realtime_diagnostics,
-        "progress": _complete_progress(),
-        "results": results[: int(request.get("limit") or 50)],
+        "progress": _complete_progress(request, realtime_diagnostics),
+        "results": final_results,
     }
 
 
@@ -401,7 +403,15 @@ def _realtime_skipped_diagnostics() -> dict[str, Any]:
     }
 
 
-def _complete_progress() -> dict[str, Any]:
+def _complete_progress(request: dict[str, Any], realtime_diagnostics: dict[str, Any]) -> dict[str, Any]:
+    if request.get("include_realtime") and realtime_diagnostics.get("enabled"):
+        persisted = int(realtime_diagnostics.get("persisted_creators") or realtime_diagnostics.get("created_candidates") or 0)
+        limit = int(realtime_diagnostics.get("limit") or request.get("limit") or 50)
+        return {
+            "stage": "complete",
+            "label": f"Complete · saved {persisted}/{limit} realtime creators",
+            "percent": 100,
+        }
     return {"stage": "complete", "label": "Complete", "percent": 100}
 
 
@@ -432,6 +442,38 @@ def _merge_creator_result_sources(
             local["matched_tags"] = (local.get("matched_tags") or []) + realtime["matched_tags"]
     merged.sort(key=lambda item: float(item.get("match_score") or 0), reverse=True)
     return _dedupe_creator_results(merged)
+
+
+def _apply_realtime_result_quota(
+    results: list[dict[str, Any]],
+    request: dict[str, Any],
+    realtime_diagnostics: dict[str, Any],
+    limit: int,
+) -> list[dict[str, Any]]:
+    limit = max(1, min(200, int(limit or 50)))
+    if not request.get("include_realtime") or not realtime_diagnostics.get("enabled"):
+        return results[:limit]
+    realtime_quota = min(limit, max(5, (limit * 9 + 9) // 10))
+    realtime_results = [item for item in results if _has_realtime_source(item)]
+    if not realtime_results:
+        return results[:limit]
+    selected = realtime_results[:realtime_quota]
+    selected_keys = {_creator_identity_key(item) for item in selected}
+    for item in results:
+        if len(selected) >= limit:
+            break
+        key = _creator_identity_key(item)
+        if key in selected_keys:
+            continue
+        selected.append(item)
+        selected_keys.add(key)
+    return selected
+
+
+def _has_realtime_source(item: dict[str, Any]) -> bool:
+    if item.get("source_type") in {"realtime", "mixed"}:
+        return True
+    return "Realtime" in (item.get("source_labels") or [])
 
 
 def _creator_identity_key(item: dict[str, Any]) -> str:

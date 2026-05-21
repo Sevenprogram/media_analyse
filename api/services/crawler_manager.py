@@ -20,6 +20,7 @@ import asyncio
 import subprocess
 import signal
 import os
+import sys
 from typing import Optional, List
 from datetime import datetime
 from pathlib import Path
@@ -90,6 +91,11 @@ class CrawlerManager:
             return "debug"
         return "info"
 
+    def _subprocess_creationflags(self) -> int:
+        if sys.platform != "win32":
+            return 0
+        return int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+
     async def start(self, config: CrawlerStartRequest) -> bool:
         """Start crawler process"""
         async with self._lock:
@@ -127,7 +133,8 @@ class CrawlerManager:
                     encoding='utf-8',
                     bufsize=1,
                     cwd=str(self._project_root),
-                    env={**os.environ, "PYTHONUNBUFFERED": "1"}
+                    env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                    creationflags=self._subprocess_creationflags(),
                 )
 
                 self.status = "running"
@@ -221,6 +228,9 @@ class CrawlerManager:
 
         if config.start_page != 1:
             cmd.extend(["--start", str(config.start_page)])
+
+        if config.max_notes_count:
+            cmd.extend(["--max_notes_count", str(config.max_notes_count)])
 
         cmd.extend(["--get_comment", "true" if config.enable_comments else "false"])
         cmd.extend(["--get_sub_comment", "true" if config.enable_sub_comments else "false"])

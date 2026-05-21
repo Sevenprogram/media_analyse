@@ -10,7 +10,7 @@ B_TIER_THRESHOLD = 60.0
 
 def tier_creator_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     score = float(candidate.get("match_score") or candidate.get("score") or 0)
-    evidence = candidate.get("evidence") or candidate.get("evidence_json") or {}
+    evidence = _evidence_dict(candidate)
     negative_flags = _negative_flags(candidate, evidence)
     evidence_types = _evidence_types(candidate, evidence)
     if negative_flags:
@@ -37,7 +37,7 @@ def tier_creator_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, 
     results = []
     for candidate in candidates:
         tiering = tier_creator_candidate(candidate)
-        evidence = candidate.get("evidence") or candidate.get("evidence_json") or {}
+        evidence = _evidence_dict(candidate)
         results.append(
             {
                 **candidate,
@@ -57,7 +57,7 @@ def tier_creator_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, 
 
 def candidate_payload_with_tier(candidate: dict[str, Any]) -> dict[str, Any]:
     tiering = tier_creator_candidate(candidate)
-    evidence = candidate.get("evidence") or candidate.get("evidence_json") or {}
+    evidence = _evidence_dict(candidate)
     return {
         **candidate,
         "evidence_json": {
@@ -66,6 +66,15 @@ def candidate_payload_with_tier(candidate: dict[str, Any]) -> dict[str, Any]:
         },
         "notes": _append_note(candidate.get("notes"), f"tier={tiering['tier']}; {tiering['tier_reason']}"),
     }
+
+
+def _evidence_dict(candidate: dict[str, Any]) -> dict[str, Any]:
+    evidence = candidate.get("evidence") or candidate.get("evidence_json") or {}
+    if isinstance(evidence, dict):
+        return evidence
+    if isinstance(evidence, list):
+        return {"evidence": evidence}
+    return {}
 
 
 def _negative_flags(candidate: dict[str, Any], evidence: dict[str, Any]) -> list[str]:
@@ -83,7 +92,7 @@ def _evidence_types(candidate: dict[str, Any], evidence: dict[str, Any]) -> set[
         types.add("tag")
     if evidence.get("primary_hits") or evidence.get("secondary_hits"):
         types.add("keyword")
-    if evidence.get("representative_posts") or candidate.get("representative_posts"):
+    if evidence.get("representative_posts") or evidence.get("evidence") or candidate.get("representative_posts"):
         types.add("content")
     if candidate.get("recent_post_count_30d") or evidence.get("recent_post_count_30d"):
         types.add("activity")

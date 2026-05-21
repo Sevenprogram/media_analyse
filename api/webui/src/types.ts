@@ -163,6 +163,10 @@ export type ResearchJob = {
   platforms: string[];
   status: string;
   collection_mode?: string;
+  comment_policy?: {
+    max_posts_per_job?: number | null;
+    [key: string]: unknown;
+  };
 };
 
 export type PostRecord = {
@@ -341,7 +345,7 @@ export type GrowthProjectDetail = {
 
 export type GrowthProjectCollectionProgress = {
   project_id: string;
-  status: "idle" | "queued" | "running" | "completed" | "failed" | "cancelled" | string;
+  status: "idle" | "queued" | "running" | "completed" | "empty" | "failed" | "cancelled" | string;
   current_job_id?: number | null;
   running_job_id?: number | null;
   queued_jobs: Array<{
@@ -362,6 +366,8 @@ export type GrowthProjectCollectionProgress = {
   };
   progress: {
     percent: number;
+    sample_percent?: number;
+    step_percent?: number;
     unit_counts: Record<string, number>;
     sample_counts: {
       posts: number;
@@ -369,6 +375,10 @@ export type GrowthProjectCollectionProgress = {
       raw_records: number;
       creators: number;
     };
+    target_counts?: {
+      posts?: number;
+    };
+    progress_basis?: "samples" | "steps" | string;
     job?: ResearchJob | null;
     latest_event?: {
       event_type?: string;
@@ -376,6 +386,40 @@ export type GrowthProjectCollectionProgress = {
       created_at?: string | null;
     } | null;
   };
+};
+
+export type BackgroundTaskProgress = {
+  percent?: number;
+  stage?: string;
+  label?: string;
+};
+
+export type BackgroundTaskItem = {
+  id: string;
+  type: "crawler" | "research_execution" | "research_queue" | "creator_search" | "ai_analysis" | string;
+  title: string;
+  status: "queued" | "running" | "stopping" | "completed" | "failed" | "cancelled" | "unknown" | string;
+  progress?: BackgroundTaskProgress;
+  source?: string;
+  started_at?: string | null;
+  updated_at?: string | null;
+  cancellable: boolean;
+  cancel_reason?: string | null;
+  deletable?: boolean;
+  delete_reason?: string | null;
+  related_job_id?: number | null;
+  detail?: Record<string, unknown> | null;
+};
+
+export type BackgroundTaskSummary = {
+  total: number;
+  running: number;
+  queued: number;
+  cancellable: number;
+  deletable?: number;
+  failed: number;
+  completed: number;
+  cancelled: number;
 };
 
 export type GrowthProjectCreatePayload = {
@@ -419,6 +463,7 @@ export type ScenePackOption = {
 export type ResearchTab =
   | "overview"
   | "tasks"
+  | "background_tasks"
   | "opportunities"
   | "creators"
   | "keyword_library"

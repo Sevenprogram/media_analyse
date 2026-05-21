@@ -149,3 +149,45 @@ async def test_discover_realtime_creators_reports_unsupported_platforms():
     assert result["results"] == []
     assert result["diagnostics"]["status"] == "skipped"
     assert result["diagnostics"]["unsupported_platforms"] == ["bili"]
+
+
+@pytest.mark.asyncio
+async def test_discover_realtime_creators_limits_persisted_creators():
+    repository = FakeRepository()
+    client = FakeTikHubClient(
+        {
+            "K12": [
+                {
+                    "note": {
+                        "id": f"note-{index}",
+                        "title": f"K12 creator {index}",
+                        "desc": "parent education",
+                        "user": {
+                            "user_id": f"xhs-u{index}",
+                            "nickname": f"Teacher {index}",
+                            "fans": 1000 + index,
+                        },
+                        "interact_info": {
+                            "liked_count": 100 * index,
+                            "comment_count": 10,
+                            "collected_count": 5,
+                        },
+                    }
+                }
+                for index in range(1, 4)
+            ]
+        }
+    )
+
+    result = await discover_realtime_creators(
+        repository,
+        {"raw_query": "K12", "platforms": ["xhs"], "limit": 2},
+        client_factory=lambda: client,
+    )
+
+    assert len(result["results"]) == 2
+    assert len(repository.profiles) == 2
+    assert len(repository.candidates) == 2
+    assert result["diagnostics"]["limit"] == 2
+    assert result["diagnostics"]["matched_creators"] == 3
+    assert result["diagnostics"]["persisted_creators"] == 2
