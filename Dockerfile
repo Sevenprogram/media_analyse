@@ -11,6 +11,7 @@ RUN npm run build
 FROM mcr.microsoft.com/playwright/python:v1.45.0-jammy
 
 ENV PYTHONUNBUFFERED=1 \
+    UV_PYTHON=3.11 \
     UV_CACHE_DIR=/app/.uv-cache \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
@@ -18,7 +19,7 @@ WORKDIR /app
 
 COPY --from=ghcr.io/astral-sh/uv:0.5.31 /uv /uvx /usr/local/bin/
 
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml uv.lock .python-version ./
 RUN uv sync --frozen
 
 COPY . .
