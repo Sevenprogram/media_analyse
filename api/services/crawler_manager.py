@@ -211,7 +211,8 @@ class CrawlerManager:
 
     def _build_command(self, config: CrawlerStartRequest) -> list:
         """Build main.py command line arguments"""
-        cmd = ["uv", "run", "python", "main.py"]
+        python_executable = os.getenv("CRAWLER_PYTHON_EXECUTABLE", sys.executable)
+        cmd = [python_executable, "main.py"]
 
         cmd.extend(["--platform", config.platform.value])
         cmd.extend(["--lt", config.login_type.value])

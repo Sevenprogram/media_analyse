@@ -1372,7 +1372,7 @@ class ResearchExecutionRequest(BaseModel):
     login_type: LoginTypeEnum = LoginTypeEnum.QRCODE
     save_option: SaveDataOptionEnum = SaveDataOptionEnum.SQLITE
     cookies: str = ""
-    headless: bool = False
+    headless: bool = True
     start_page: int = Field(default=1, ge=1)
     backfill_after_crawl: bool = True
 

@@ -85,7 +85,7 @@ class CrawlerStartRequest(BaseModel):
     max_notes_count: int | None = None
     save_option: SaveDataOptionEnum = SaveDataOptionEnum.JSONL
     cookies: str = ""
-    headless: bool = False
+    headless: bool = True
     prefer_latest_posts: bool = False
     sort_type: str = ""
     filter_note_time: str = ""

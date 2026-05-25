@@ -75,7 +75,7 @@ class ResearchExecutionOptions:
         login_type: LoginTypeEnum = LoginTypeEnum.QRCODE,
         save_option: SaveDataOptionEnum = SaveDataOptionEnum.POSTGRES,
         cookies: str = "",
-        headless: bool = False,
+        headless: bool = True,
         start_page: int = 1,
         backfill_after_crawl: bool = True,
     ):

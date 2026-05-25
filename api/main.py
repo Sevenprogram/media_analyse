@@ -24,6 +24,7 @@ Or: python -m api.main
 import asyncio
 import os
 import subprocess
+import sys
 import uvicorn
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -80,7 +81,6 @@ app = FastAPI(
 # Get webui static files directory
 WEBUI_DIR = os.path.join(os.path.dirname(__file__), "webui")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-PROJECT_UV_CACHE_DIR = PROJECT_ROOT / ".uv-cache"
 
 # CORS configuration - allow frontend dev server access
 app.add_middleware(
@@ -191,8 +191,8 @@ async def check_environment():
     except FileNotFoundError:
         return {
             "success": False,
-            "message": "uv command not found",
-            "error": "Please ensure uv is installed and configured in system PATH"
+            "message": "Python command not found",
+            "error": "Please ensure the Python executable is available in system PATH"
         }
     except Exception as e:
         return {
@@ -210,10 +210,10 @@ def _run_environment_check() -> subprocess.CompletedProcess[str]:
     this endpoint portable while the route itself remains async.
     """
     env = os.environ.copy()
-    env.setdefault("UV_CACHE_DIR", str(PROJECT_UV_CACHE_DIR))
+    env.setdefault("PYTHONUNBUFFERED", "1")
 
     return subprocess.run(
-        ["uv", "run", "main.py", "--help"],
+        [sys.executable, "main.py", "--help"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         cwd=PROJECT_ROOT,
