@@ -199,7 +199,9 @@ def build_tracker_ai_enhancement_prompt(
             "noise_samples": [],
         },
         "keyword_strategy": {
+            "high_value_keywords": ["string"],
             "recommended_include_keywords": ["string"],
+            "noise_keywords": ["string"],
             "recommended_exclude_keywords": ["string"],
             "keyword_notes": ["string"],
         },
@@ -238,6 +240,9 @@ def build_tracker_ai_enhancement_prompt(
             "Use only sample_key values present in candidates.",
             "Put low-engagement high-fit items into early_signal_samples rather than representative_samples when enough engaged samples exist.",
             "Keyword suggestions must be practical platform search terms, not broad category labels.",
+            "keyword_strategy.high_value_keywords, recommended_include_keywords, noise_keywords, and recommended_exclude_keywords must each contain at least one evidence-backed term when candidates are present.",
+            "Keep the four keyword lists distinct; do not put current included_keywords in recommended_include_keywords or recommended_exclude_keywords.",
+            "Current included_keywords may appear in high_value_keywords or noise_keywords when evidence supports them; use noise_keywords, not recommended_exclude_keywords, when a tracked term is too broad.",
             "Noise diagnosis must identify why matched content is off-topic and propose exclude keywords only when justified by evidence.",
             "Conclusion must mention uncertainty when sample quality or noise makes the judgement weak.",
         ],
@@ -247,6 +252,12 @@ def build_tracker_ai_enhancement_prompt(
             "trends": _compact_metrics_dict(analysis_bundle.get("trends") or {}),
             "keywords": {
                 "keyword_rows": (analysis_bundle.get("keywords") or {}).get("keyword_rows", [])[:12],
+                "high_value_keywords": (analysis_bundle.get("keywords") or {}).get(
+                    "high_value_keywords", []
+                ),
+                "noise_keywords": (analysis_bundle.get("keywords") or {}).get(
+                    "noise_keywords", []
+                ),
                 "recommended_include_keywords": (analysis_bundle.get("keywords") or {}).get(
                     "recommended_include_keywords", []
                 ),
@@ -433,11 +444,23 @@ def normalize_tracker_ai_enhancement_output(
             allowed_sample_keys=allowed_sample_keys,
         ),
         "keyword_strategy": {
+            "high_value_keywords": _dedupe_strings(
+                _keyword_terms(keyword_strategy.get("high_value_keywords"))
+                + _keyword_terms(keyword_strategy.get("top_keywords"))
+            )[:12],
             "recommended_include_keywords": _dedupe_strings(
-                _string_list(keyword_strategy.get("recommended_include_keywords"))
+                _keyword_terms(keyword_strategy.get("recommended_include_keywords"))
+                + _keyword_terms(keyword_strategy.get("recommended_include"))
+                + _keyword_terms(keyword_strategy.get("include_keywords"))
+            )[:12],
+            "noise_keywords": _dedupe_strings(
+                _keyword_terms(keyword_strategy.get("noise_keywords"))
+                + _keyword_terms(keyword_strategy.get("noise_terms"))
             )[:12],
             "recommended_exclude_keywords": _dedupe_strings(
-                _string_list(keyword_strategy.get("recommended_exclude_keywords"))
+                _keyword_terms(keyword_strategy.get("recommended_exclude_keywords"))
+                + _keyword_terms(keyword_strategy.get("recommended_exclude"))
+                + _keyword_terms(keyword_strategy.get("exclude_keywords"))
             )[:12],
             "keyword_notes": _dedupe_strings(_string_list(keyword_strategy.get("keyword_notes")))[:8],
         },
@@ -1443,7 +1466,6 @@ def _keyword_metrics(
         )
         if item["noise_rate"] >= KEYWORD_NOISE_MIN_RATE
         and _keyword_identity(item["keyword"]) not in high_value_terms
-        and _keyword_identity(item["keyword"]) not in protected_tracker_terms
     ][:10]
     noise_terms = {_keyword_identity(item["keyword"]) for item in noise_rows}
     recommended_include_keywords = [
@@ -2086,6 +2108,8 @@ def _sample_quality_grade(score: float) -> str:
 
 def _keyword_action(keyword_type: str, noise_rate: float, value_score: float) -> str:
     if noise_rate >= 0.5:
+        if keyword_type == "included":
+            return "refine"
         return "exclude"
     if keyword_type == "expanded" and value_score >= 55:
         return "include"
@@ -2342,6 +2366,27 @@ def _apply_ai_keyword_strategy(
     keyword_strategy: dict[str, Any],
 ) -> None:
     keywords = analysis_bundle.setdefault("keywords", {})
+    keyword_rows_by_identity = _keyword_rows_by_identity(
+        _list_of_dicts(keywords.get("keyword_rows"))
+    )
+    tracker = analysis_bundle.get("tracker") or {}
+    tracker_included_terms = {
+        _keyword_identity(item) for item in _string_list(tracker.get("included_keywords"))
+    }
+    high_value_rows = _merge_ai_keyword_rows(
+        existing_rows=_list_of_dicts(keywords.get("high_value_keywords")),
+        terms=_keyword_terms(keyword_strategy.get("high_value_keywords")),
+        keyword_rows_by_identity=keyword_rows_by_identity,
+        category="high_value",
+        tracker_included_terms=tracker_included_terms,
+    )
+    noise_rows = _merge_ai_keyword_rows(
+        existing_rows=_list_of_dicts(keywords.get("noise_keywords")),
+        terms=_keyword_terms(keyword_strategy.get("noise_keywords")),
+        keyword_rows_by_identity=keyword_rows_by_identity,
+        category="noise",
+        tracker_included_terms=tracker_included_terms,
+    )
     include_keywords = _dedupe_strings(
         _string_list(keywords.get("recommended_include_keywords"))
         + _string_list(keyword_strategy.get("recommended_include_keywords"))
@@ -2350,6 +2395,10 @@ def _apply_ai_keyword_strategy(
         _string_list(keywords.get("recommended_exclude_keywords"))
         + _string_list(keyword_strategy.get("recommended_exclude_keywords"))
     )
+    if high_value_rows:
+        keywords["high_value_keywords"] = high_value_rows[:12]
+    if noise_rows:
+        keywords["noise_keywords"] = noise_rows[:12]
     if include_keywords:
         keywords["recommended_include_keywords"] = include_keywords[:12]
     if exclude_keywords:
@@ -2398,9 +2447,24 @@ def _apply_ai_noise_diagnosis(
         return
     risks = analysis_bundle.setdefault("risks", {})
     risks["ai_noise_diagnosis"] = noise_diagnosis
-    suggested_exclude = _string_list(noise_diagnosis.get("suggested_exclude_keywords"))
+    keywords = analysis_bundle.setdefault("keywords", {})
+    noise_terms = _keyword_terms(noise_diagnosis.get("noise_terms"))
+    if noise_terms:
+        tracker = analysis_bundle.get("tracker") or {}
+        keywords["noise_keywords"] = _merge_ai_keyword_rows(
+            existing_rows=_list_of_dicts(keywords.get("noise_keywords")),
+            terms=noise_terms,
+            keyword_rows_by_identity=_keyword_rows_by_identity(
+                _list_of_dicts(keywords.get("keyword_rows"))
+            ),
+            category="noise",
+            tracker_included_terms={
+                _keyword_identity(item)
+                for item in _string_list(tracker.get("included_keywords"))
+            },
+        )[:12]
+    suggested_exclude = _keyword_terms(noise_diagnosis.get("suggested_exclude_keywords"))
     if suggested_exclude:
-        keywords = analysis_bundle.setdefault("keywords", {})
         keywords["recommended_exclude_keywords"] = _dedupe_strings(
             _string_list(keywords.get("recommended_exclude_keywords")) + suggested_exclude
         )[:12]
@@ -2458,6 +2522,78 @@ def _keyword_row_identity(row: dict[str, Any]) -> str:
     return _keyword_identity(row.get("keyword"))
 
 
+def _keyword_terms(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    terms: list[str] = []
+    for item in value:
+        if isinstance(item, dict):
+            term = item.get("keyword") or item.get("term") or item.get("value")
+        else:
+            term = item
+        term_text = str(term or "").strip()
+        if term_text:
+            terms.append(term_text)
+    return terms
+
+
+def _keyword_rows_by_identity(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    by_identity: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        identity = _keyword_row_identity(row)
+        if identity and identity not in by_identity:
+            by_identity[identity] = row
+    return by_identity
+
+
+def _merge_ai_keyword_rows(
+    *,
+    existing_rows: list[dict[str, Any]],
+    terms: list[str],
+    keyword_rows_by_identity: dict[str, dict[str, Any]],
+    category: str,
+    tracker_included_terms: set[str],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in existing_rows:
+        identity = _keyword_row_identity(row)
+        if not identity or identity in seen:
+            continue
+        rows.append(row)
+        seen.add(identity)
+    for term in _dedupe_strings(terms):
+        identity = _keyword_identity(term)
+        if not identity or identity in seen:
+            continue
+        row = dict(keyword_rows_by_identity.get(identity) or {})
+        row["keyword"] = term
+        row["source"] = "ai_keyword_strategy"
+        row.setdefault("type", "ai")
+        row.setdefault("hit_content_count", 0)
+        row.setdefault("hit_creator_count", 0)
+        row.setdefault("avg_similarity", None)
+        row.setdefault("avg_engagement", None)
+        row.setdefault("viral_rate", None)
+        row.setdefault("growth_rate", 0.0)
+        if category == "noise":
+            row["noise_rate"] = max(
+                KEYWORD_NOISE_MIN_RATE,
+                _float_between(row.get("noise_rate"), default=0.0),
+            )
+            row.setdefault("keyword_value_score", 0.0)
+            row["recommended_action"] = (
+                "refine" if identity in tracker_included_terms else "exclude"
+            )
+        else:
+            row.setdefault("noise_rate", 0.0)
+            row.setdefault("keyword_value_score", None)
+            row.setdefault("recommended_action", "include")
+        rows.append(row)
+        seen.add(identity)
+    return rows
+
+
 def _sanitize_keyword_recommendations(analysis_bundle: dict[str, Any]) -> None:
     keywords = analysis_bundle.setdefault("keywords", {})
     tracker = analysis_bundle.get("tracker") or {}
@@ -2465,13 +2601,20 @@ def _sanitize_keyword_recommendations(analysis_bundle: dict[str, Any]) -> None:
         _keyword_identity(item) for item in _string_list(tracker.get("included_keywords"))
     }
 
-    high_value_rows = _list_of_dicts(keywords.get("high_value_keywords"))
+    high_value_rows = []
+    high_value_seen: set[str] = set()
+    for item in _list_of_dicts(keywords.get("high_value_keywords")):
+        identity = _keyword_row_identity(item)
+        if not identity or identity in high_value_seen:
+            continue
+        high_value_rows.append(item)
+        high_value_seen.add(identity)
+    keywords["high_value_keywords"] = high_value_rows[:12]
     high_value_terms = {_keyword_row_identity(item) for item in high_value_rows}
     noise_rows = [
         item
         for item in _list_of_dicts(keywords.get("noise_keywords"))
         if _keyword_row_identity(item)
-        and _keyword_row_identity(item) not in tracker_included_terms
         and _keyword_row_identity(item) not in high_value_terms
         and _float_between(item.get("noise_rate"), default=0.0) >= KEYWORD_NOISE_MIN_RATE
     ]

@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from research.content_strategy import (
+    _build_frameworks,
+    _normalize_ai_frameworks,
     build_content_strategy_summary,
     build_strategy_draft_fallback,
     normalize_strategy_draft_output,
@@ -125,6 +127,67 @@ def test_build_content_strategy_summary_combines_ai_topics_and_local_evidence() 
     assert any(item["title"] == "同质化风险" for item in result["risks"])
     assert result["traffic_share"]["estimated_leads"] > 0
     assert result["evidence_pack"]["total"] > 0
+
+
+def test_content_frameworks_sort_by_median_interaction() -> None:
+    posts = [
+        {
+            "title": f"避坑清单 low sample {index}",
+            "engagement_json": {"like_count": 100},
+        }
+        for index in range(5)
+    ] + [
+        {
+            "title": "测评 high sample a",
+            "engagement_json": {"like_count": 1000},
+        },
+        {
+            "title": "测评 high sample b",
+            "engagement_json": {"like_count": 1200},
+        },
+    ]
+
+    frameworks = _build_frameworks(posts, opportunities=[])
+
+    assert frameworks[0]["title"] == "对比测评型"
+    assert frameworks[0]["interactions"] == "1.1k"
+    assert frameworks[1]["title"] == "避坑清单型"
+    assert frameworks[1]["interactions"] == "100"
+
+
+def test_ai_frameworks_do_not_treat_copy_as_interaction_metric() -> None:
+    frameworks = _normalize_ai_frameworks(
+        [
+            {
+                "title": "Question framework",
+                "tags": ["search"],
+                "posts": 18,
+                "interactions": "Suitable for search traffic and comment consultation copy.",
+                "leads": 0,
+            },
+            {
+                "title": "Proof framework",
+                "tags": ["proof"],
+                "posts": 4,
+                "interactions": "2.4k",
+                "leads": 2,
+            },
+        ],
+        fallback_rows=[
+            {
+                "title": "Question framework",
+                "tags": ["fallback"],
+                "posts": 18,
+                "interactions": "1.2k",
+                "leads": 1,
+                "samples": [],
+            }
+        ],
+    )
+
+    assert [item["title"] for item in frameworks] == ["Proof framework", "Question framework"]
+    assert frameworks[0]["interactions"] == "2.4k"
+    assert frameworks[1]["interactions"] == "1.2k"
 
 
 def test_strategy_draft_normalization_and_fallback_are_stable() -> None:

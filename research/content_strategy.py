@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter, defaultdict
 from datetime import date, datetime, timezone
 from typing import Any
@@ -66,6 +67,7 @@ FRAMEWORK_RULES = [
 PAIN_COLORS = ["#0f8f85", "#2cbaa7", "#86d2c6", "#d9c089", "#bed3d8", "#dfe8e5"]
 MIX_COLORS = ["#0f8f85", "#2d9fd6", "#f59d48", "#9ac9be", "#ef7d57"]
 TRAFFIC_COLORS = ["#0f8f85", "#ff7d66", "#efc261", "#58a6ff", "#7cb6cc", "#dfe8e5"]
+DISPLAY_NUMBER_PATTERN = re.compile(r"^\s*\d+(?:[\.,]\d+)?\s*(?:[kKwW万])?\s*$")
 
 
 def normalize_strategy_filters(
@@ -573,6 +575,14 @@ def _apply_ai_strategy_summary(summary: dict[str, Any], ai_strategy_summary: dic
                     ai_rows=rows,
                     fallback_rows=summary.get("suggestions") or [],
                 )
+            elif key == "frameworks":
+                normalized_frameworks = _normalize_ai_frameworks(
+                    rows,
+                    summary.get("frameworks") or [],
+                )
+                if not normalized_frameworks:
+                    continue
+                summary[key] = normalized_frameworks
             else:
                 summary[key] = rows
             section_sources[key] = "ai"
@@ -848,17 +858,16 @@ def _normalize_ai_frameworks(value: Any, fallback_rows: list[dict[str, Any]]) ->
         if str(item.get("title") or "").strip()
     }
     normalized = []
-    for item in rows[:8]:
+    for item in rows:
         title = str(item.get("title") or "").strip()
         if not title:
             continue
         fallback = fallback_by_title.get(title.lower())
         posts = _safe_int(item.get("posts"), fallback=(fallback or {}).get("posts"), minimum=1)
-        interactions_raw = item.get("interactions")
-        interactions = (
-            str(interactions_raw).strip()
-            if interactions_raw not in {None, ""}
-            else str((fallback or {}).get("interactions") or _format_number(posts * 320))
+        interactions = _framework_interactions_display(
+            item.get("interactions"),
+            fallback=(fallback or {}).get("interactions"),
+            posts=posts,
         )
         normalized.append(
             {
@@ -870,7 +879,8 @@ def _normalize_ai_frameworks(value: Any, fallback_rows: list[dict[str, Any]]) ->
                 "samples": (fallback or {}).get("samples") or [],
             }
         )
-    return normalized
+    normalized.sort(key=_framework_sort_key, reverse=True)
+    return normalized[:8]
 
 
 def _normalize_ai_suggestions(value: Any, fallback_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1289,30 +1299,31 @@ def _build_frameworks(posts: list[dict[str, Any]], opportunities: list[dict[str,
                 "title": framework,
                 "tags": tags,
                 "posts": 0,
-                "interactions_total": 0,
+                "interactions": [],
                 "leads": 0,
                 "samples": [],
             },
         )
+        engagement = int(sample.get("engagement") or 0)
         bucket["posts"] += 1
-        bucket["interactions_total"] += int(sample.get("engagement") or 0)
-        bucket["leads"] += max(0, round(int(sample.get("engagement") or 0) * 0.06))
+        bucket["interactions"].append(engagement)
+        bucket["leads"] += max(0, round(engagement * 0.06))
         if len(bucket["samples"]) < 3:
             bucket["samples"].append(sample)
     rows = []
     for bucket in buckets.values():
-        posts_count = max(1, int(bucket["posts"]))
+        median_interaction = _median_number(bucket["interactions"])
         rows.append(
             {
                 "title": bucket["title"],
                 "tags": bucket["tags"],
                 "posts": bucket["posts"],
-                "interactions": _format_number(round(bucket["interactions_total"] / posts_count)),
+                "interactions": _format_number(median_interaction),
                 "leads": bucket["leads"],
                 "samples": bucket["samples"],
             }
         )
-    rows.sort(key=lambda item: (item["posts"], item["leads"]), reverse=True)
+    rows.sort(key=_framework_sort_key, reverse=True)
     return rows[:8]
 
 
@@ -1695,15 +1706,45 @@ def _format_number(value: float | int) -> str:
     return str(int(round(number)))
 
 
+def _median_number(values: list[int | float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(float(value or 0) for value in values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def _framework_interactions_display(value: Any, *, fallback: Any, posts: int) -> str:
+    for candidate in (value, fallback):
+        if _is_display_number(candidate):
+            return _format_number(_parse_display_number(candidate))
+    return _format_number(max(0, posts) * 320)
+
+
+def _framework_sort_key(item: dict[str, Any]) -> tuple[float, int, int]:
+    return (
+        _parse_display_number(item.get("interactions")),
+        _safe_int(item.get("posts"), minimum=0),
+        _safe_int(item.get("leads"), minimum=0),
+    )
+
+
+def _is_display_number(value: Any) -> bool:
+    return bool(DISPLAY_NUMBER_PATTERN.match(str(value or "").strip()))
+
+
 def _parse_display_number(value: Any) -> float:
-    text = str(value or "0").strip().lower()
+    text = str(value or "0").strip().lower().replace(",", "")
     multiplier = 1.0
-    if text.endswith("w"):
+    if text.endswith("w") or text.endswith("万"):
         multiplier = 10000.0
         text = text[:-1]
     elif text.endswith("k"):
         multiplier = 1000.0
         text = text[:-1]
+    text = text.strip()
     try:
         return float(text) * multiplier
     except ValueError:

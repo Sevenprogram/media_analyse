@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import sys
@@ -21,7 +22,11 @@ from config.db_config import sqlite_db_config
 from database.db_session import close_engines, create_tables, get_session
 from saas_test_utils import authenticate_test_client
 from research.models import ResearchJob, ResearchPost
-from research.content_tracking import build_tracker_analysis_snapshot
+from research.content_tracking import (
+    build_tracker_ai_enhancement_prompt,
+    build_tracker_analysis_snapshot,
+    normalize_tracker_ai_enhancement_output,
+)
 
 
 @pytest_asyncio.fixture
@@ -300,6 +305,154 @@ def test_keyword_groups_do_not_classify_tracker_terms_as_noise_or_excludes() -> 
     assert recommended_include_terms.isdisjoint(set(tracker["included_keywords"]))
     assert noise_terms.isdisjoint(high_value_terms)
     assert recommended_exclude_terms.isdisjoint(set(tracker["included_keywords"]))
+
+
+def test_noisy_tracker_terms_are_visible_without_auto_excluding_them() -> None:
+    now = datetime.now(timezone.utc)
+    tracker = {
+        "id": 103,
+        "name": "single mom education tracker",
+        "description": "track K12 education discussions from single moms",
+        "platforms": ["xhs"],
+        "included_keywords": ["single mom", "k12 education"],
+        "excluded_keywords": [],
+        "tracking_mode": "mixed",
+    }
+    posts = [
+        {
+            "platform": "xhs",
+            "platform_post_id": "noisy-single-mom",
+            "author_hash": "author-noise-a",
+            "title": "",
+            "content": "single mom k12 education",
+            "url": "https://example.com/noisy-single-mom",
+            "publish_time": now - timedelta(hours=1),
+            "engagement_json": {},
+        },
+        {
+            "platform": "xhs",
+            "platform_post_id": "noisy-k12",
+            "author_hash": "author-noise-b",
+            "title": "",
+            "content": "single mom k12 education",
+            "url": "https://example.com/noisy-k12",
+            "publish_time": now - timedelta(hours=2),
+            "engagement_json": {},
+        },
+    ]
+
+    analysis = build_tracker_analysis_snapshot(tracker=tracker, posts=posts)
+    keywords = analysis["keywords"]
+    noise_terms = {item["keyword"] for item in keywords["noise_keywords"]}
+    recommended_exclude_terms = set(keywords["recommended_exclude_keywords"])
+    actions = {
+        item["keyword"]: item["recommended_action"]
+        for item in keywords["keyword_rows"]
+    }
+
+    assert noise_terms == {"single mom", "k12 education"}
+    assert recommended_exclude_terms.isdisjoint(set(tracker["included_keywords"]))
+    assert actions == {"single mom": "refine", "k12 education": "refine"}
+
+
+def test_tracker_ai_prompt_requires_all_visible_keyword_categories() -> None:
+    now = datetime.now(timezone.utc)
+    tracker = {
+        "id": 104,
+        "name": "single mom education tracker",
+        "description": "track K12 education discussions from single moms",
+        "platforms": ["xhs"],
+        "included_keywords": ["single mom", "k12 education"],
+        "excluded_keywords": [],
+        "tracking_mode": "mixed",
+    }
+    posts = [
+        {
+            "platform": "xhs",
+            "platform_post_id": "signal-1",
+            "author_hash": "author-a",
+            "title": "single mom k12 education planning",
+            "content": "single mom k12 education route",
+            "url": "https://example.com/signal-1",
+            "publish_time": now - timedelta(hours=1),
+            "engagement_json": {"like_count": 80, "comment_count": 8},
+        }
+    ]
+    analysis = build_tracker_analysis_snapshot(tracker=tracker, posts=posts)
+
+    prompt = json.loads(
+        build_tracker_ai_enhancement_prompt(
+            analysis_bundle=analysis,
+            candidates=analysis["candidate_rows"],
+        )
+    )
+    keyword_schema = prompt["output_schema"]["keyword_strategy"]
+    rules = "\n".join(prompt["rules"])
+
+    assert {
+        "high_value_keywords",
+        "recommended_include_keywords",
+        "noise_keywords",
+        "recommended_exclude_keywords",
+    } <= set(keyword_schema)
+    assert "must each contain at least one evidence-backed term" in rules
+
+
+def test_ai_keyword_strategy_populates_all_visible_keyword_groups() -> None:
+    now = datetime.now(timezone.utc)
+    tracker = {
+        "id": 105,
+        "name": "single mom education tracker",
+        "description": "track K12 education discussions from single moms",
+        "platforms": ["xhs"],
+        "included_keywords": ["single mom", "k12 education"],
+        "excluded_keywords": [],
+        "tracking_mode": "mixed",
+    }
+    posts = [
+        {
+            "platform": "xhs",
+            "platform_post_id": "signal-1",
+            "author_hash": "author-a",
+            "title": "single mom k12 education planning",
+            "content": "single mom k12 education route and school choice",
+            "url": "https://example.com/signal-1",
+            "publish_time": now - timedelta(hours=1),
+            "engagement_json": {"like_count": 80, "comment_count": 8},
+        }
+    ]
+    analysis = build_tracker_analysis_snapshot(tracker=tracker, posts=posts)
+    from research.content_tracking import apply_tracker_ai_enhancement
+
+    raw_ai_output = {
+        "keyword_strategy": {
+            "high_value_keywords": ["single mom route"],
+            "recommended_include_keywords": ["school choice plan"],
+            "noise_keywords": ["generic education"],
+            "recommended_exclude_keywords": ["giveaway"],
+            "keyword_notes": ["AI must provide every visible keyword category."],
+        }
+    }
+    enhancement = normalize_tracker_ai_enhancement_output(
+        raw_ai_output,
+        allowed_sample_keys={"xhs:signal-1"},
+    )
+    apply_tracker_ai_enhancement(
+        analysis,
+        enhancement,
+        source="ai_gateway",
+        provider={"name": "test", "model": "test-model"},
+    )
+
+    keywords = analysis["keywords"]
+    high_value_terms = {item["keyword"] for item in keywords["high_value_keywords"]}
+    noise_terms = {item["keyword"] for item in keywords["noise_keywords"]}
+
+    assert "single mom route" in high_value_terms
+    assert "school choice plan" in set(keywords["recommended_include_keywords"])
+    assert "generic education" in noise_terms
+    assert "giveaway" in set(keywords["recommended_exclude_keywords"])
+    assert "k12 education" not in set(keywords["recommended_exclude_keywords"])
 
 
 def test_ai_keyword_excludes_are_sanitized_against_tracker_terms() -> None:

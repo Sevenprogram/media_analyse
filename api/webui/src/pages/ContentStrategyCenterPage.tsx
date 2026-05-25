@@ -9,6 +9,7 @@ import {
   Copy,
   Download,
   Eye,
+  ExternalLink,
   FileSearch,
   FileText,
   Flame,
@@ -390,6 +391,12 @@ function formatDate(value?: string | null) {
   return `${formatted} UTC+8`;
 }
 
+function normalizeExternalUrl(value?: string | null) {
+  const url = value?.trim();
+  if (!url) return null;
+  return /^https?:\/\//i.test(url) ? url : null;
+}
+
 function platformLabel(value?: string | null) {
   return PLATFORM_OPTIONS.find((item) => item.value === value)?.label || value || "全部平台";
 }
@@ -602,6 +609,40 @@ function dedupeSuggestions(items: SuggestionRow[]) {
 function metricItemLimit(metric: MetricItem, fallback = 8) {
   const parsed = Number.parseInt(metric.value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseCompactMetric(value?: string | number | null) {
+  let text = String(value ?? "").trim().toLowerCase().replace(/,/g, "");
+  if (!text) return 0;
+  let multiplier = 1;
+  if (text.endsWith("万") || text.endsWith("w")) {
+    multiplier = 10000;
+    text = text.slice(0, -1).trim();
+  } else if (text.endsWith("k")) {
+    multiplier = 1000;
+    text = text.slice(0, -1).trim();
+  }
+  const parsed = Number.parseFloat(text);
+  return Number.isFinite(parsed) ? parsed * multiplier : 0;
+}
+
+function isCompactMetric(value?: string | number | null) {
+  return /^\s*\d+(?:[\.,]\d+)?\s*(?:[kKwW万])?\s*$/.test(String(value ?? ""));
+}
+
+function frameworkMetricText(value?: string | number | null) {
+  const raw = String(value ?? "").trim();
+  return raw && isCompactMetric(raw) ? raw : "-";
+}
+
+function sortFrameworkRows(rows: FrameworkRow[]) {
+  return [...rows].sort((left, right) => {
+    const interactionDelta = parseCompactMetric(right.interactions) - parseCompactMetric(left.interactions);
+    if (interactionDelta !== 0) return interactionDelta;
+    const postDelta = Number(right.posts || 0) - Number(left.posts || 0);
+    if (postDelta !== 0) return postDelta;
+    return Number(right.leads || 0) - Number(left.leads || 0);
+  });
 }
 
 function isKeywordTrendSuggestion(item: SuggestionRow) {
@@ -895,6 +936,10 @@ export function ContentStrategyCenterPage({
 
   const evidenceItems = summary?.evidence_pack.items || [];
   const metrics = summary?.metrics || [];
+  const frameworkRows = React.useMemo(
+    () => sortFrameworkRows(summary?.frameworks || []),
+    [summary?.frameworks],
+  );
   const painTotal = summary?.pain_distribution.reduce((sum, item) => sum + Number(item.count || 0), 0) || 0;
   const trendColor = (direction: "up" | "down") => (direction === "up" ? "#0f8f85" : "#e35d5d");
   const projectContext = summary?.project_context;
@@ -1250,9 +1295,9 @@ export function ContentStrategyCenterPage({
               查看更多 <ChevronRight size={14} />
             </button>
           </div>
-          {summary?.frameworks.length ? (
+          {frameworkRows.length ? (
             <div className="ks-framework-list">
-              {summary.frameworks.slice(0, 5).map((item) => (
+              {frameworkRows.slice(0, 5).map((item) => (
                 <article key={item.title} className="ks-framework-card">
                   <div className="ks-framework-card__main">
                     <strong>{item.title}</strong>
@@ -1262,7 +1307,7 @@ export function ContentStrategyCenterPage({
                   </div>
                   <div className="ks-framework-card__stats">
                     <div><span>参考内容</span><strong>{item.posts}</strong></div>
-                    <div><span>互动中位数</span><strong>{item.interactions}</strong></div>
+                    <div><span>互动中位数</span><strong>{frameworkMetricText(item.interactions)}</strong></div>
                     <div><span>线索估算</span><strong>{item.leads}</strong></div>
                   </div>
                   <Button variant="ghost" onClick={() => generateDraft("framework", { ...item, title: item.title })}>
@@ -1337,26 +1382,38 @@ export function ContentStrategyCenterPage({
           </div>
           {summary?.competitor_samples.length ? (
             <div className="ks-competitor-list">
-              {summary.competitor_samples.slice(0, 6).map((item) => (
-                <button
-                  type="button"
-                  key={`${item.platform}-${item.title}`}
-                  className="ks-competitor-card ks-competitor-card--button"
-                  onClick={() => openEvidence(item.title, [{ type: "competitor_sample", title: item.title, platform: item.platform_key, reason: `互动 ${item.interaction}`, payload: item }], item)}
-                >
-                  <span className={`ks-platform-badge ${item.badge}`}>{item.platform}</span>
-                  <div className="ks-sample-thumb"><FileText size={18} /></div>
-                  <div className="ks-competitor-card__main">
-                    <strong>{item.title}</strong>
-                    <small>互动 {item.interaction}</small>
-                  </div>
-                  <div className="ks-competitor-card__stats">
-                    <span>点赞 {item.likes}</span>
-                    <span>评论 {item.comments}</span>
-                    <span>收藏 {item.favorites}</span>
-                  </div>
-                </button>
-              ))}
+              {summary.competitor_samples.slice(0, 6).map((item) => {
+                const sourceUrl = normalizeExternalUrl(item.url);
+                const openItemEvidence = () => {
+                  openEvidence(item.title, [{ type: "competitor_sample", title: item.title, platform: item.platform_key, reason: `互动 ${item.interaction}`, payload: item }], item);
+                };
+                return (
+                  <article key={`${item.platform}-${item.title}`} className="ks-competitor-card">
+                    <span className={`ks-platform-badge ${item.badge}`}>{item.platform}</span>
+                    <button type="button" className="ks-sample-thumb ks-sample-thumb--button" onClick={openItemEvidence} aria-label={`查看证据：${item.title}`}>
+                      <FileText size={18} />
+                    </button>
+                    <div className="ks-competitor-card__main">
+                      {sourceUrl ? (
+                        <a className="ks-competitor-card__title-link" href={sourceUrl} target="_blank" rel="noreferrer" title={`打开原帖：${item.title}`}>
+                          <strong>{item.title}</strong>
+                          <ExternalLink size={13} aria-hidden="true" />
+                        </a>
+                      ) : (
+                        <button type="button" className="ks-competitor-card__title-button" onClick={openItemEvidence} title="查看证据">
+                          <strong>{item.title}</strong>
+                        </button>
+                      )}
+                      <small>互动 {item.interaction}</small>
+                    </div>
+                    <div className="ks-competitor-card__stats">
+                      <span>点赞 {item.likes}</span>
+                      <span>评论 {item.comments}</span>
+                      <span>收藏 {item.favorites}</span>
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           ) : <EmptyState label={loading ? "正在整理同行样本" : "暂无同行样本"} />}
         </Card>
