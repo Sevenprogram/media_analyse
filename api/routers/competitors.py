@@ -469,21 +469,28 @@ def _xhs_detail_path(note_type: str) -> str:
 
 
 def _deep_first_text(payload: Any, keys: set[str]) -> str:
+    for text in _deep_text_values(payload, keys):
+        return text
+    return ""
+
+
+def _deep_text_values(payload: Any, keys: set[str]) -> list[str]:
+    values: list[str] = []
     if isinstance(payload, dict):
         for key, value in payload.items():
             if key in keys:
-                text = str(value or "").strip()
-                if text:
-                    return text
-            text = _deep_first_text(value, keys)
-            if text:
-                return text
+                if isinstance(value, (dict, list)):
+                    values.extend(_deep_text_values(value, keys))
+                else:
+                    text = str(value or "").strip()
+                    if text:
+                        values.append(text)
+            else:
+                values.extend(_deep_text_values(value, keys))
     elif isinstance(payload, list):
         for item in payload:
-            text = _deep_first_text(item, keys)
-            if text:
-                return text
-    return ""
+            values.extend(_deep_text_values(item, keys))
+    return values
 
 
 def _canonical_xhs_note_url(note_id: str, xsec_token: str) -> str:
@@ -503,15 +510,52 @@ def _extract_xhs_token_from_url(url: str) -> str:
 
 
 def _extract_xhs_share_text(payload: Any, mapped_url: str) -> str:
-    candidate = _deep_first_text(
+    candidates = _deep_text_values(
         payload,
-        {"share_text", "share_url", "note_url", "url", "link", "content"},
+        {
+            "share_text",
+            "shareText",
+            "share_url",
+            "shareUrl",
+            "shareURL",
+            "share_link",
+            "shareLink",
+            "short_link",
+            "shortLink",
+            "xhs_link",
+            "xhsLink",
+            "note_url",
+            "noteUrl",
+            "web_url",
+            "webUrl",
+            "target_url",
+            "targetUrl",
+            "href",
+            "url",
+            "link",
+            "content",
+        },
     )
-    if candidate and ("xhslink.com" in candidate or "xiaohongshu.com" in candidate):
-        return candidate
-    if mapped_url and ("xhslink.com" in mapped_url or "xiaohongshu.com" in mapped_url):
-        return mapped_url
-    return ""
+    if mapped_url:
+        candidates.append(mapped_url)
+    scored = [(_xhs_share_text_score(candidate), candidate) for candidate in candidates]
+    scored = [item for item in scored if item[0] > 0]
+    if not scored:
+        return ""
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return scored[0][1]
+
+
+def _xhs_share_text_score(text: str) -> int:
+    candidate = str(text or "").strip()
+    if not candidate:
+        return 0
+    if "xhslink.com" in candidate:
+        return 3
+    if "xiaohongshu.com" not in candidate:
+        return 0
+    token = _extract_xhs_token_from_url(candidate)
+    return 2 if token else 1
 
 
 async def _resolve_xhs_token_via_share_text(client: TikHubClient, share_text: str) -> str:
@@ -593,6 +637,11 @@ async def _backfill_xhs_tokens_for_competitor(
                 mapped_url = str(mapped.get("note_url") or "").strip()
                 if not token:
                     token = _extract_xhs_token_from_url(mapped_url)
+                if not token:
+                    token = _deep_first_text(
+                        payload,
+                        {"xsec_token", "xsecToken", "xsec_token_value", "xsecTokenValue"},
+                    )
                 if not token:
                     share_text = _extract_xhs_share_text(payload, mapped_url)
                     if share_text:

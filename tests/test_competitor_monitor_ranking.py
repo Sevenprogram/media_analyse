@@ -684,6 +684,76 @@ async def test_xhs_token_backfill_reports_detail_failures(competitor_client: Asy
     assert result["failed_by_type"] == {"RuntimeError": 1}
 
 
+@pytest.mark.asyncio
+async def test_xhs_token_backfill_resolves_nested_share_link(competitor_client: AsyncClient) -> None:
+    from api.routers import competitors as competitors_router
+
+    org_id = int(competitor_client.headers["X-Org-Id"])
+    competitor_id = await _seed_competitor_snapshot(org_id=org_id)
+    repository = ResearchRepository(org_id=org_id)
+    competitor = await repository.get_competitor_account(competitor_id)
+    assert competitor is not None
+
+    class FakeTikHubClient:
+        def __init__(self) -> None:
+            self.share_texts: list[str] = []
+
+        async def request(self, method: str, path: str, params=None, json=None):
+            assert method == "GET"
+            if path == competitors_router._XHS_IMAGE_DETAIL_PATH:
+                assert params == {"note_id": "note-missing"}
+                return {
+                    "note": {
+                        "id": "note-missing",
+                        "type": "normal",
+                        "title": "Missing Token Note",
+                        "content": "plain note body appears before share fields",
+                        "share_info": {
+                            "share_url": "https://xhslink.com/a/token-source",
+                        },
+                    }
+                }
+            assert path == competitors_router._XHS_SHARE_TOKEN_PATH
+            share_text = str((params or {}).get("share_text") or "")
+            self.share_texts.append(share_text)
+            if share_text == "https://xhslink.com/a/token-source":
+                return {"note_id": "note-missing", "xsec_token": "nested-token"}
+            return {}
+
+        async def close(self) -> None:
+            return None
+
+    client = FakeTikHubClient()
+    result = await competitors_router._backfill_xhs_tokens_for_competitor(
+        repository,
+        competitor=competitor,
+        days_back=7,
+        client=client,
+    )
+
+    assert client.share_texts == ["https://xhslink.com/a/token-source"]
+    assert result["attempted"] == 1
+    assert result["updated"] == 1
+    assert result["failed"] == 0
+
+    async with get_session() as session:
+        note = (
+            await session.execute(select(XhsNote).where(XhsNote.note_id == "note-missing"))
+        ).scalar_one()
+        post = (
+            await session.execute(
+                select(ResearchPost).where(
+                    ResearchPost.platform == "xhs",
+                    ResearchPost.platform_post_id == "note-missing",
+                )
+            )
+        ).scalar_one()
+
+    assert note.xsec_token == "nested-token"
+    assert post.url.endswith("xsec_token=nested-token&xsec_source=pc_search")
+    assert post.engagement_json["xsec_token"] == "nested-token"
+
+
 def test_public_flow_snapshot_keeps_verified_posts_with_missing_links() -> None:
     snapshot = build_competitor_public_flow_snapshot(
         competitor={"id": 1, "platform": "xhs"},

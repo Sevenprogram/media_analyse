@@ -13,7 +13,7 @@ class XhsTikHubMapper(BaseTikHubMapper):
         item = _unwrap_note(item)
         user = author(item)
         title = str(pick(item, "title", "displayTitle", "display_title"))
-        xsec_token = str(pick(item, "xsec_token", "xsecToken"))
+        xsec_token = _xsec_token(item)
         note_id = str(pick(item, "note_id", "noteId", "id", default=""))
         if not note_id:
             note_id = _fallback_note_id(item, title, xsec_token)
@@ -36,15 +36,37 @@ class XhsTikHubMapper(BaseTikHubMapper):
                 "avatar": first_url(pick(user, "avatar", "avatar_url", "image", "images")),
             },
             "interact_info": {
-                "liked_count": _count(nested(item, "stats", "like_count", default=nested(item, "interactInfo", "likedCount", default=pick(item, "liked_count", "like_count", "likes", "nice_count", default=0)))),
-                "collected_count": _count(nested(item, "interactInfo", "collectedCount", default=pick(item, "collected_count", "collect_count", default=0))),
-                "comment_count": _count(nested(item, "stats", "comment_count", default=nested(item, "interactInfo", "commentCount", default=pick(item, "comment_count", "comments_count", default=0)))),
-                "share_count": _count(nested(item, "interactInfo", "shareCount", default=pick(item, "share_count", "shared_count", default=0))),
+                "liked_count": _metric_count(
+                    item,
+                    ("stats", "like_count"),
+                    ("interact_info", "liked_count"),
+                    ("interactInfo", "likedCount"),
+                    fallback_keys=("liked_count", "like_count", "likes", "nice_count"),
+                ),
+                "collected_count": _metric_count(
+                    item,
+                    ("interact_info", "collected_count"),
+                    ("interactInfo", "collectedCount"),
+                    fallback_keys=("collected_count", "collect_count"),
+                ),
+                "comment_count": _metric_count(
+                    item,
+                    ("stats", "comment_count"),
+                    ("interact_info", "comment_count"),
+                    ("interactInfo", "commentCount"),
+                    fallback_keys=("comment_count", "comments_count"),
+                ),
+                "share_count": _metric_count(
+                    item,
+                    ("interact_info", "share_count"),
+                    ("interactInfo", "shareCount"),
+                    fallback_keys=("share_count", "shared_count"),
+                ),
             },
             "ip_location": str(pick(item, "ip_location")),
             "image_list": image_list,
             "tag_list": pick(item, "tag_list", "tags", default=[]),
-            "note_url": str(pick(item, "note_url", "url", "share_url", default=f"https://www.xiaohongshu.com/explore/{note_id}")),
+            "note_url": _note_url(item, note_id),
             "source_keyword": source_keyword,
             "xsec_token": xsec_token,
             "raw_data": raw(original),
@@ -103,8 +125,39 @@ class XhsTikHubMapper(BaseTikHubMapper):
 
 
 def _unwrap_note(item: dict[str, Any]) -> dict[str, Any]:
-    note = item.get("note")
-    return note if isinstance(note, dict) else item
+    if not isinstance(item, dict):
+        return {}
+    current = item
+    for _ in range(8):
+        next_item = _next_note_wrapper(current)
+        if next_item is None:
+            return current
+        current = next_item
+    return current
+
+
+def _next_note_wrapper(item: dict[str, Any]) -> dict[str, Any] | None:
+    for key in (
+        "note",
+        "note_card",
+        "noteCard",
+        "note_info",
+        "noteInfo",
+        "item",
+        "card",
+        "detail",
+        "post",
+        "data",
+        "result",
+    ):
+        value = item.get(key)
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, list):
+            first = next((entry for entry in value if isinstance(entry, dict)), None)
+            if first is not None:
+                return first
+    return None
 
 
 def author_from_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -137,6 +190,75 @@ def _fallback_note_id(item: dict[str, Any], title: str, xsec_token: str) -> str:
     stable = "|".join(part for part in (xsec_token, title, raw(item)) if part)
     digest = hashlib.sha1(stable.encode("utf-8")).hexdigest()[:24]
     return f"tikhub_xhs_{digest}"
+
+
+def _xsec_token(item: dict[str, Any]) -> str:
+    return str(
+        pick(
+            item,
+            "xsec_token",
+            "xsecToken",
+            "xsec_token_value",
+            "xsecTokenValue",
+            default=_deep_pick(
+                item,
+                {"xsec_token", "xsecToken", "xsec_token_value", "xsecTokenValue"},
+            ),
+        )
+    )
+
+
+def _note_url(item: dict[str, Any], note_id: str) -> str:
+    return str(
+        pick(
+            item,
+            "note_url",
+            "noteUrl",
+            "url",
+            "share_url",
+            "shareUrl",
+            default=nested(
+                item,
+                "share_info",
+                "share_url",
+                default=nested(
+                    item,
+                    "shareInfo",
+                    "shareUrl",
+                    default=f"https://www.xiaohongshu.com/explore/{note_id}",
+                ),
+            ),
+        )
+    )
+
+
+def _metric_count(
+    item: dict[str, Any],
+    *paths: tuple[str, ...],
+    fallback_keys: tuple[str, ...],
+) -> int:
+    for path in paths:
+        value = nested(item, *path)
+        if value not in (None, ""):
+            return _count(value)
+    return _count(pick(item, *fallback_keys, default=0))
+
+
+def _deep_pick(payload: Any, keys: set[str]) -> Any:
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if key in keys and value not in (None, "") and not isinstance(value, (dict, list)):
+                return value
+        for value in payload.values():
+            nested_value = _deep_pick(value, keys)
+            if nested_value not in (None, ""):
+                return nested_value
+    elif isinstance(payload, list):
+        for item in payload:
+            nested_value = _deep_pick(item, keys)
+            if nested_value not in (None, ""):
+                return nested_value
+    return ""
 
 
 def _count(value: Any) -> int:

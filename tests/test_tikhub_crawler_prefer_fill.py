@@ -8,6 +8,7 @@ import config
 from media_platform.tikhub import core as tikhub_core
 from media_platform.tikhub.core import TikHubCrawler
 from media_platform.tikhub.errors import TikHubValidationError
+from media_platform.tikhub.mappers.xhs import XhsTikHubMapper
 
 
 class FakeTikHubClient:
@@ -62,6 +63,35 @@ class FakeRawWriter:
                 "entity_id": entity_id,
             }
         )
+
+
+def test_xhs_mapper_unwraps_note_card_and_nested_share_fields() -> None:
+    mapped = XhsTikHubMapper().map_content(
+        {
+            "note_card": {
+                "note_id": "note-pinned",
+                "type": "normal",
+                "display_title": "Pinned note",
+                "desc": "Pinned body",
+                "xsecToken": "pinned-token",
+                "share_info": {"share_url": "https://xhslink.com/a/pinned"},
+                "interact_info": {
+                    "liked_count": "1200",
+                    "collected_count": "34",
+                    "comment_count": "56",
+                    "share_count": "7",
+                },
+                "user": {"user_id": "creator-001", "nickname": "Competitor One"},
+            }
+        },
+        source_keyword="",
+    )
+
+    assert mapped["note_id"] == "note-pinned"
+    assert mapped["xsec_token"] == "pinned-token"
+    assert mapped["note_url"] == "https://xhslink.com/a/pinned"
+    assert mapped["interact_info"]["liked_count"] == 1200
+    assert mapped["interact_info"]["comment_count"] == 56
 
 
 def _configure_search(
