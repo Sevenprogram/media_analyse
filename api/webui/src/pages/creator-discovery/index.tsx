@@ -789,7 +789,8 @@ export function CreatorDiscoveryPage() {
   const [pageSizeInput, setPageSizeInput] = React.useState(DEFAULT_PAGE_SIZE);
   const [currentSessionId, setCurrentSessionId] = React.useState<number | null>(null);
   const [latestSessionResolved, setLatestSessionResolved] = React.useState(false);
-  const [skipCandidatePoolBootstrap, setSkipCandidatePoolBootstrap] = React.useState(false);
+  const [latestSessionRestored, setLatestSessionRestored] = React.useState(false);
+  const [candidatePoolBootstrapDone, setCandidatePoolBootstrapDone] = React.useState(false);
 
   const displayLimit = React.useMemo(() => {
     const parsed = parseNumericInput(pageSizeInput);
@@ -835,6 +836,11 @@ export function CreatorDiscoveryPage() {
   const selectedVertical = React.useMemo(() => {
     return verticals.find((item) => String(item.id) === selectedVerticalId) || null;
   }, [selectedVerticalId, verticals]);
+
+  const defaultVerticalId = React.useMemo(() => {
+    const defaultVertical = verticals.find((item) => item.code === "education") || verticals[0];
+    return defaultVertical ? String(defaultVertical.id) : "";
+  }, [verticals]);
 
   const averageEngagement = React.useMemo(() => {
     const values = filteredBaseRecords
@@ -996,7 +1002,8 @@ export function CreatorDiscoveryPage() {
         "已恢复上一次搜索结果。",
       ),
     );
-    setSkipCandidatePoolBootstrap(true);
+    setRunStartedAt(null);
+    setRunLogLine(restoredResults.length ? `已恢复上一次搜索 · ${restoredResults.length} 位达人` : "已恢复上一次搜索 · 暂无匹配结果");
   }, []);
 
   const persistSearchSession = React.useCallback(
@@ -1099,6 +1106,7 @@ export function CreatorDiscoveryPage() {
       setRunStartedAt(startedAt);
       setRunLogLine(`正在读取本地候选池 · 已等待 ${formatElapsedTime(startedAt)}`);
       const loaded = await loadCandidatePool(selectedVerticalId);
+      setCandidatePoolBootstrapDone(true);
       setRunLogLine(`${loaded ? "本地候选池加载完成" : "本地候选池加载失败"} · 已等待 ${formatElapsedTime(startedAt)}`);
       return;
     }
@@ -1199,6 +1207,8 @@ export function CreatorDiscoveryPage() {
           messageText: nextMessage,
           resultSummaryText: nextResultSummary,
         });
+        setLatestSessionRestored(true);
+        setCandidatePoolBootstrapDone(true);
       } catch {
         setMessage(`${nextMessage} 最近一次搜索未能保存，刷新后可能需要重新搜索。`);
       }
@@ -1295,10 +1305,6 @@ export function CreatorDiscoveryPage() {
         if (cancelled) return;
         const nextVerticals = data.verticals || [];
         setVerticals(nextVerticals);
-        const education = nextVerticals.find((item) => item.code === "education") || nextVerticals[0];
-        if (education && selectedVerticalId === "all") {
-          setSelectedVerticalId(String(education.id));
-        }
       })
       .catch((error) => {
         if (!cancelled) {
@@ -1308,10 +1314,10 @@ export function CreatorDiscoveryPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedVerticalId]);
+  }, []);
 
   React.useEffect(() => {
-    if (!verticals.length || latestSessionResolved) return;
+    if (latestSessionResolved) return;
     let cancelled = false;
     api<CreatorSearchSessionResponse>("/api/creator-search/search-sessions/latest")
       .then((data) => {
@@ -1319,27 +1325,48 @@ export function CreatorDiscoveryPage() {
         const sessionRow = asRecord(data.session);
         if (Object.keys(sessionRow).length) {
           restoreLatestSearchSession(sessionRow);
+          setLatestSessionRestored(true);
+        } else {
+          setLatestSessionRestored(false);
         }
         setLatestSessionResolved(true);
       })
       .catch(() => {
         if (!cancelled) {
+          setLatestSessionRestored(false);
           setLatestSessionResolved(true);
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [latestSessionResolved, restoreLatestSearchSession, verticals.length]);
+  }, [latestSessionResolved, restoreLatestSearchSession]);
 
   React.useEffect(() => {
-    if (!verticals.length || !latestSessionResolved) return;
-    if (skipCandidatePoolBootstrap) {
-      setSkipCandidatePoolBootstrap(false);
+    if (!latestSessionResolved || latestSessionRestored) return;
+    if (selectedVerticalId !== "all" || !defaultVerticalId) return;
+    setSelectedVerticalId(defaultVerticalId);
+  }, [defaultVerticalId, latestSessionResolved, latestSessionRestored, selectedVerticalId]);
+
+  React.useEffect(() => {
+    if (!latestSessionResolved || candidatePoolBootstrapDone) return;
+    if (latestSessionRestored) {
+      setCandidatePoolBootstrapDone(true);
       return;
     }
+    if (!verticals.length) return;
+    if (selectedVerticalId === "all" && defaultVerticalId) return;
+    setCandidatePoolBootstrapDone(true);
     void loadCandidatePool(selectedVerticalId);
-  }, [latestSessionResolved, loadCandidatePool, selectedVerticalId, skipCandidatePoolBootstrap, verticals.length]);
+  }, [
+    candidatePoolBootstrapDone,
+    defaultVerticalId,
+    latestSessionResolved,
+    latestSessionRestored,
+    loadCandidatePool,
+    selectedVerticalId,
+    verticals.length,
+  ]);
 
   return (
     <section className="creator-discovery-v2">
