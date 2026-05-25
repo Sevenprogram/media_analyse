@@ -120,13 +120,14 @@ class JustOneAPIClient:
             return payload
 
         code = payload.get("code")
-        if code == 0:
+        normalized_code = _normalize_code(code)
+        if normalized_code == 0:
             return payload.get("data")
-        if code == 100:
+        if normalized_code == 100:
             raise JustOneAPIAuthError(str(payload))
-        if code == 429:
+        if normalized_code in (302, 429):
             raise JustOneAPIRateLimitError(str(payload))
-        if isinstance(code, int) and code >= 500:
+        if isinstance(normalized_code, int) and normalized_code >= 500:
             raise JustOneAPIUpstreamError(str(payload))
         raise JustOneAPIValidationError(str(payload))
 
@@ -135,3 +136,13 @@ class JustOneAPIClient:
         if payload is None:
             return None
         return {key: value for key, value in payload.items() if value not in (None, "")}
+
+
+def _normalize_code(code: Any) -> int | None:
+    if isinstance(code, int):
+        return code
+    if isinstance(code, str):
+        stripped = code.strip()
+        if stripped.isdigit():
+            return int(stripped)
+    return None

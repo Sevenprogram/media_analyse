@@ -283,6 +283,46 @@
   background: linear-gradient(90deg, #0e9488, #93d1c8);
 }
 
+.cdv2-run-log {
+  margin-top: 10px;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid #d7ebe6;
+  border-radius: 12px;
+  background: #f7fcfb;
+  color: var(--cd-muted);
+  font-size: 12px;
+}
+
+.cdv2-run-log.is-running::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--cd-primary);
+  box-shadow: 0 0 0 4px rgba(14, 148, 136, 0.12);
+  flex: none;
+}
+
+.cdv2-run-log span {
+  flex: none;
+  color: var(--cd-primary-dark);
+  font-weight: 800;
+}
+
+.cdv2-run-log strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--cd-text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .cdv2-filter-row {
   margin-top: 14px;
   display: grid;
@@ -292,6 +332,7 @@
 
 .cdv2-filter-select,
 .cdv2-filter-input,
+.cdv2-search-mode-control,
 .cdv2-realtime-control,
 .cdv2-filter-range,
 .cdv2-reset {
@@ -316,6 +357,7 @@
 }
 
 .cdv2-filter-input,
+.cdv2-search-mode-control,
 .cdv2-realtime-control,
 .cdv2-filter-range {
   flex-direction: column;
@@ -325,6 +367,7 @@
 }
 
 .cdv2-filter-input > span,
+.cdv2-search-mode-control > span,
 .cdv2-realtime-control > span,
 .cdv2-filter-range > span {
   color: var(--cd-muted);
@@ -352,6 +395,7 @@
 }
 
 .cdv2-filter-input div,
+.cdv2-search-mode-main,
 .cdv2-realtime-main,
 .cdv2-filter-range div {
   display: flex;
@@ -363,6 +407,34 @@
 .cdv2-realtime-main {
   justify-content: space-between;
   gap: 10px;
+}
+
+.cdv2-search-mode-main {
+  gap: 6px;
+  padding: 3px;
+  border-radius: 12px;
+  background: #f5faf8;
+}
+
+.cdv2-search-mode-main button {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--cd-muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 7px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cdv2-search-mode-main button.is-active {
+  background: #fff;
+  color: var(--cd-primary);
+  box-shadow: 0 8px 18px rgba(12, 127, 117, 0.12);
 }
 
 .cdv2-filter-input input,
@@ -405,6 +477,16 @@
   color: var(--cd-muted);
   font-size: 11px;
   line-height: 1.2;
+}
+
+.cdv2-search-mode-control small {
+  color: var(--cd-muted);
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.cdv2-search-mode-control {
+  cursor: default;
 }
 
 .cdv2-switch {
@@ -1472,6 +1554,14 @@
 }
 
 @media (max-width: 640px) {
+  .cdv2-run-log {
+    align-items: flex-start;
+  }
+
+  .cdv2-run-log strong {
+    white-space: normal;
+  }
+
   .cdv2-tabs,
   .cdv2-results-tools {
     width: 100%;

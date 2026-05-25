@@ -30,6 +30,7 @@ import "./styles.css";
 
 type PlatformKey = "all" | "douyin" | "xiaohongshu" | "bilibili" | "weibo";
 type TierKey = "recommended" | "A" | "B" | "C";
+type SearchMode = "realtime" | "local_pool";
 
 type Dimension = {
   label: string;
@@ -61,6 +62,8 @@ type CreatorRecord = {
   viralRate: number | null;
   commercialSignals: string[];
   hasRealtimeSource?: boolean;
+  filterRelaxations?: string[];
+  qualityFlags?: string[];
   favorited: boolean;
   avatarTone: string;
   platformHandle: string;
@@ -89,6 +92,15 @@ type CreatorSearchResponse = {
   results?: UnknownRecord[];
 };
 
+type CreatorSearchTask = {
+  task_id?: string;
+  status?: string;
+  progress?: UnknownRecord;
+  logs?: UnknownRecord[];
+  result?: CreatorSearchResponse | null;
+  error?: string | null;
+};
+
 type CreatorCandidatePoolResponse = {
   candidates?: UnknownRecord[];
 };
@@ -99,7 +111,6 @@ type CreatorSearchSessionResponse = {
 
 type AnalysisStatus = "idle" | "loading" | "done" | "error";
 type ProcessStepState = "pending" | "active" | "done" | "error";
-const DEFAULT_REALTIME_RATIO = "50";
 const DEFAULT_PAGE_SIZE = "10";
 
 type DiscoveryFilters = {
@@ -112,7 +123,7 @@ type DiscoveryFilters = {
 };
 
 const DEFAULT_FILTERS: DiscoveryFilters = {
-  followerMinCount: "100",
+  followerMinCount: "2000",
   followerMaxCount: "",
   recentPostsMin: "1",
   activityLevel: "any",
@@ -463,6 +474,33 @@ function firstText(...values: unknown[]) {
   return "";
 }
 
+function delay(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function formatElapsedTime(startedAt: number | null) {
+  if (!startedAt) return "0 秒";
+  const elapsedSeconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+  if (elapsedSeconds < 60) return `${elapsedSeconds} 秒`;
+  const minutes = Math.floor(elapsedSeconds / 60);
+  const seconds = elapsedSeconds % 60;
+  return seconds ? `${minutes}分${seconds}秒` : `${minutes}分钟`;
+}
+
+function latestTaskMessage(task: CreatorSearchTask) {
+  const logs = Array.isArray(task.logs) ? task.logs.map(asRecord) : [];
+  const latestLog = logs[logs.length - 1] || {};
+  return firstText(latestLog.message, asRecord(task.progress).label, "任务已提交");
+}
+
+function formatTaskRunLog(task: CreatorSearchTask, startedAt: number | null) {
+  const message = latestTaskMessage(task);
+  const progress = asRecord(task.progress);
+  const percent = Math.round(asNumber(progress.percent, 0));
+  const progressText = percent > 0 && percent < 100 ? ` · ${percent}%` : "";
+  return `${message}${progressText} · 已等待 ${formatElapsedTime(startedAt)}`;
+}
+
 function safeExternalUrl(value: string) {
   const trimmed = value.trim();
   return /^https?:\/\//i.test(trimmed) ? trimmed : "";
@@ -549,6 +587,10 @@ function normalizeTierKey(value: unknown): TierKey {
   return value === "A" || value === "B" || value === "C" ? value : "recommended";
 }
 
+function normalizeSearchMode(value: unknown): SearchMode {
+  return value === "local_pool" ? "local_pool" : "realtime";
+}
+
 function normalizeAnalysisStatus(value: unknown): AnalysisStatus {
   return value === "loading" || value === "done" || value === "error" ? value : "idle";
 }
@@ -585,12 +627,22 @@ function applyDiscoveryFilters(records: CreatorRecord[], filters: DiscoveryFilte
   const viralMin = parsePercentInput(filters.viralMinPercent);
 
   return records.filter((record) => {
+    const relaxations = new Set(record.filterRelaxations || []);
     const followers = creatorFollowerCount(record);
     if (followerMin !== undefined && followers !== null && followers < followerMin) return false;
     if (followerMax !== undefined && followers !== null && followers > followerMax) return false;
-    if (recentMin !== undefined && record.posts30d < recentMin) return false;
+    if (
+      recentMin !== undefined
+      && record.posts30d < recentMin
+      && !(recentMin <= 1 && relaxations.has("activity_pending_verification"))
+    ) return false;
     if (filters.activityLevel === "dormant" && record.posts30d > 0) return false;
-    if (engagementMin !== undefined && (record.engagementRate === null || record.engagementRate < engagementMin)) return false;
+    if (
+      engagementMin !== undefined
+      && record.engagementRate === null
+      && !relaxations.has("engagement_rate_missing")
+    ) return false;
+    if (engagementMin !== undefined && record.engagementRate !== null && record.engagementRate < engagementMin) return false;
     if (viralMin !== undefined && (record.viralRate === null || record.viralRate < viralMin)) return false;
     return true;
   });
@@ -653,6 +705,12 @@ function mapCreatorRows(rows: UnknownRecord[]): CreatorRecord[] {
       const sourceLabels = Array.isArray(row.source_labels)
         ? row.source_labels.map((label) => normalizeSourceLabel(String(label)))
         : [];
+      const filterRelaxations = Array.isArray(row.filter_relaxations)
+        ? row.filter_relaxations.map((item) => String(item)).filter(Boolean)
+        : [];
+      const qualityFlags = Array.isArray(row.quality_flags)
+        ? row.quality_flags.map((item) => String(item)).filter(Boolean)
+        : [];
       const realtimeSource = hasRealtimeSource(row);
       return {
         id: asNumber(row.id, index + 1),
@@ -675,6 +733,8 @@ function mapCreatorRows(rows: UnknownRecord[]): CreatorRecord[] {
             ? ["实时"]
             : ["本地"],
         hasRealtimeSource: realtimeSource,
+        filterRelaxations,
+        qualityFlags,
         favorited: false,
         avatarTone: index % 4 === 0
           ? "linear-gradient(135deg, #d3a570, #8f6742)"
@@ -723,8 +783,9 @@ export function CreatorDiscoveryPage() {
   const [analysisRealtime, setAnalysisRealtime] = React.useState<UnknownRecord>({});
   const [monitoringKeys, setMonitoringKeys] = React.useState<Set<string>>(() => new Set());
   const [addingMonitorKey, setAddingMonitorKey] = React.useState<string | null>(null);
-  const [includeRealtime, setIncludeRealtime] = React.useState(true);
-  const [realtimeRatioPercent, setRealtimeRatioPercent] = React.useState(DEFAULT_REALTIME_RATIO);
+  const [searchMode, setSearchMode] = React.useState<SearchMode>("realtime");
+  const [runStartedAt, setRunStartedAt] = React.useState<number | null>(null);
+  const [runLogLine, setRunLogLine] = React.useState("");
   const [pageSizeInput, setPageSizeInput] = React.useState(DEFAULT_PAGE_SIZE);
   const [currentSessionId, setCurrentSessionId] = React.useState<number | null>(null);
   const [latestSessionResolved, setLatestSessionResolved] = React.useState(false);
@@ -795,12 +856,13 @@ export function CreatorDiscoveryPage() {
     if (!records.length || resultSummary.includes("失败")) {
       return resultSummary;
     }
+    const isRealtimeMode = searchMode === "realtime";
     const realtimeStatus = firstText(analysisRealtime.status).toLowerCase();
     const realtimeSelectedCount = Math.round(asNumber(analysisRealtime.selected_count));
-    if (includeRealtime && realtimeStatus === "failed") {
-      return `原始返回 ${formatCount(records.length)} 位，实时补充失败，筛选后 ${formatCount(filteredRecords.length)} 位，当前展示 ${formatCount(displayedRecords.length)} 位`;
+    if (isRealtimeMode && realtimeStatus === "failed") {
+      return `原始返回 ${formatCount(records.length)} 位，实时搜索失败，筛选后 ${formatCount(filteredRecords.length)} 位，当前展示 ${formatCount(displayedRecords.length)} 位`;
     }
-    if (includeRealtime && realtimeSelectedCount > 0) {
+    if (isRealtimeMode && realtimeSelectedCount > 0) {
       if (filteredRecords.length === records.length) {
         return `原始返回 ${formatCount(records.length)} 位，其中实时 ${formatCount(realtimeSelectedCount)} 位，当前展示 ${formatCount(displayedRecords.length)} 位`;
       }
@@ -810,7 +872,7 @@ export function CreatorDiscoveryPage() {
       return `原始返回 ${formatCount(records.length)} 位，当前展示 ${formatCount(displayedRecords.length)} 位`;
     }
     return `原始返回 ${formatCount(records.length)} 位，符合当前筛选 ${formatCount(filteredRecords.length)} 位，当前展示 ${formatCount(displayedRecords.length)} 位`;
-  }, [analysisRealtime, displayedRecords.length, filteredRecords.length, includeRealtime, records.length, resultSummary]);
+  }, [analysisRealtime, displayedRecords.length, filteredRecords.length, records.length, resultSummary, searchMode]);
 
   const processSteps = React.useMemo(() => {
     const verticalLabel = selectedVertical?.name || (selectedVerticalId === "all" ? "全部赛道" : "当前赛道");
@@ -820,7 +882,7 @@ export function CreatorDiscoveryPage() {
     const profileCount = Math.round(asNumber(analysisDiagnostics.profile_count, records.length));
     const realtimeStatus = firstText(analysisRealtime.status).toLowerCase();
     const realtimeSelectedCount = Math.round(asNumber(analysisRealtime.selected_count));
-    const realtimeRequestedRatio = Math.round(asNumber(analysisRealtime.requested_ratio, includeRealtime ? 50 : 0));
+    const isRealtimeMode = searchMode === "realtime";
     const hasResultContext = analysisStatus === "done" || records.length > 0;
     const states: ProcessStepState[] =
       analysisStatus === "loading"
@@ -854,13 +916,13 @@ export function CreatorDiscoveryPage() {
         index: 3,
         title: "寻找达人",
         detail: analysisStatus === "loading"
-          ? includeRealtime
-            ? "正在扫描本地库并补充小红书 / 抖音实时达人"
-            : "正在读取本地达人画像"
-          : includeRealtime && realtimeStatus === "failed"
-            ? "实时补充失败，已回退本地结果"
+          ? isRealtimeMode
+            ? "正在实时搜索小红书 / 抖音达人"
+            : "正在加载本地候选池"
+          : isRealtimeMode && realtimeStatus === "failed"
+            ? "实时搜索失败"
           : profileCount > 0
-            ? includeRealtime && realtimeSelectedCount > 0
+            ? isRealtimeMode && realtimeSelectedCount > 0
               ? `扫描 ${formatCount(profileCount)} 个账号，实时补充 ${formatCount(realtimeSelectedCount)} 位`
               : `扫描 ${formatCount(profileCount)} 个账号`
             : "等待检索",
@@ -874,16 +936,16 @@ export function CreatorDiscoveryPage() {
           : analysisStatus === "error"
             ? "请调整条件后重试"
             : records.length
-              ? includeRealtime && realtimeStatus === "failed"
-                ? `原始返回 ${formatCount(records.length)} 位，实时补充失败，筛选后 ${formatCount(filteredRecords.length)} 位，当前展示 ${formatCount(displayedRecords.length)} 位`
-                : includeRealtime && realtimeSelectedCount > 0
-                ? `原始返回 ${formatCount(records.length)} 位，其中实时 ${formatCount(realtimeSelectedCount)} 位（目标 ${realtimeRequestedRatio}%），筛选后 ${formatCount(filteredRecords.length)} 位，当前展示 ${formatCount(displayedRecords.length)} 位`
+              ? isRealtimeMode && realtimeStatus === "failed"
+                ? `原始返回 ${formatCount(records.length)} 位，实时搜索失败，筛选后 ${formatCount(filteredRecords.length)} 位，当前展示 ${formatCount(displayedRecords.length)} 位`
+                : isRealtimeMode && realtimeSelectedCount > 0
+                ? `原始返回 ${formatCount(records.length)} 位，其中实时 ${formatCount(realtimeSelectedCount)} 位，筛选后 ${formatCount(filteredRecords.length)} 位，当前展示 ${formatCount(displayedRecords.length)} 位`
                 : `原始返回 ${formatCount(records.length)} 位，筛选后 ${formatCount(filteredRecords.length)} 位，当前展示 ${formatCount(displayedRecords.length)} 位`
               : "暂无匹配结果",
         state: states[3],
       },
     ];
-  }, [analysisDiagnostics, analysisRealtime, analysisStatus, displayedRecords.length, filteredRecords, includeRealtime, query, records.length, selectedVertical?.name, selectedVerticalId]);
+  }, [analysisDiagnostics, analysisRealtime, analysisStatus, displayedRecords.length, filteredRecords, query, records.length, searchMode, selectedVertical?.name, selectedVerticalId]);
 
   const restoreLatestSearchSession = React.useCallback((sessionRow: UnknownRecord) => {
     const sessionId = asOptionalNumber(sessionRow.id);
@@ -904,14 +966,7 @@ export function CreatorDiscoveryPage() {
     setPlatformFilter(normalizePlatformFilter(viewState.platformFilter));
     setActiveTab(normalizeTierKey(viewState.activeTab));
     setFilters(restoreDiscoveryFilters(viewState.filters));
-    setIncludeRealtime(Boolean(viewState.includeRealtime ?? false));
-    setRealtimeRatioPercent(
-      firstText(
-        viewState.realtimeRatioPercent,
-        viewState.realtimeRatio,
-        DEFAULT_REALTIME_RATIO,
-      ),
-    );
+    setSearchMode(normalizeSearchMode(viewState.searchMode ?? (viewState.includeRealtime === false ? "local_pool" : "realtime")));
     setPageSizeInput(
       String(
         clampInteger(
@@ -978,8 +1033,7 @@ export function CreatorDiscoveryPage() {
             platformFilter,
             activeTab,
             filters,
-            includeRealtime,
-            realtimeRatioPercent,
+            searchMode,
             displayLimit,
             analysisStatus: status,
           },
@@ -1002,10 +1056,9 @@ export function CreatorDiscoveryPage() {
       activeTab,
       displayLimit,
       filters,
-      includeRealtime,
       platformFilter,
       query,
-      realtimeRatioPercent,
+      searchMode,
       selectedVerticalId,
     ],
   );
@@ -1028,10 +1081,12 @@ export function CreatorDiscoveryPage() {
       setAnalysisStatus("done");
       setResultSummary(mapped.length ? `已加载 ${mapped.length} 位候选达人` : "当前赛道暂无候选池结果");
       setMessage(mapped.length ? `已切换到${verticalId === "all" ? "全部赛道" : selectedVertical?.name || "当前赛道"}，候选池结果已刷新。` : "当前赛道候选池为空，可以输入关键词发起真实搜索。");
+      return true;
     } catch (error) {
       setAnalysisStatus("error");
       setResultSummary("候选池加载失败");
       setMessage(error instanceof Error ? error.message : "候选池加载失败，请稍后重试。");
+      return false;
     } finally {
       setIsLoading(false);
     }
@@ -1039,6 +1094,14 @@ export function CreatorDiscoveryPage() {
 
   const handleSearch = React.useCallback(async () => {
     const trimmedQuery = query.trim();
+    if (searchMode === "local_pool") {
+      const startedAt = Date.now();
+      setRunStartedAt(startedAt);
+      setRunLogLine(`正在读取本地候选池 · 已等待 ${formatElapsedTime(startedAt)}`);
+      const loaded = await loadCandidatePool(selectedVerticalId);
+      setRunLogLine(`${loaded ? "本地候选池加载完成" : "本地候选池加载失败"} · 已等待 ${formatElapsedTime(startedAt)}`);
+      return;
+    }
     if (!trimmedQuery && selectedVerticalId === "all") {
       setMessage("请先选择赛道，或输入一段达人发现需求。");
       return;
@@ -1047,16 +1110,16 @@ export function CreatorDiscoveryPage() {
     setAnalysisStatus("loading");
     setAnalysisDiagnostics({});
     setAnalysisRealtime({});
-    setMessage("正在检索本地达人画像、标签和近期内容证据。");
+    setMessage("正在实时搜索小红书 / 抖音达人，并保存命中结果。");
+    let currentRunStartedAt: number | null = null;
     try {
-      const parsedRealtimeRatio = parseNumericInput(realtimeRatioPercent);
-      const realtimeRatio = Math.max(0, Math.min(100, Math.round(parsedRealtimeRatio ?? 50)));
       const payload: Record<string, unknown> = {
         raw_query: trimmedQuery,
+        search_scope: "realtime_only",
         platforms: backendPlatforms(platformFilter),
-        limit: 50,
-        include_realtime: includeRealtime,
-        realtime_ratio: realtimeRatio,
+        limit: displayLimit,
+        include_realtime: true,
+        realtime_ratio: 100,
       };
       const followerMin = parseFollowerInput(filters.followerMinCount);
       const followerMax = parseFollowerInput(filters.followerMaxCount);
@@ -1066,6 +1129,7 @@ export function CreatorDiscoveryPage() {
         setAnalysisStatus("error");
         setResultSummary("筛选条件有误");
         setMessage("粉丝数上限不能小于下限，请调整后再搜索。");
+        setRunLogLine("筛选条件有误：粉丝数上限不能小于下限");
         return;
       }
       if (followerMin !== undefined) payload.follower_min = followerMin;
@@ -1077,10 +1141,34 @@ export function CreatorDiscoveryPage() {
       if (selectedVerticalId !== "all") {
         payload.selected_vertical_id = Number(selectedVerticalId);
       }
-      const data = await api<CreatorSearchResponse>("/api/creator-search/search", {
+      const startedAt = Date.now();
+      currentRunStartedAt = startedAt;
+      setRunStartedAt(startedAt);
+      setRunLogLine(`实时搜索任务准备中 · 已等待 ${formatElapsedTime(startedAt)}`);
+      let task = await api<CreatorSearchTask>("/api/creator-search/search-tasks", {
         method: "POST",
         body: JSON.stringify(payload),
       });
+      const taskId = firstText(task.task_id);
+      if (!taskId) {
+        throw new Error("搜索任务缺少 task_id，请检查后端任务接口。");
+      }
+      setRunLogLine(formatTaskRunLog(task, startedAt));
+      while (!["completed", "failed", "cancelled"].includes(firstText(task.status).toLowerCase())) {
+        await delay(2000);
+        task = await api<CreatorSearchTask>(`/api/creator-search/search-tasks/${encodeURIComponent(taskId)}`);
+        setRunLogLine(formatTaskRunLog(task, startedAt));
+      }
+      if (firstText(task.status).toLowerCase() === "failed") {
+        throw new Error(firstText(task.error, latestTaskMessage(task), "实时搜索任务失败"));
+      }
+      if (firstText(task.status).toLowerCase() === "cancelled") {
+        throw new Error("实时搜索任务已取消");
+      }
+      if (!task.result) {
+        throw new Error("搜索任务完成但没有返回结果。");
+      }
+      const data = task.result;
       const rawResults = asArray(data.results);
       const mapped = mapCreatorRows(rawResults);
       const realtimeInfo = asRecord(data.realtime);
@@ -1095,10 +1183,11 @@ export function CreatorDiscoveryPage() {
       const guidance = firstText(diagnostics.guidance);
       const nextResultSummary = mapped.length ? `返回 ${mapped.length} 位达人` : "没有匹配结果";
       const nextMessage = realtimeFailed
-        ? "实时补充失败，当前已回退为本地库结果。"
-        : guidance || (mapped.length ? "搜索完成，结果已按本地库与实时补充的综合匹配分排序。" : "没有找到匹配达人，请放宽关键词、赛道或平台条件。");
+        ? "实时搜索失败，请检查第三方 API 配置或稍后重试。"
+        : guidance || (mapped.length ? "实时搜索完成，结果已保存并按综合匹配分排序。" : "没有找到匹配达人，请放宽关键词、赛道或平台条件。");
       setResultSummary(nextResultSummary);
       setMessage(nextMessage);
+      setRunLogLine(formatTaskRunLog(task, startedAt));
       try {
         await persistSearchSession({
           searchPayload: payload,
@@ -1116,11 +1205,13 @@ export function CreatorDiscoveryPage() {
     } catch (error) {
       setAnalysisStatus("error");
       setResultSummary("搜索失败");
-      setMessage(error instanceof Error ? error.message : "搜索失败，请检查后端服务状态。");
+      const errorMessage = error instanceof Error ? error.message : "搜索失败，请检查后端服务状态。";
+      setMessage(errorMessage);
+      setRunLogLine(`${errorMessage} · 已等待 ${formatElapsedTime(currentRunStartedAt)}`);
     } finally {
       setIsLoading(false);
     }
-  }, [filters, includeRealtime, persistSearchSession, platformFilter, query, realtimeRatioPercent, selectedVerticalId]);
+  }, [displayLimit, filters, loadCandidatePool, persistSearchSession, platformFilter, query, searchMode, selectedVerticalId]);
 
   const handleSaveSearch = React.useCallback(async () => {
     if (!currentSessionId) {
@@ -1184,6 +1275,18 @@ export function CreatorDiscoveryPage() {
       setSelectedId(displayedRecords[0].id);
     }
   }, [displayedRecords, filteredRecords.length, selectedId]);
+
+  React.useEffect(() => {
+    if (!isLoading || !runStartedAt) return;
+    const timer = window.setInterval(() => {
+      setRunLogLine((current) => {
+        if (!current) return current;
+        const baseLine = current.replace(/\s·\s已等待\s.+$/, "");
+        return `${baseLine} · 已等待 ${formatElapsedTime(runStartedAt)}`;
+      });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [isLoading, runStartedAt]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -1299,6 +1402,13 @@ export function CreatorDiscoveryPage() {
               ))}
             </div>
 
+            {runLogLine && (
+              <div className={`cdv2-run-log ${isLoading ? "is-running" : ""}`} role="status" aria-live="polite">
+                <span>运行日志</span>
+                <strong>{runLogLine}</strong>
+              </div>
+            )}
+
             <div className="cdv2-filter-row">
               <VerticalSelect
                 value={selectedVerticalId}
@@ -1320,11 +1430,9 @@ export function CreatorDiscoveryPage() {
                   { value: "weibo", label: "微博" },
                 ]}
               />
-              <RealtimeConfigControl
-                enabled={includeRealtime}
-                ratio={realtimeRatioPercent}
-                onToggle={setIncludeRealtime}
-                onRatioChange={setRealtimeRatioPercent}
+              <SearchModeControl
+                value={searchMode}
+                onChange={setSearchMode}
               />
               <FilterInputControl
                 label="展示数量"
@@ -1384,11 +1492,12 @@ export function CreatorDiscoveryPage() {
                   setQuery("");
                   setSelectedVerticalId(verticals[0] ? String(verticals[0].id) : "all");
                   setFilters(DEFAULT_FILTERS);
-                  setIncludeRealtime(true);
-                  setRealtimeRatioPercent(DEFAULT_REALTIME_RATIO);
+                  setSearchMode("realtime");
                   setPageSizeInput(DEFAULT_PAGE_SIZE);
                   setPlatformFilter("all");
                   setActiveTab("recommended");
+                  setRunStartedAt(null);
+                  setRunLogLine("");
                   setMessage("筛选器已恢复为默认推荐组合。");
                 }}
               >
@@ -1858,41 +1967,33 @@ function CreatorNameLink({ record }: { record: CreatorRecord }) {
   );
 }
 
-function RealtimeConfigControl({
-  enabled,
-  ratio,
-  onToggle,
-  onRatioChange,
+function SearchModeControl({
+  value,
+  onChange,
 }: {
-  enabled: boolean;
-  ratio: string;
-  onToggle: (value: boolean) => void;
-  onRatioChange: (value: string) => void;
+  value: SearchMode;
+  onChange: (value: SearchMode) => void;
 }) {
   return (
-    <div className="cdv2-realtime-control">
-      <span>实时获取</span>
-      <div className="cdv2-realtime-main">
-        <label className={`cdv2-switch ${enabled ? "is-active" : ""}`}>
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={(event) => onToggle(event.target.checked)}
-          />
-          <i aria-hidden />
-          <strong>{enabled ? "开启" : "关闭"}</strong>
-        </label>
-        <div className={`cdv2-realtime-ratio ${enabled ? "" : "is-disabled"}`}>
-          <input
-            value={ratio}
-            inputMode="numeric"
-            disabled={!enabled}
-            onChange={(event) => onRatioChange(event.target.value)}
-          />
-          <em>%</em>
-        </div>
+    <div className="cdv2-search-mode-control">
+      <span>搜索模式</span>
+      <div className="cdv2-search-mode-main" role="group" aria-label="搜索模式">
+        <button
+          type="button"
+          className={value === "realtime" ? "is-active" : ""}
+          onClick={() => onChange("realtime")}
+        >
+          实时搜索
+        </button>
+        <button
+          type="button"
+          className={value === "local_pool" ? "is-active" : ""}
+          onClick={() => onChange("local_pool")}
+        >
+          本地候选池
+        </button>
       </div>
-      <small>小红书 / 抖音，默认 50%</small>
+      <small>{value === "realtime" ? "小红书 / 抖音实时发现" : "读取已保存结果"}</small>
     </div>
   );
 }

@@ -13,12 +13,20 @@ from research.creator_metrics import (
     engagement_total_from_mapping,
     hot_post_rate_from_posts,
 )
+from media_platform.justoneapi.client import JustOneAPIClient, resolve_justone_api_key
 from media_platform.tikhub.client import TikHubClient, resolve_tikhub_api_key
 from media_platform.tikhub.mappers import get_mapper
 from media_platform.tikhub.mappers.base import author, nested, pick
 
 
 REALTIME_PLATFORMS = ("xhs", "dy")
+TIKHUB_REALTIME_SOURCE = "tikhub_realtime"
+JUSTONE_XHS_REALTIME_SOURCE = "justoneapi_xhs_realtime"
+REALTIME_SOURCE = TIKHUB_REALTIME_SOURCE
+JUSTONE_XHS_SEARCH_PATH = "/api/xiaohongshu-pgy/api/solar/cooperator/blogger/v2/v1"
+JUSTONE_XHS_NOTES_RATE_PATH = "/api/xiaohongshu-pgy/api/solar/kol/dataV3/notesRate/v1"
+JUSTONE_XHS_MAX_SEARCH_PAGES = 2
+EXPANDED_SEARCH_MAX_PAGES = 5
 USER_SEARCH_ENDPOINTS = {
     "xhs": {
         "method": "GET",
@@ -55,8 +63,8 @@ CREATOR_POST_ENDPOINTS = {
         "cursor_param": "max_cursor",
     },
 }
-REALTIME_SOURCE = "tikhub_realtime"
 CREATOR_POST_ENRICHMENT_LIMIT = 30
+CREATOR_POST_EXPANDED_ENRICHMENT_LIMIT = 120
 CREATOR_POST_MAX_PAGES = 5
 
 
@@ -65,6 +73,7 @@ async def discover_realtime_creators(
     request: dict[str, Any],
     *,
     client_factory: Callable[[], Any] = TikHubClient,
+    justone_client_factory: Callable[[], Any] = JustOneAPIClient,
 ) -> dict[str, Any]:
     requested_platforms = [str(platform) for platform in request.get("platforms") or []]
     platforms = [
@@ -81,68 +90,111 @@ async def discover_realtime_creators(
         unsupported_platforms=unsupported,
         limit=limit,
     )
-    if not _tikhub_enabled():
-        diagnostics["status"] = "skipped"
-        diagnostics["reason"] = "ENABLE_TIKHUB is disabled"
-        return {"results": [], "diagnostics": diagnostics}
-    if not resolve_tikhub_api_key():
-        diagnostics["status"] = "skipped"
-        diagnostics["reason"] = "TIKHUB_API_KEY is not configured"
-        return {"results": [], "diagnostics": diagnostics}
     if not platforms or not keywords:
         diagnostics["status"] = "skipped"
         return {"results": [], "diagnostics": diagnostics}
 
-    client = client_factory()
-    creators: dict[tuple[str, str], dict[str, Any]] = {}
-    candidate_window = _candidate_window(limit)
-    try:
-        for platform in platforms:
-            try:
-                for keyword in keywords:
-                    for item in await _collect_user_search_items(
-                        client,
-                        platform=platform,
-                        keyword=keyword,
-                        target_count=candidate_window,
-                    ):
-                        normalized = _creator_from_user_search(platform, item, keyword)
-                        if not normalized:
-                            diagnostics["malformed_items"] += 1
-                            continue
-                        key = (normalized["platform"], normalized["creator_id"])
-                        creators[key] = _merge_realtime_creator(creators.get(key), normalized)
-            except Exception as exc:
-                diagnostics["failed_platforms"].append(platform)
-                diagnostics["error"] = str(exc)
+    initial_candidate_window = _candidate_window(limit)
+    expanded_candidate_window = _expanded_candidate_window(limit)
+    diagnostics.update(
+        {
+            "target_count": limit,
+            "initial_candidate_window": initial_candidate_window,
+            "expanded_candidate_window": expanded_candidate_window,
+            "strict_matched_creators": 0,
+            "expanded_strict_matched_creators": 0,
+            "relaxed_matched_creators": 0,
+            "completion_strategy": "strict",
+            "relaxations": [],
+        }
+    )
 
-        shortlisted = sorted(
+    creators = await _collect_realtime_candidate_map(
+        platforms=platforms,
+        keywords=keywords,
+        request=request,
+        target_count=initial_candidate_window,
+        diagnostics=diagnostics,
+        client_factory=client_factory,
+        justone_client_factory=justone_client_factory,
+    )
+    strict_selection = _select_realtime_creators(
+        creators.values(),
+        request=request,
+        keywords=keywords,
+        limit=limit,
+        candidate_window=initial_candidate_window,
+        allow_soft_relaxation=False,
+    )
+    strict_creators = strict_selection["eligible"]
+    diagnostics["strict_matched_creators"] = len(strict_creators)
+    selected_creators = strict_selection["selected"]
+
+    if len(selected_creators) < limit and expanded_candidate_window > initial_candidate_window:
+        diagnostics["completion_strategy"] = "expanded_strict"
+        diagnostics["relaxations"].append("expanded_candidate_pool")
+        expanded_creators = await _collect_realtime_candidate_map(
+            platforms=platforms,
+            keywords=keywords,
+            request=request,
+            target_count=expanded_candidate_window,
+            diagnostics=diagnostics,
+            client_factory=client_factory,
+            justone_client_factory=justone_client_factory,
+            max_search_pages=EXPANDED_SEARCH_MAX_PAGES,
+        )
+        for key, creator in expanded_creators.items():
+            creators[key] = _merge_realtime_creator(creators.get(key), creator)
+        expanded_strict_selection = _select_realtime_creators(
             creators.values(),
-            key=lambda item: _score_creator(item, keywords),
-            reverse=True,
-        )[:candidate_window]
-        for creator in shortlisted:
-            try:
-                await _enrich_creator_from_posts(client, creator)
-            except Exception:
-                continue
-    finally:
-        await _close_client(client)
+            request=request,
+            keywords=keywords,
+            limit=limit,
+            candidate_window=expanded_candidate_window,
+            allow_soft_relaxation=False,
+        )
+        strict_creators = expanded_strict_selection["eligible"]
+        diagnostics["expanded_strict_matched_creators"] = len(strict_creators)
+        selected_creators = expanded_strict_selection["selected"]
+    else:
+        diagnostics["expanded_strict_matched_creators"] = len(strict_creators)
 
-    scored_creators = []
-    for creator in shortlisted:
-        if not _passes_request_filters(creator, request):
-            continue
-        creator["match_score"] = _score_creator(creator, keywords)
-        scored_creators.append(creator)
+    if len(selected_creators) < limit:
+        relaxed_selection = _select_realtime_creators(
+            creators.values(),
+            request=request,
+            keywords=keywords,
+            limit=expanded_candidate_window,
+            candidate_window=expanded_candidate_window,
+            allow_soft_relaxation=True,
+        )
+        strict_keys = {_realtime_creator_key(creator) for creator in strict_creators}
+        relaxed_creators = [
+            creator
+            for creator in relaxed_selection["eligible"]
+            if _realtime_creator_key(creator) not in strict_keys
+        ]
+        if relaxed_creators:
+            diagnostics["completion_strategy"] = "soft_relaxed"
+            diagnostics["relaxed_matched_creators"] = len(relaxed_creators)
+            selected_creators = [
+                *strict_creators[:limit],
+                *relaxed_creators[: max(0, limit - len(strict_creators))],
+            ][:limit]
 
-    scored_creators.sort(key=lambda item: item["match_score"], reverse=True)
-    limited_creators = scored_creators[:limit]
-    diagnostics["matched_creators"] = len(scored_creators)
-    diagnostics["persisted_creators"] = len(limited_creators)
+    selected_relaxations = sorted(
+        {
+            relaxation
+            for creator in selected_creators
+            for relaxation in (creator.get("filter_relaxations") or [])
+        }
+    )
+    diagnostics["relaxations"] = sorted(set(diagnostics["relaxations"]) | set(selected_relaxations))
+    diagnostics["matched_creators"] = len(strict_creators) + int(diagnostics["relaxed_matched_creators"] or 0)
+    diagnostics["persisted_creators"] = len(selected_creators)
 
     results = []
-    for creator in limited_creators:
+    for creator in selected_creators:
         profile = await repository.upsert_creator_profile(_profile_payload(creator))
         candidate = await repository.upsert_creator_candidate(_candidate_payload(creator, request))
         diagnostics["created_profiles"] += 1 if profile else 0
@@ -158,6 +210,7 @@ async def probe_realtime_platforms(
     raw_query: str,
     platforms: list[str] | None = None,
     client_factory: Callable[[], Any] = TikHubClient,
+    justone_client_factory: Callable[[], Any] = JustOneAPIClient,
 ) -> dict[str, Any]:
     requested_platforms = [str(platform) for platform in platforms or []]
     selected_platforms = [
@@ -178,18 +231,53 @@ async def probe_realtime_platforms(
         "unsupported_platforms": unsupported,
         "results": [],
     }
-    if not _tikhub_enabled():
-        diagnostics["reason"] = "ENABLE_TIKHUB is disabled"
-        return diagnostics
-    if not resolve_tikhub_api_key():
-        diagnostics["reason"] = "TIKHUB_API_KEY is not configured"
-        return diagnostics
     if not selected_platforms or not keyword:
         return diagnostics
 
-    client = client_factory()
-    try:
-        for platform in selected_platforms:
+    for platform in selected_platforms:
+        if platform == "xhs":
+            if not _justone_enabled():
+                diagnostics["results"].append(
+                    _probe_platform_result(platform, False, 0, None, "ENABLE_JUSTONE_API is disabled")
+                )
+                continue
+            if not resolve_justone_api_key():
+                diagnostics["results"].append(
+                    _probe_platform_result(platform, False, 0, None, "JUSTONE_API_KEY is not configured")
+                )
+                continue
+            client = justone_client_factory()
+            try:
+                items = await _collect_justone_xhs_search_items(
+                    client,
+                    keyword=keyword,
+                    target_count=1,
+                    request={},
+                )
+                sample = _probe_sample_justone_xhs_creator(items[0], keyword) if items else None
+                diagnostics["results"].append(
+                    _probe_platform_result(platform, True, len(items), sample, None)
+                )
+            except Exception as exc:
+                diagnostics["results"].append(
+                    _probe_platform_result(platform, False, 0, None, str(exc))
+                )
+            finally:
+                await _close_client(client)
+            continue
+
+        if not _tikhub_enabled():
+            diagnostics["results"].append(
+                _probe_platform_result(platform, False, 0, None, "ENABLE_TIKHUB is disabled")
+            )
+            continue
+        if not resolve_tikhub_api_key():
+            diagnostics["results"].append(
+                _probe_platform_result(platform, False, 0, None, "TIKHUB_API_KEY is not configured")
+            )
+            continue
+        client = client_factory()
+        try:
             try:
                 items = await _collect_user_search_items(
                     client,
@@ -199,26 +287,14 @@ async def probe_realtime_platforms(
                 )
                 sample = _probe_sample_creator(platform, items[0], keyword) if items else None
                 diagnostics["results"].append(
-                    {
-                        "platform": platform,
-                        "ok": True,
-                        "item_count": len(items),
-                        "sample_creator": sample,
-                        "error": None,
-                    }
+                    _probe_platform_result(platform, True, len(items), sample, None)
                 )
             except Exception as exc:
                 diagnostics["results"].append(
-                    {
-                        "platform": platform,
-                        "ok": False,
-                        "item_count": 0,
-                        "sample_creator": None,
-                        "error": str(exc),
-                    }
+                    _probe_platform_result(platform, False, 0, None, str(exc))
                 )
-    finally:
-        await _close_client(client)
+        finally:
+            await _close_client(client)
 
     failures = [item for item in diagnostics["results"] if not item["ok"]]
     if not failures:
@@ -239,18 +315,81 @@ async def _call_search(client: Any, endpoint: Any, keyword: str) -> Any:
     return await client.request(endpoint.method, endpoint.path, params=payload)
 
 
+async def _collect_realtime_candidate_map(
+    *,
+    platforms: list[str],
+    keywords: list[str],
+    request: dict[str, Any],
+    target_count: int,
+    diagnostics: dict[str, Any],
+    client_factory: Callable[[], Any],
+    justone_client_factory: Callable[[], Any],
+    max_search_pages: int | None = None,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    creators: dict[tuple[str, str], dict[str, Any]] = {}
+    if "xhs" in platforms:
+        if not _justone_enabled():
+            _mark_platform_failure(diagnostics, "xhs", "ENABLE_JUSTONE_API is disabled")
+        elif not resolve_justone_api_key():
+            _mark_platform_failure(diagnostics, "xhs", "JUSTONE_API_KEY is not configured")
+        else:
+            client = justone_client_factory()
+            try:
+                for creator in await _collect_justone_xhs_creators(
+                    client,
+                    request=request,
+                    keywords=keywords,
+                    target_count=target_count,
+                    diagnostics=diagnostics,
+                    max_search_pages=max_search_pages,
+                ):
+                    key = _realtime_creator_key(creator)
+                    creators[key] = _merge_realtime_creator(creators.get(key), creator)
+            except Exception as exc:
+                _mark_platform_failure(diagnostics, "xhs", str(exc))
+            finally:
+                await _close_client(client)
+
+    tikhub_platforms = [platform for platform in platforms if platform == "dy"]
+    if tikhub_platforms:
+        if not _tikhub_enabled():
+            for platform in tikhub_platforms:
+                _mark_platform_failure(diagnostics, platform, "ENABLE_TIKHUB is disabled")
+        elif not resolve_tikhub_api_key():
+            for platform in tikhub_platforms:
+                _mark_platform_failure(diagnostics, platform, "TIKHUB_API_KEY is not configured")
+        else:
+            client = client_factory()
+            try:
+                for creator in await _collect_tikhub_creators(
+                    client,
+                    platforms=tikhub_platforms,
+                    keywords=keywords,
+                    target_count=target_count,
+                    diagnostics=diagnostics,
+                    max_search_pages=max_search_pages,
+                ):
+                    key = _realtime_creator_key(creator)
+                    creators[key] = _merge_realtime_creator(creators.get(key), creator)
+            finally:
+                await _close_client(client)
+    return creators
+
+
 async def _collect_user_search_items(
     client: Any,
     *,
     platform: str,
     keyword: str,
     target_count: int,
+    max_pages: int | None = None,
 ) -> list[dict[str, Any]]:
     spec = USER_SEARCH_ENDPOINTS[platform]
     page = 1
     cursor = spec.get("cursor_initial", "")
     items: list[dict[str, Any]] = []
-    while page <= int(spec["max_pages"]) and len(items) < target_count:
+    page_limit = max_pages if max_pages is not None else int(spec["max_pages"])
+    while page <= int(page_limit) and len(items) < target_count:
         payload = await _call_user_search(
             client,
             platform=platform,
@@ -289,6 +428,358 @@ async def _call_user_search(
     if spec["json_body"]:
         return await client.request(spec["method"], spec["path"], json=payload)
     return await client.request(spec["method"], spec["path"], params=payload)
+
+
+async def _collect_tikhub_creators(
+    client: Any,
+    *,
+    platforms: list[str],
+    keywords: list[str],
+    target_count: int,
+    diagnostics: dict[str, Any],
+    max_search_pages: int | None = None,
+) -> list[dict[str, Any]]:
+    creators: dict[tuple[str, str], dict[str, Any]] = {}
+    for platform in platforms:
+        try:
+            for keyword in keywords:
+                for item in await _collect_user_search_items(
+                    client,
+                    platform=platform,
+                    keyword=keyword,
+                    target_count=target_count,
+                    max_pages=max_search_pages,
+                ):
+                    normalized = _creator_from_user_search(platform, item, keyword)
+                    if not normalized:
+                        diagnostics["malformed_items"] += 1
+                        continue
+                    normalized["source"] = TIKHUB_REALTIME_SOURCE
+                    key = (normalized["platform"], normalized["creator_id"])
+                    creators[key] = _merge_realtime_creator(creators.get(key), normalized)
+        except Exception as exc:
+            _mark_platform_failure(diagnostics, platform, str(exc))
+
+    shortlisted = sorted(
+        creators.values(),
+        key=lambda item: _score_creator(item, keywords),
+        reverse=True,
+    )[:target_count]
+    for creator in shortlisted:
+        try:
+            await _enrich_creator_from_posts(client, creator)
+        except Exception:
+            diagnostics["failed_enrichments"] += 1
+            continue
+    return shortlisted
+
+
+async def _collect_justone_xhs_creators(
+    client: Any,
+    *,
+    request: dict[str, Any],
+    keywords: list[str],
+    target_count: int,
+    diagnostics: dict[str, Any],
+    max_search_pages: int | None = None,
+) -> list[dict[str, Any]]:
+    creators: dict[tuple[str, str], dict[str, Any]] = {}
+    for keyword in keywords:
+        for item in await _collect_justone_xhs_search_items(
+            client,
+            keyword=keyword,
+            target_count=target_count,
+            request=request,
+            max_pages=max_search_pages,
+        ):
+            normalized = _creator_from_justone_xhs_search(item, keyword)
+            if not normalized:
+                diagnostics["malformed_items"] += 1
+                continue
+            key = (normalized["platform"], normalized["creator_id"])
+            creators[key] = _merge_realtime_creator(creators.get(key), normalized)
+
+    shortlisted = sorted(
+        creators.values(),
+        key=lambda item: _score_creator(item, keywords),
+        reverse=True,
+    )[:target_count]
+    for creator in shortlisted:
+        await _enrich_justone_xhs_creator(client, creator, diagnostics)
+    return shortlisted
+
+
+async def _collect_justone_xhs_search_items(
+    client: Any,
+    *,
+    keyword: str,
+    target_count: int,
+    request: dict[str, Any],
+    max_pages: int | None = None,
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    page = 1
+    page_limit = max_pages if max_pages is not None else JUSTONE_XHS_MAX_SEARCH_PAGES
+    while page <= int(page_limit) and len(items) < target_count:
+        payload = await client.request(
+            "GET",
+            JUSTONE_XHS_SEARCH_PATH,
+            params=_justone_xhs_search_params(keyword, page=page, request=request),
+        )
+        page_items = _extract_justone_xhs_creator_items(payload)
+        if not page_items:
+            break
+        items.extend(page_items)
+        if len(page_items) == 0 or len(items) >= target_count:
+            break
+        page += 1
+    return items[:target_count]
+
+
+def _justone_xhs_search_params(keyword: str, *, page: int, request: dict[str, Any]) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "searchType": "NOTE",
+        "keyword": keyword,
+        "page": page,
+    }
+    if request.get("follower_min") is not None:
+        params["fansNumberLower"] = int(request["follower_min"])
+    if request.get("follower_max") is not None:
+        params["fansNumberUpper"] = int(request["follower_max"])
+    return params
+
+
+def _extract_justone_xhs_creator_items(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+
+    for path in (
+        ("bloggers",),
+        ("bloggerList",),
+        ("kols",),
+        ("kolList",),
+        ("authorList",),
+        ("userList",),
+        ("items",),
+        ("records",),
+        ("list",),
+        ("data", "bloggers"),
+        ("data", "bloggerList"),
+        ("data", "kols"),
+        ("data", "kolList"),
+        ("data", "items"),
+        ("data", "records"),
+        ("data", "list"),
+    ):
+        value = _value_at_path(payload, path)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    return _extract_items(payload)
+
+
+def _value_at_path(payload: Any, path: tuple[str, ...]) -> Any:
+    current = payload
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _creator_from_justone_xhs_search(item: dict[str, Any], keyword: str) -> dict[str, Any] | None:
+    raw_user = _justone_xhs_user_payload(item)
+    creator_id = str(
+        pick(
+            raw_user,
+            "userId",
+            "user_id",
+            "bloggerUserId",
+            "blogger_user_id",
+            "redId",
+            "red_id",
+            "id",
+            default="",
+        )
+    ).strip()
+    kol_id = str(pick(raw_user, "kolId", "kol_id", "bloggerId", "blogger_id", default="")).strip()
+    if not creator_id:
+        creator_id = kol_id
+    if not creator_id:
+        return None
+
+    follower_count = _to_int_or_none(
+        pick(
+            raw_user,
+            "fansNumber",
+            "fansNum",
+            "fansCount",
+            "fans",
+            "followerCount",
+            "followersCount",
+            "follower_count",
+            default=_deep_pick(raw_user, "fansNumber", "fansNum", "fansCount", "followerCount"),
+        )
+    )
+    display_name = str(
+        pick(
+            raw_user,
+            "nickName",
+            "nickname",
+            "name",
+            "userName",
+            "bloggerName",
+            "kolName",
+            default=creator_id,
+        )
+    )
+    bio = str(pick(raw_user, "desc", "description", "signature", "brief", "bio", default=""))
+    return {
+        "platform": "xhs",
+        "creator_id": creator_id,
+        "display_name": display_name,
+        "profile_url": _profile_url("xhs", creator_id),
+        "bio": bio,
+        "follower_count": follower_count,
+        "following_count": _to_int_or_none(pick(raw_user, "followingCount", "following_count", default=None)),
+        "post_count": _to_int_or_none(pick(raw_user, "noteNumber", "noteCount", "notesCount", default=None)),
+        "avg_engagement_rate": None,
+        "hot_post_rate": None,
+        "recent_post_count_30d": 0,
+        "matched_keywords": [keyword],
+        "representative_posts": [],
+        "engagement_total": 0,
+        "raw_item": item,
+        "justone_kol_id": kol_id or None,
+        "source": JUSTONE_XHS_REALTIME_SOURCE,
+    }
+
+
+def _justone_xhs_user_payload(item: dict[str, Any]) -> dict[str, Any]:
+    for key in ("blogger", "kol", "user", "author", "profile"):
+        value = item.get(key)
+        if isinstance(value, dict):
+            return {**item, **value}
+    return item
+
+
+async def _enrich_justone_xhs_creator(
+    client: Any,
+    creator: dict[str, Any],
+    diagnostics: dict[str, Any],
+) -> None:
+    user_id = str(creator.get("creator_id") or "").strip()
+    if not user_id:
+        return
+
+    try:
+        notes_rate = await client.request(
+            "GET",
+            JUSTONE_XHS_NOTES_RATE_PATH,
+            params={
+                "userId": user_id,
+                "business": "DAILY_NOTE",
+                "noteType": "PHOTO_TEXT_AND_VIDEO",
+                "dateType": "DAY_30",
+                "advertiseSwitch": "ALL",
+            },
+        )
+        _merge_justone_xhs_notes_rate(creator, notes_rate)
+    except Exception as exc:
+        diagnostics["failed_enrichments"] += 1
+        creator.setdefault("enrichment_errors", []).append(f"notesRate: {exc}")
+
+
+def _merge_justone_xhs_notes_rate(creator: dict[str, Any], payload: Any) -> None:
+    if not isinstance(payload, dict):
+        return
+    note_number = _to_int_or_none(_deep_pick(payload, "noteNumber", "notesNumber", "noteCount"))
+    notes = _extract_justone_xhs_notes(payload)
+    representative_posts = _justone_xhs_representative_posts(notes)
+    creator["recent_post_count_30d"] = note_number if note_number is not None else len(representative_posts)
+    creator["post_count"] = max(int(creator.get("post_count") or 0), int(creator["recent_post_count_30d"] or 0))
+    creator["representative_posts"] = representative_posts[:10]
+    creator["engagement_total"] = sum(
+        engagement_total_from_mapping(post.get("engagement")) for post in representative_posts
+    )
+
+    interaction_rate = _percent_to_ratio(_deep_pick(payload, "interactionRate", "engagementRate"))
+    if interaction_rate is not None:
+        creator["avg_engagement_rate"] = interaction_rate
+    hot_rate = _percent_to_ratio(
+        _deep_pick(payload, "thousandLikePercent", "hundredLikePercent", "viralRate", "hotPostRate")
+    )
+    if hot_rate is not None:
+        creator["hot_post_rate"] = hot_rate
+
+
+def _extract_justone_xhs_notes(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    for path in (("notes",), ("noteList",), ("items",), ("data", "notes"), ("data", "noteList")):
+        value = _value_at_path(payload, path)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _justone_xhs_representative_posts(notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    posts = []
+    for note in notes:
+        post_id = str(pick(note, "noteId", "note_id", "id", default="")).strip()
+        title = str(pick(note, "title", "desc", "content", default="")).strip()
+        like_count = _to_int(pick(note, "likeNum", "likeCount", "likedCount", default=0))
+        collect_count = _to_int(pick(note, "collectNum", "collectCount", "collectedCount", default=0))
+        comment_count = _to_int(pick(note, "commentNum", "commentCount", "commentsCount", default=0))
+        share_count = _to_int(pick(note, "shareNum", "shareCount", "sharedCount", default=0))
+        interaction_total = _to_int(pick(note, "interactionNum", "interactionCount", default=0))
+        if interaction_total and not any((like_count, collect_count, comment_count, share_count)):
+            like_count = interaction_total
+        posts.append(
+            {
+                "platform": "xhs",
+                "platform_post_id": post_id,
+                "title": title,
+                "content": title,
+                "url": f"https://www.xiaohongshu.com/explore/{post_id}" if post_id else "",
+                "publish_time": pick(note, "publishTime", "date", "time", default=None),
+                "engagement": {
+                    "liked_count": like_count,
+                    "comment_count": comment_count,
+                    "collected_count": collect_count,
+                    "share_count": share_count,
+                },
+            }
+        )
+    return posts
+
+
+def _probe_sample_justone_xhs_creator(item: dict[str, Any], keyword: str) -> dict[str, Any] | None:
+    creator = _creator_from_justone_xhs_search(item, keyword)
+    if not creator:
+        return None
+    return {
+        "platform": creator["platform"],
+        "creator_id": creator["creator_id"],
+        "display_name": creator["display_name"],
+        "profile_url": creator["profile_url"],
+        "follower_count": creator["follower_count"],
+    }
+
+
+def _probe_platform_result(
+    platform: str,
+    ok: bool,
+    item_count: int,
+    sample_creator: dict[str, Any] | None,
+    error: str | None,
+) -> dict[str, Any]:
+    return {
+        "platform": platform,
+        "ok": ok,
+        "item_count": item_count,
+        "sample_creator": sample_creator,
+        "error": error,
+    }
 
 
 def _keywords_from_request(request: dict[str, Any]) -> list[str]:
@@ -686,6 +1177,112 @@ def _has_more(data: Any) -> bool:
     return any(_has_more(value) for value in data.values() if isinstance(value, dict))
 
 
+def _realtime_creator_key(creator: dict[str, Any]) -> tuple[str, str]:
+    return (str(creator.get("platform") or ""), str(creator.get("creator_id") or ""))
+
+
+def _select_realtime_creators(
+    creators: Any,
+    *,
+    request: dict[str, Any],
+    keywords: list[str],
+    limit: int,
+    candidate_window: int,
+    allow_soft_relaxation: bool,
+) -> dict[str, list[dict[str, Any]]]:
+    shortlisted = sorted(
+        creators,
+        key=lambda item: _score_creator(item, keywords),
+        reverse=True,
+    )[:candidate_window]
+
+    eligible: list[dict[str, Any]] = []
+    for creator in shortlisted:
+        passes, relaxations = _filter_result(creator, request, allow_soft_relaxation=allow_soft_relaxation)
+        if not passes:
+            continue
+        item = {**creator}
+        item["filter_relaxations"] = relaxations
+        item["quality_flags"] = _quality_flags(relaxations)
+        score = _score_creator(item, keywords)
+        if relaxations:
+            score = max(0.0, score - _relaxation_penalty(relaxations))
+        item["match_score"] = score
+        eligible.append(item)
+
+    eligible.sort(key=lambda item: item["match_score"], reverse=True)
+    return {"eligible": eligible, "selected": eligible[:limit]}
+
+
+def _filter_result(
+    creator: dict[str, Any],
+    request: dict[str, Any],
+    *,
+    allow_soft_relaxation: bool,
+) -> tuple[bool, list[str]]:
+    relaxations: list[str] = []
+    follower_count = creator.get("follower_count")
+    follower_min = request.get("follower_min")
+    follower_max = request.get("follower_max")
+    if follower_min is not None and (follower_count is None or int(follower_count) < int(follower_min)):
+        return False, []
+    if follower_max is not None and follower_count is not None and int(follower_count) > int(follower_max):
+        return False, []
+
+    recent_min = request.get("recent_activity_min")
+    recent_count = int(creator.get("recent_post_count_30d") or 0)
+    if recent_min is not None and recent_count < int(recent_min):
+        if not allow_soft_relaxation or int(recent_min) > 1:
+            return False, []
+        relaxations.append("activity_pending_verification")
+
+    engagement_min = request.get("engagement_rate_min")
+    engagement_rate = creator.get("avg_engagement_rate")
+    if engagement_min is not None:
+        if engagement_rate in (None, ""):
+            if not allow_soft_relaxation:
+                return False, []
+            relaxations.append("engagement_rate_missing")
+        elif float(engagement_rate) < float(engagement_min):
+            return False, []
+
+    return True, sorted(set(relaxations))
+
+
+def _quality_flags(relaxations: list[str]) -> list[str]:
+    flags = []
+    if "activity_pending_verification" in relaxations:
+        flags.append("activity_pending_verification")
+    if "engagement_rate_missing" in relaxations:
+        flags.append("engagement_rate_missing")
+    return flags
+
+
+def _relaxation_penalty(relaxations: list[str]) -> float:
+    penalty = 0.0
+    if "activity_pending_verification" in relaxations:
+        penalty += 8.0
+    if "engagement_rate_missing" in relaxations:
+        penalty += 6.0
+    return penalty
+
+
+def _dedupe_representative_posts(posts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for post in posts:
+        key = str(
+            post.get("platform_post_id")
+            or post.get("url")
+            or f"{post.get('platform')}:{post.get('title')}:{post.get('content')}"
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(post)
+    return deduped
+
+
 def _merge_realtime_creator(
     existing: dict[str, Any] | None,
     current: dict[str, Any],
@@ -695,12 +1292,12 @@ def _merge_realtime_creator(
     existing["matched_keywords"] = sorted(
         set(existing.get("matched_keywords") or []) | set(current.get("matched_keywords") or [])
     )
-    existing["representative_posts"] = (
-        existing.get("representative_posts") or []
-    ) + current.get("representative_posts", [])
+    existing["representative_posts"] = _dedupe_representative_posts(
+        (existing.get("representative_posts") or []) + current.get("representative_posts", [])
+    )
     existing["recent_post_count_30d"] = max(
         int(existing.get("recent_post_count_30d") or 0),
-        len(existing["representative_posts"]),
+        int(current.get("recent_post_count_30d") or 0),
     )
     existing["engagement_total"] = int(existing.get("engagement_total") or 0) + int(
         current.get("engagement_total") or 0
@@ -741,23 +1338,11 @@ def _score_creator(creator: dict[str, Any], keywords: list[str]) -> float:
 
 
 def _passes_request_filters(creator: dict[str, Any], request: dict[str, Any]) -> bool:
-    follower_count = creator.get("follower_count")
-    follower_min = request.get("follower_min")
-    follower_max = request.get("follower_max")
-    if follower_min is not None and (follower_count is None or int(follower_count) < int(follower_min)):
-        return False
-    if follower_max is not None and follower_count is not None and int(follower_count) > int(follower_max):
-        return False
-    recent_min = request.get("recent_activity_min")
-    if recent_min is not None and int(creator.get("recent_post_count_30d") or 0) < int(recent_min):
-        return False
-    engagement_min = request.get("engagement_rate_min")
-    if engagement_min is not None and float(creator.get("avg_engagement_rate") or 0) < float(engagement_min):
-        return False
-    return True
+    return _filter_result(creator, request, allow_soft_relaxation=False)[0]
 
 
 def _profile_payload(creator: dict[str, Any]) -> dict[str, Any]:
+    source = _creator_source(creator)
     return {
         "platform": creator["platform"],
         "creator_id": creator["creator_id"],
@@ -772,8 +1357,10 @@ def _profile_payload(creator: dict[str, Any]) -> dict[str, Any]:
         "recent_post_count_30d": creator.get("recent_post_count_30d") or 0,
         "latest_snapshot_at": datetime.now(timezone.utc),
         "tag_summary_json": {
-            "source": REALTIME_SOURCE,
+            "source": source,
             "matched_keywords": creator.get("matched_keywords") or [],
+            "filter_relaxations": creator.get("filter_relaxations") or [],
+            "quality_flags": creator.get("quality_flags") or [],
         },
     }
 
@@ -788,7 +1375,7 @@ def _candidate_payload(creator: dict[str, Any], request: dict[str, Any]) -> dict
         "match_score": creator.get("match_score"),
         "matched_tags_json": _matched_tags(creator),
         "evidence_json": evidence,
-        "notes": "Imported from TikHub realtime creator discovery",
+        "notes": _candidate_note(creator),
     }
 
 
@@ -808,6 +1395,8 @@ def _result_payload(creator: dict[str, Any]) -> dict[str, Any]:
         "matched_tags": _matched_tags(creator),
         "evidence": [evidence],
         "representative_posts": creator.get("representative_posts") or [],
+        "filter_relaxations": creator.get("filter_relaxations") or [],
+        "quality_flags": creator.get("quality_flags") or [],
         "source_type": "realtime",
         "source_labels": ["Realtime"],
         "realtime_unverified": True,
@@ -816,14 +1405,14 @@ def _result_payload(creator: dict[str, Any]) -> dict[str, Any]:
 
 def _matched_tags(creator: dict[str, Any]) -> list[dict[str, Any]]:
     return [
-        {"source": REALTIME_SOURCE, "keyword": keyword}
+        {"source": _creator_source(creator), "keyword": keyword}
         for keyword in creator.get("matched_keywords") or []
     ]
 
 
 def _evidence_payload(creator: dict[str, Any]) -> dict[str, Any]:
     return {
-        "source": REALTIME_SOURCE,
+        "source": _creator_source(creator),
         "profile_metrics": {
             "follower_count": creator.get("follower_count"),
             "following_count": creator.get("following_count"),
@@ -834,7 +1423,19 @@ def _evidence_payload(creator: dict[str, Any]) -> dict[str, Any]:
         "matched_keywords": creator.get("matched_keywords") or [],
         "representative_posts": creator.get("representative_posts") or [],
         "recent_post_count_30d": creator.get("recent_post_count_30d") or 0,
+        "filter_relaxations": creator.get("filter_relaxations") or [],
+        "quality_flags": creator.get("quality_flags") or [],
     }
+
+
+def _creator_source(creator: dict[str, Any]) -> str:
+    return str(creator.get("source") or REALTIME_SOURCE)
+
+
+def _candidate_note(creator: dict[str, Any]) -> str:
+    if _creator_source(creator) == JUSTONE_XHS_REALTIME_SOURCE:
+        return "Imported from JustOneAPI Xiaohongshu realtime creator discovery"
+    return "Imported from TikHub realtime creator discovery"
 
 
 def _profile_url(platform: str, creator_id: str) -> str:
@@ -848,8 +1449,17 @@ def _candidate_window(limit: int) -> int:
     return min(requested, CREATOR_POST_ENRICHMENT_LIMIT)
 
 
+def _expanded_candidate_window(limit: int) -> int:
+    requested = max(_candidate_window(limit), int(limit or 10) * 8)
+    return min(requested, CREATOR_POST_EXPANDED_ENRICHMENT_LIMIT)
+
+
 def _tikhub_enabled() -> bool:
     return bool(getattr(config, "ENABLE_TIKHUB", False))
+
+
+def _justone_enabled() -> bool:
+    return bool(getattr(config, "ENABLE_JUSTONE_API", False))
 
 
 def _xhs_follower_count_from_search(item: dict[str, Any]) -> int | None:
@@ -890,6 +1500,46 @@ def _to_int(value: Any) -> int:
     return int(float(match.group(0)) * multiplier)
 
 
+def _percent_to_ratio(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, str):
+        normalized = value.strip().replace("%", "")
+    else:
+        normalized = value
+    try:
+        number = float(normalized)
+    except (TypeError, ValueError):
+        return None
+    if number < 0:
+        return None
+    return round(number / 100, 6)
+
+
+def _deep_pick(payload: Any, *keys: str) -> Any:
+    if isinstance(payload, dict):
+        for key in keys:
+            value = payload.get(key)
+            if value not in (None, ""):
+                return value
+        for value in payload.values():
+            found = _deep_pick(value, *keys)
+            if found not in (None, ""):
+                return found
+    if isinstance(payload, list):
+        for item in payload:
+            found = _deep_pick(item, *keys)
+            if found not in (None, ""):
+                return found
+    return None
+
+
+def _mark_platform_failure(diagnostics: dict[str, Any], platform: str, message: str) -> None:
+    if platform not in diagnostics["failed_platforms"]:
+        diagnostics["failed_platforms"].append(platform)
+    diagnostics["error"] = message
+
+
 def _status(failed_platforms: list[str], results: list[dict[str, Any]]) -> str:
     if failed_platforms and results:
         return "partial"
@@ -916,6 +1566,7 @@ def _diagnostics(
         "created_profiles": 0,
         "created_candidates": 0,
         "malformed_items": 0,
+        "failed_enrichments": 0,
         "failed_platforms": [],
         "error": None,
     }

@@ -28,6 +28,7 @@ async def test_realtime_check_returns_probe_payload(
     monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
     monkeypatch.setitem(sqlite_db_config, "db_path", str(db_path))
     monkeypatch.setattr(config, "ENABLE_TIKHUB", True, raising=False)
+    monkeypatch.setattr(config, "ENABLE_JUSTONE_API", True, raising=False)
     await close_engines()
     await create_tables("sqlite")
 
@@ -50,6 +51,7 @@ async def test_realtime_check_returns_probe_payload(
         }
 
     monkeypatch.setattr(creator_search_router, "resolve_tikhub_api_key", lambda: "token")
+    monkeypatch.setattr(creator_search_router, "resolve_justone_api_key", lambda: "token")
     monkeypatch.setattr(creator_search_router, "probe_realtime_platforms", fake_probe)
 
     transport = ASGITransport(app=app)
@@ -68,14 +70,17 @@ async def test_realtime_check_returns_probe_payload(
     payload = response.json()
     assert payload["enabled"] is True
     assert payload["api_key_set"] is True
-    assert payload["provider"] == "tikhub"
+    assert payload["provider"] == "mixed"
+    assert payload["providers"] == {"xhs": "justoneapi", "dy": "tikhub"}
+    assert payload["provider_enabled"] == {"xhs": True, "dy": True}
+    assert payload["provider_api_key_set"] == {"xhs": True, "dy": True}
     assert payload["supported_platforms"] == ["xhs", "dy"]
     assert payload["probe"]["status"] == "ok"
     assert len(payload["probe"]["results"]) == 2
 
 
 @pytest.mark.asyncio
-async def test_realtime_check_skips_when_api_key_missing(
+async def test_realtime_check_reports_selected_provider_key_missing(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -83,6 +88,7 @@ async def test_realtime_check_skips_when_api_key_missing(
     monkeypatch.setattr(config, "SAVE_DATA_OPTION", "sqlite", raising=False)
     monkeypatch.setitem(sqlite_db_config, "db_path", str(db_path))
     monkeypatch.setattr(config, "ENABLE_TIKHUB", True, raising=False)
+    monkeypatch.setattr(config, "ENABLE_JUSTONE_API", True, raising=False)
     await close_engines()
     await create_tables("sqlite")
 
@@ -90,6 +96,29 @@ async def test_realtime_check_skips_when_api_key_missing(
     from api.routers import creator_search as creator_search_router
 
     monkeypatch.setattr(creator_search_router, "resolve_tikhub_api_key", lambda: "")
+    monkeypatch.setattr(creator_search_router, "resolve_justone_api_key", lambda: "")
+
+    async def fake_probe(*, raw_query: str, platforms: list[str], client_factory=None):
+        assert raw_query.startswith("K12")
+        assert platforms == ["xhs"]
+        return {
+            "status": "failed",
+            "query": raw_query,
+            "keyword": "K12",
+            "platforms": platforms,
+            "unsupported_platforms": [],
+            "results": [
+                {
+                    "platform": "xhs",
+                    "ok": False,
+                    "item_count": 0,
+                    "sample_creator": None,
+                    "error": "JUSTONE_API_KEY is not configured",
+                },
+            ],
+        }
+
+    monkeypatch.setattr(creator_search_router, "probe_realtime_platforms", fake_probe)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -107,7 +136,8 @@ async def test_realtime_check_skips_when_api_key_missing(
     payload = response.json()
     assert payload["enabled"] is True
     assert payload["api_key_set"] is False
-    assert payload["probe"]["status"] == "skipped"
-    assert payload["probe"]["reason"] == "TIKHUB_API_KEY is not configured"
+    assert payload["provider_api_key_set"] == {"xhs": False, "dy": False}
+    assert payload["probe"]["status"] == "failed"
+    assert payload["probe"]["results"][0]["error"] == "JUSTONE_API_KEY is not configured"
     await close_engines()
     await close_engines()

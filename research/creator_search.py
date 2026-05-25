@@ -195,6 +195,9 @@ def aggregate_creator_profile(
 
 
 async def search_creators(repository, request: dict[str, Any]) -> dict[str, Any]:
+    if _search_scope(request) == "realtime_only":
+        return await _search_realtime_only(repository, request)
+
     tag_definitions = await repository.list_tag_definitions(
         vertical_id=request.get("selected_vertical_id"),
         enabled_only=True,
@@ -387,6 +390,58 @@ async def search_creators(repository, request: dict[str, Any]) -> dict[str, Any]
         "progress": _complete_progress(request, realtime_diagnostics),
         "results": final_results,
     }
+
+
+async def _search_realtime_only(repository, request: dict[str, Any]) -> dict[str, Any]:
+    diagnostics = {
+        "profile_count": 0,
+        "tag_definition_count": 0,
+        "matched_tag_count": 0,
+        "fallback_used": False,
+        "auto_rebuilt_profiles": 0,
+        "guidance": "",
+        "search_scope": "realtime_only",
+    }
+    realtime_request = {**request, "include_realtime": True}
+    try:
+        realtime = await discover_realtime_creators(repository, realtime_request)
+        realtime_diagnostics = realtime["diagnostics"]
+        results = _dedupe_creator_results(realtime.get("results") or [])
+    except Exception as exc:
+        realtime_diagnostics = {
+            **_realtime_skipped_diagnostics(),
+            "enabled": True,
+            "status": "failed",
+            "platforms": request.get("platforms") or [],
+            "error": str(exc),
+        }
+        results = []
+
+    limit = int(request.get("limit") or 50)
+    final_results = results[: max(1, min(200, limit))]
+    selected_realtime = _count_realtime_results(final_results)
+    realtime_diagnostics = {
+        **realtime_diagnostics,
+        "requested_ratio": 100,
+        "selected_count": selected_realtime,
+        "selected_ratio": round((selected_realtime * 100) / len(final_results)) if final_results else 0,
+    }
+    diagnostics["guidance"] = (
+        "已基于实时搜索返回结果，并保存到本地候选池。"
+        if final_results
+        else "实时搜索没有返回匹配达人，请检查平台、关键词或第三方 API 配置。"
+    )
+    return {
+        "intent": None,
+        "diagnostics": diagnostics,
+        "realtime": realtime_diagnostics,
+        "progress": _complete_progress(realtime_request, realtime_diagnostics),
+        "results": final_results,
+    }
+
+
+def _search_scope(request: dict[str, Any]) -> str:
+    return str(request.get("search_scope") or "hybrid")
 
 
 def _with_source_metadata(

@@ -1157,6 +1157,7 @@ class CreatorSearchIntentRequest(BaseModel):
 
 class CreatorSearchRequest(BaseModel):
     raw_query: str = Field(default="", max_length=500)
+    search_scope: Literal["hybrid", "realtime_only"] = "hybrid"
     selected_vertical_id: int | None = Field(default=None, ge=1)
     required_tag_ids: list[int] = Field(default_factory=list)
     optional_tag_ids: list[int] = Field(default_factory=list)

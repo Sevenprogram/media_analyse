@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from api.deps.auth import require_current_user
+from media_platform.justoneapi.client import resolve_justone_api_key
 from media_platform.tikhub.client import resolve_tikhub_api_key
 from api.routers.research import (
     require_research_database,
@@ -224,8 +225,12 @@ async def _run_creator_search_task(task_id: str, payload: dict) -> None:
     if task is None or task.get("status") == "cancelled":
         return
     try:
-        _update_creator_search_task(task, "running", "database", "Searching database", 20)
-        if payload.get("include_realtime"):
+        realtime_only = payload.get("search_scope") == "realtime_only"
+        if realtime_only:
+            _update_creator_search_task(task, "running", "realtime", "Searching realtime platforms", 30)
+        else:
+            _update_creator_search_task(task, "running", "database", "Searching database", 20)
+        if payload.get("include_realtime") and not realtime_only:
             _update_creator_search_task(task, "running", "realtime", "Searching realtime platforms", 50)
         result = await search_creators(ResearchRepository(), payload)
         if task.get("status") == "cancelled":
@@ -284,12 +289,17 @@ def _creator_search_log_message(
     payload = payload or {}
     if stage == "queued":
         platforms = ", ".join(payload.get("platforms") or []) or "未选择平台"
-        return f"达人搜索任务已提交；平台：{platforms}；上限：{payload.get('limit') or 50}"
+        mode = "实时搜索" if payload.get("search_scope") == "realtime_only" else "达人搜索"
+        return f"{mode}任务已提交；平台：{platforms}；上限：{payload.get('limit') or 50}"
     if stage == "database":
         return "正在检索本地达人画像、标签和近期内容证据"
     if stage == "realtime":
+        if payload.get("search_scope") == "realtime_only":
+            return "正在请求小红书 / 抖音实时发现，并保存命中达人"
         return "正在请求实时平台发现，并准备与本地结果合并"
     if stage == "merging":
+        if payload.get("search_scope") == "realtime_only":
+            return "正在整理实时结果、去重并计算达人分层"
         return "正在合并结果、去重并计算达人分层"
     if stage == "complete":
         count = len((result or {}).get("results") or [])
@@ -586,39 +596,39 @@ async def enrich_creator_profile_metrics(request: CreatorMetricsEnrichRequest):
 
 @router.post("/realtime/check")
 async def check_creator_realtime_capability(request: CreatorRealtimeProbeRequest):
-    api_key_set = bool(resolve_tikhub_api_key())
-    enabled = bool(getattr(config, "ENABLE_TIKHUB", False))
+    requested_platforms = [str(platform) for platform in request.platforms or []]
+    selected_platforms = [
+        platform
+        for platform in (requested_platforms or list(REALTIME_PLATFORMS))
+        if platform in REALTIME_PLATFORMS
+    ]
+    provider_enabled = {
+        "xhs": bool(getattr(config, "ENABLE_JUSTONE_API", False)),
+        "dy": bool(getattr(config, "ENABLE_TIKHUB", False)),
+    }
+    provider_api_key_set = {
+        "xhs": bool(resolve_justone_api_key()),
+        "dy": bool(resolve_tikhub_api_key()),
+    }
+    enabled = any(provider_enabled.get(platform, False) for platform in selected_platforms)
+    api_key_set = any(provider_api_key_set.get(platform, False) for platform in selected_platforms)
     payload = {
         "enabled": enabled,
         "api_key_set": api_key_set,
-        "provider": "tikhub",
+        "provider": "mixed",
+        "providers": {
+            "xhs": "justoneapi",
+            "dy": "tikhub",
+        },
         "base_url": getattr(config, "TIKHUB_BASE_URL", ""),
+        "provider_enabled": provider_enabled,
+        "provider_api_key_set": provider_api_key_set,
+        "base_urls": {
+            "xhs": getattr(config, "JUSTONE_BASE_URL", ""),
+            "dy": getattr(config, "TIKHUB_BASE_URL", ""),
+        },
         "supported_platforms": list(REALTIME_PLATFORMS),
     }
-    if not enabled:
-        return {
-            **payload,
-            "probe": {
-                "status": "skipped",
-                "reason": "ENABLE_TIKHUB is disabled",
-                "query": request.raw_query,
-                "platforms": request.platforms,
-                "unsupported_platforms": [],
-                "results": [],
-            },
-        }
-    if not api_key_set:
-        return {
-            **payload,
-            "probe": {
-                "status": "skipped",
-                "reason": "TIKHUB_API_KEY is not configured",
-                "query": request.raw_query,
-                "platforms": request.platforms,
-                "unsupported_platforms": [],
-                "results": [],
-            },
-        }
     return {
         **payload,
         "probe": await probe_realtime_platforms(
