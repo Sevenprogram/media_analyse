@@ -21,6 +21,9 @@ type CollectionRunResponse = {
   run: CollectionRun;
 };
 
+const EMPTY_ACCOUNTS: WorkbenchAccount[] = [];
+const EMPTY_OVERVIEW = { new_posts_total: 0, interaction_total: 0, new_hot_total: 0, anomaly_total: 0 };
+
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
@@ -63,13 +66,14 @@ export function CompetitorMonitorWorkbench({
   const [overview, setOverview] = React.useState(mockOverview);
   const [overviewLoading, setOverviewLoading] = React.useState(false);
 
-  const fallbackAccounts = activeMonitorType === "partner_creator" ? mockCreatorAccounts : mockAccounts;
   const hasProjectScope = Boolean(selectedProjectRecordId);
-  const accounts = projectContextPending
-    ? []
-    : accountsQuery.data.competitors.length
-      ? accountsQuery.data.competitors
-      : (hasProjectScope ? [] : fallbackAccounts);
+  const fallbackAccounts = activeMonitorType === "partner_creator" ? mockCreatorAccounts : mockAccounts;
+  const queryAccounts = accountsQuery.data.competitors;
+  const accounts = React.useMemo(() => {
+    if (projectContextPending) return EMPTY_ACCOUNTS;
+    if (queryAccounts.length > 0) return queryAccounts;
+    return hasProjectScope ? EMPTY_ACCOUNTS : fallbackAccounts;
+  }, [fallbackAccounts, hasProjectScope, projectContextPending, queryAccounts]);
   const usingMock = !projectContextPending && !hasProjectScope && accountsQuery.data.competitors.length === 0;
   const isCreatorMonitor = activeMonitorType === "partner_creator";
 
@@ -95,10 +99,11 @@ export function CompetitorMonitorWorkbench({
     async function loadOverview() {
       if (usingMock) {
         setOverview(mockOverview);
+        setOverviewLoading(false);
         return;
       }
-      if (projectContextPending) {
-        setOverview({ new_posts_total: 0, interaction_total: 0, new_hot_total: 0, anomaly_total: 0 });
+      if (projectContextPending || accounts.length === 0) {
+        setOverview(EMPTY_OVERVIEW);
         setOverviewLoading(false);
         return;
       }

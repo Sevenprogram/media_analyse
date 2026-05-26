@@ -33,6 +33,10 @@ export function AddCompetitorDrawer({ open, monitorType, projectId, onOpenChange
   const [submitting, setSubmitting] = React.useState(false);
   const [message, setMessage] = React.useState<string | null>(null);
   const isCreatorMonitor = monitorType === "partner_creator";
+  const drawerTitle = isCreatorMonitor ? "新增达人监控" : "新增友商";
+  const drawerDescription = isCreatorMonitor
+    ? "录入合作达人的主页 URL 或账号 ID，保存后加入当前项目监控列表。"
+    : "录入友商账号的主页 URL 或账号 ID，保存后加入当前项目监控列表。";
 
   React.useEffect(() => {
     if (!open) {
@@ -104,7 +108,7 @@ export function AddCompetitorDrawer({ open, monitorType, projectId, onOpenChange
   }
 
   return (
-    <Drawer open={open} onOpenChange={onOpenChange} title={isCreatorMonitor ? "新增达人监控" : "新增友商"}>
+    <Drawer open={open} onOpenChange={onOpenChange} title={drawerTitle} description={drawerDescription}>
       <form className="cmw-add-form" onSubmit={handleSubmit}>
         <p className="cmw-add-form__hint">
           {isCreatorMonitor
