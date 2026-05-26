@@ -132,6 +132,23 @@ def _growth_project_job_key(project_record_id: int) -> str:
     return f"growth_project_record_{project_record_id}"
 
 
+def _normalize_project_ids(*values: Any) -> list[int]:
+    project_ids: set[int] = set()
+    for value in values:
+        if value is None or value == "":
+            continue
+        if isinstance(value, (list, tuple, set)):
+            project_ids.update(_normalize_project_ids(*value))
+            continue
+        try:
+            next_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if next_id > 0:
+            project_ids.add(next_id)
+    return sorted(project_ids)
+
+
 def _job_growth_project_key(comment_policy: Any) -> str | None:
     if not isinstance(comment_policy, dict):
         return None
@@ -1695,6 +1712,7 @@ class ResearchRepository:
     ) -> dict[str, Any]:
         results = [as_record for as_record in (results or []) if isinstance(as_record, dict)]
         session_payload = {
+            "project_id": payload.get("project_id"),
             "raw_query": str(payload.get("raw_query") or ""),
             "selected_vertical_id": payload.get("selected_vertical_id"),
             "search_payload_json": _json_safe(payload.get("search_payload_json") or {}),
@@ -1764,12 +1782,14 @@ class ResearchRepository:
                 results=[self._creator_search_session_result_to_dict(row) for row in result_rows.scalars().all()],
             )
 
-    async def get_latest_creator_search_session(self) -> dict[str, Any] | None:
+    async def get_latest_creator_search_session(self, project_id: int | None = None) -> dict[str, Any] | None:
         async with get_session() as session:
             stmt = self._apply_tenant(
                 select(ResearchCreatorSearchSession),
                 ResearchCreatorSearchSession,
             )
+            if project_id is not None:
+                stmt = stmt.where(ResearchCreatorSearchSession.project_id == project_id)
             result = await session.execute(
                 stmt.order_by(
                     ResearchCreatorSearchSession.updated_at.desc(),
@@ -2015,6 +2035,7 @@ class ResearchRepository:
                 "refresh_cadence": payload.get("refresh_cadence") or "off",
                 "custom_interval_value": payload.get("custom_interval_value"),
                 "custom_interval_unit": payload.get("custom_interval_unit"),
+                "refresh_time_utc8": payload.get("refresh_time_utc8"),
                 "daily_collection_limit_per_platform": payload.get(
                     "daily_collection_limit_per_platform", 50
                 ),
@@ -2761,11 +2782,17 @@ class ResearchRepository:
             await session.refresh(item)
             return self._content_tracker_to_dict(item)
 
-    async def list_content_trackers(self, enabled_only: bool = False) -> list[dict[str, Any]]:
+    async def list_content_trackers(
+        self,
+        enabled_only: bool = False,
+        project_id: int | None = None,
+    ) -> list[dict[str, Any]]:
         async with get_session() as session:
             stmt = self._apply_tenant(select(ResearchContentTracker), ResearchContentTracker)
             if enabled_only:
                 stmt = stmt.where(ResearchContentTracker.enabled.is_(True))
+            if project_id is not None:
+                stmt = stmt.where(ResearchContentTracker.project_id == project_id)
             result = await session.execute(stmt.order_by(ResearchContentTracker.id.desc()))
             return [self._content_tracker_to_dict(item) for item in result.scalars().all()]
 
@@ -2804,6 +2831,21 @@ class ResearchRepository:
                 return None
             item.latest_analysis_run_id = run_id
             item.latest_analysis_snapshot_id = snapshot_id
+            await session.flush()
+            await session.refresh(item)
+            return self._content_tracker_to_dict(item)
+
+    async def set_content_tracker_latest_run(
+        self,
+        *,
+        tracker_id: int,
+        run_id: int,
+    ) -> dict[str, Any] | None:
+        async with get_session() as session:
+            item = await session.get(ResearchContentTracker, tracker_id)
+            if item is None or not self._tenant_item_visible(item):
+                return None
+            item.latest_analysis_run_id = run_id
             await session.flush()
             await session.refresh(item)
             return self._content_tracker_to_dict(item)
@@ -3398,23 +3440,36 @@ class ResearchRepository:
             return self._backtest_to_dict(item)
 
     async def upsert_competitor_account(self, payload: dict[str, Any]) -> dict[str, Any]:
+        project_ids = _normalize_project_ids(payload.get("project_ids_json"), payload.get("project_ids"), payload.get("project_id"))
+        account_payload = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"project_id", "project_ids"}
+        }
+        if project_ids:
+            account_payload["project_ids_json"] = project_ids
         async with get_session() as session:
             stmt = self._apply_tenant(
                 select(ResearchCompetitorAccount),
                 ResearchCompetitorAccount,
             ).where(
-                ResearchCompetitorAccount.platform == payload["platform"],
-                ResearchCompetitorAccount.creator_id == payload["creator_id"],
+                ResearchCompetitorAccount.platform == account_payload["platform"],
+                ResearchCompetitorAccount.creator_id == account_payload["creator_id"],
             )
             result = await session.execute(stmt)
             item = result.scalar_one_or_none()
             if item is None:
                 item = ResearchCompetitorAccount(
-                    **self._tenant_payload(ResearchCompetitorAccount, payload)
+                    **self._tenant_payload(ResearchCompetitorAccount, account_payload)
                 )
                 session.add(item)
             else:
-                for key, value in payload.items():
+                if project_ids:
+                    account_payload["project_ids_json"] = _normalize_project_ids(
+                        item.project_ids_json or [],
+                        project_ids,
+                    )
+                for key, value in account_payload.items():
                     if hasattr(item, key):
                         setattr(item, key, value)
             await session.flush()
@@ -3426,6 +3481,7 @@ class ResearchRepository:
         *,
         enabled_only: bool = False,
         monitor_type: str | None = "competitor",
+        project_id: int | None = None,
     ) -> list[dict[str, Any]]:
         async with get_session() as session:
             stmt = self._apply_tenant(
@@ -3437,7 +3493,14 @@ class ResearchRepository:
             if monitor_type:
                 stmt = stmt.where(ResearchCompetitorAccount.monitor_type == monitor_type)
             result = await session.execute(stmt.order_by(ResearchCompetitorAccount.id.desc()))
-            return [self._competitor_account_to_dict(item) for item in result.scalars().all()]
+            accounts = [self._competitor_account_to_dict(item) for item in result.scalars().all()]
+            if project_id is not None:
+                accounts = [
+                    item
+                    for item in accounts
+                    if project_id in _normalize_project_ids(item.get("project_ids"))
+                ]
+            return accounts
 
     async def get_competitor_account(self, competitor_id: int) -> dict[str, Any] | None:
         async with get_session() as session:
@@ -5231,6 +5294,7 @@ class ResearchRepository:
     def _keyword_set_to_dict(self, item: ResearchKeywordSet) -> dict[str, Any]:
         return {
             "id": item.id,
+            "project_id": item.project_id,
             "name": item.name,
             "description": item.description,
             "platforms": item.platforms or [],
@@ -5430,6 +5494,7 @@ class ResearchRepository:
                 snapshots.append(row["snapshot"])
         return {
             "id": item.id,
+            "project_id": item.project_id,
             "raw_query": item.raw_query,
             "selected_vertical_id": item.selected_vertical_id,
             "search_payload": item.search_payload_json or {},
@@ -5496,6 +5561,7 @@ class ResearchRepository:
             "refresh_cadence": item.refresh_cadence,
             "custom_interval_value": item.custom_interval_value,
             "custom_interval_unit": item.custom_interval_unit,
+            "refresh_time_utc8": item.refresh_time_utc8,
             "daily_collection_limit_per_platform": int(
                 item.daily_collection_limit_per_platform or 50
             ),
@@ -5561,6 +5627,7 @@ class ResearchRepository:
         self, payload: dict[str, Any], *, partial: bool = False
     ) -> dict[str, Any]:
         mapping = {
+            "project_id": "project_id",
             "name": "name",
             "description": "description",
             "vertical_id": "vertical_id",
@@ -5940,6 +6007,7 @@ class ResearchRepository:
             "platform": item.platform,
             "creator_id": item.creator_id,
             "monitor_type": item.monitor_type or "competitor",
+            "project_ids": _normalize_project_ids(item.project_ids_json or []),
             "display_name": item.display_name,
             "profile_url": item.profile_url,
             "vertical_id": item.vertical_id,

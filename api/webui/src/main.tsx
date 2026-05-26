@@ -48,6 +48,7 @@ import type {
   ResearchTab,
   SideNavConfigResponse,
   SideNavConfigValue,
+  TodayIntelligenceSummary,
 } from "./types";
 import "./styles.css";
 import "./components/shell.css";
@@ -223,6 +224,7 @@ function App({ session, onLogout }: { session: AuthSession; onLogout: () => void
   const [sideNavConfig, setSideNavConfig] = React.useState<SideNavConfigValue>(() => defaultSideNavConfig());
   const [dashboard, setDashboard] = React.useState<DashboardSummary>(fallbackDashboard);
   const [databaseStats, setDatabaseStats] = React.useState<DatabaseStats>(fallbackDatabaseStats);
+  const [todayIntelligence, setTodayIntelligence] = React.useState<TodayIntelligenceSummary | null>(null);
   const [aiInsights, setAiInsights] = React.useState<AiInsightSummary>(fallbackAiInsights);
   const [aiTopicIdeas, setAiTopicIdeas] = React.useState<AiTopicIdeasSummary>({ topic_ideas: [] });
   const [jobs, setJobs] = React.useState<ResearchJob[]>([]);
@@ -249,11 +251,15 @@ function App({ session, onLogout }: { session: AuthSession; onLogout: () => void
   const projectProgressCacheRef = React.useRef(new Map<string, GrowthProjectCollectionProgress>());
   const projectDetailRequestIdRef = React.useRef(0);
   const projectProgressRequestIdRef = React.useRef(0);
+  const todayIntelligenceRequestIdRef = React.useRef(0);
   const projectDetailAbortRef = React.useRef<AbortController | null>(null);
   const projectProgressAbortRef = React.useRef<AbortController | null>(null);
   const selectedJob = jobs.find((job) => job.id === selectedJobId) || null;
   const selectedProjectSummary =
     growthProjects.find((project) => project.id === selectedProjectId) || selectedProjectDetail?.project || null;
+  const selectedProjectRecordId =
+    selectedProjectSummary?.project_record_id
+    ?? (selectedProjectId && /^\d+$/.test(selectedProjectId) ? Number(selectedProjectId) : null);
   const headerProjects = React.useMemo<AppHeaderProject[]>(
     () =>
       growthProjects.map((project) => ({
@@ -264,7 +270,12 @@ function App({ session, onLogout }: { session: AuthSession; onLogout: () => void
       })),
     [growthProjects],
   );
-  const shouldLoadProjectContext = tab === "projects" || tab === "keyword_heat" || tab === "key_insights";
+  const shouldLoadProjectContext =
+    tab === "projects"
+    || tab === "keyword_heat"
+    || tab === "key_insights"
+    || tab === "creators"
+    || tab === "competitors";
   const shouldLoadKeywordHeatContext = tab === "keyword_heat";
   const shouldPollProjectProgress =
     (tab === "projects" || tab === "key_insights") &&
@@ -301,6 +312,28 @@ function App({ session, onLogout }: { session: AuthSession; onLogout: () => void
     const data = await api<DashboardSummary>("/api/reports/dashboard-summary");
     setDashboard({ ...fallbackDashboard(), ...data });
   }, []);
+
+  const loadTodayIntelligence = React.useCallback(async (projectId = selectedProjectId) => {
+    const requestId = ++todayIntelligenceRequestIdRef.current;
+    const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+    const data = await api<TodayIntelligenceSummary>(`/api/reports/today-intelligence${query}`);
+    if (requestId !== todayIntelligenceRequestIdRef.current) return;
+    setTodayIntelligence(data);
+    setDashboard({ ...fallbackDashboard(), ...(data.dashboard || {}) });
+    setDatabaseStats({ ...fallbackDatabaseStats(), ...(data.database_stats || {}) });
+  }, [selectedProjectId]);
+
+  const regenerateTodayIntelligence = React.useCallback(async (projectId = selectedProjectId) => {
+    const requestId = ++todayIntelligenceRequestIdRef.current;
+    const data = await api<TodayIntelligenceSummary>("/api/reports/today-intelligence/run", {
+      method: "POST",
+      body: JSON.stringify({ force: true, project_id: projectId || undefined }),
+    });
+    if (requestId !== todayIntelligenceRequestIdRef.current) return;
+    setTodayIntelligence(data);
+    setDashboard({ ...fallbackDashboard(), ...(data.dashboard || {}) });
+    setDatabaseStats({ ...fallbackDatabaseStats(), ...(data.database_stats || {}) });
+  }, [selectedProjectId]);
 
   const loadJobs = React.useCallback(async () => {
     const data = await api<{ jobs: ResearchJob[] }>("/api/research/jobs");
@@ -434,12 +467,14 @@ function App({ session, onLogout }: { session: AuthSession; onLogout: () => void
   const refreshAll = React.useCallback(async () => {
     const tasks: Promise<unknown>[] = [];
     if (tab === "today") {
-      tasks.push(loadDashboardSummary(), loadJobs(), loadDatabaseStats(), loadAiOverview());
+      tasks.push(loadTodayIntelligence(selectedProjectId), loadJobs(), loadGrowthProjects(), loadAiOverview());
     } else if (tab === "projects") {
       tasks.push(loadGrowthProjects());
     } else if (tab === "keyword_heat") {
       tasks.push(loadJobs(), loadGrowthProjects(), loadDatabaseStats());
     } else if (tab === "key_insights") {
+      tasks.push(loadGrowthProjects());
+    } else if (tab === "creators" || tab === "competitors") {
       tasks.push(loadGrowthProjects());
     }
     if (tasks.length === 0) {
@@ -455,7 +490,7 @@ function App({ session, onLogout }: { session: AuthSession; onLogout: () => void
     } finally {
       setLoading(false);
     }
-  }, [tab, loadDashboardSummary, loadJobs, loadGrowthProjects, loadDatabaseStats, loadAiOverview]);
+  }, [tab, selectedProjectId, loadTodayIntelligence, loadJobs, loadGrowthProjects, loadDatabaseStats, loadAiOverview]);
 
   React.useEffect(() => { void refreshAll(); }, [refreshAll]);
   React.useEffect(() => { void loadSideNavConfig(); }, [loadSideNavConfig]);
@@ -540,8 +575,6 @@ function App({ session, onLogout }: { session: AuthSession; onLogout: () => void
   }
 
   async function deleteGrowthProject(projectId: string) {
-    const confirmed = window.confirm("删除项目会将项目从列表归档隐藏，但不会删除已经采集的样本和任务记录。确定继续吗？");
-    if (!confirmed) return;
     await api<Record<string, unknown>>(`/api/research/growth-projects/${encodeURIComponent(projectId)}`, {
       method: "DELETE",
     });
@@ -590,7 +623,11 @@ function App({ session, onLogout }: { session: AuthSession; onLogout: () => void
         payload: { score: opportunity.score, risk_tags: opportunity.risk_tags || [] },
       }),
     });
-    await loadDashboardSummary();
+    if (tab === "today") {
+      await loadTodayIntelligence(selectedProjectId);
+    } else {
+      await loadDashboardSummary();
+    }
   }
 
   function requestOpportunityExecution(opportunity: DashboardOpportunity) {
@@ -633,8 +670,10 @@ function App({ session, onLogout }: { session: AuthSession; onLogout: () => void
                 databaseStats={databaseStats}
                 aiInsights={aiInsights}
                 aiTopicIdeas={aiTopicIdeas}
+                todayIntelligence={todayIntelligence}
                 jobs={jobs}
                 onRefresh={refreshAll}
+                onRegenerate={regenerateTodayIntelligence}
                 onExecute={requestOpportunityExecution}
                 onFeedback={submitOpportunityFeedback}
               />
@@ -660,11 +699,24 @@ function App({ session, onLogout }: { session: AuthSession; onLogout: () => void
               />
             )}
             {tab === "content_production" && <ContentProductionPage />}
-            {tab === "creators" && <CreatorDiscoveryPage />}
-            {tab === "competitors" && <CompetitorMonitorPage />}
+            {tab === "creators" && (
+              <CreatorDiscoveryPage
+                selectedProjectId={selectedProjectId}
+                selectedProjectRecordId={selectedProjectRecordId}
+                selectedProjectName={selectedProjectSummary?.name || null}
+              />
+            )}
+            {tab === "competitors" && (
+              <CompetitorMonitorPage
+                selectedProjectId={selectedProjectId}
+                selectedProjectRecordId={selectedProjectRecordId}
+                selectedProjectName={selectedProjectSummary?.name || null}
+              />
+            )}
             {tab === "content_tracking" && (
               <ContentTrackingPage
                 focusTrackerId={contentTrackingFocusTrackerId}
+                selectedProjectRecordId={selectedProjectRecordId}
                 selectedProjectName={selectedProjectSummary?.name || null}
                 onUseTrackerForStrategy={(trackerId) => openContentStrategy(trackerId)}
               />
@@ -689,6 +741,7 @@ function App({ session, onLogout }: { session: AuthSession; onLogout: () => void
                 sourceTrackerId={strategySourceTrackerId}
                 onClearSourceTracker={() => setStrategySourceTrackerId(null)}
                 onOpenSourceTracker={(trackerId) => openContentTracking(trackerId)}
+                onUpdateProject={(projectId, payload) => updateGrowthProject(projectId, payload)}
               />
             )}
             {tab === "topic_tracking" && <PlaceholderPage title="Topic Tracking" subtitle="Topic, hot trend, and long-tail monitoring will be available soon." />}

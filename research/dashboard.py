@@ -314,8 +314,179 @@ def _build_opportunities(
     items.extend(_keyword_opportunity(item) for item in keyword_heat_snapshots)
     items.extend(_competitor_opportunity(item) for item in competitor_compositions)
     items.extend(_content_opportunity(item) for item in content_snapshots)
+    items = _dedupe_opportunities(items)
     items.sort(key=lambda item: item["score"], reverse=True)
     return items
+
+
+def _dedupe_opportunities(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: dict[tuple[str, str], dict[str, Any]] = {}
+    order: list[tuple[str, str]] = []
+    for item in items:
+        key = _opportunity_dedupe_key(item)
+        if key not in deduped:
+            deduped[key] = item
+            order.append(key)
+            continue
+        deduped[key] = _merge_opportunity(deduped[key], item)
+    return [deduped[key] for key in order]
+
+
+def _opportunity_dedupe_key(item: dict[str, Any]) -> tuple[str, str]:
+    opportunity_type = str(item.get("type") or "")
+    if opportunity_type == "keyword":
+        keyword = _normalize_dedupe_text(
+            ((item.get("payload") or {}).get("keyword") if isinstance(item.get("payload"), dict) else None)
+            or item.get("display_title")
+            or item.get("name")
+            or item.get("id")
+        )
+        if keyword:
+            return ("keyword", keyword)
+    return (opportunity_type or "unknown", str(item.get("id") or id(item)))
+
+
+def _merge_opportunity(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    winner, other = (
+        (incoming, existing)
+        if float(incoming.get("score") or 0) > float(existing.get("score") or 0)
+        else (existing, incoming)
+    )
+    merged = dict(winner)
+    existing_platforms = _opportunity_platforms(existing)
+    incoming_platforms = _opportunity_platforms(incoming)
+    platforms = _unique_strings([*existing_platforms, *incoming_platforms])
+    source_ids = _unique_strings(
+        [
+            *((existing.get("payload") or {}).get("source_opportunity_ids") or []),
+            *((incoming.get("payload") or {}).get("source_opportunity_ids") or []),
+            existing.get("id"),
+            incoming.get("id"),
+        ]
+    )
+    sample_scope = dict(merged.get("sample_scope") or {})
+    sample_scope["platforms"] = platforms
+    sample_scope["sample_count"] = _merged_sample_count(existing, incoming)
+    sample_scope["last_updated_at"] = _latest_timestamp_values(
+        [
+            (existing.get("sample_scope") or {}).get("last_updated_at"),
+            (incoming.get("sample_scope") or {}).get("last_updated_at"),
+        ]
+    )
+    samples = _dedupe_samples([*(existing.get("samples") or []), *(incoming.get("samples") or [])])
+    evidence_summary = _unique_strings(
+        [*(existing.get("evidence_summary") or []), *(incoming.get("evidence_summary") or [])]
+    )
+    risk_tags = _unique_strings([*(existing.get("risk_tags") or []), *(incoming.get("risk_tags") or [])])
+    if len(platforms) > 1:
+        risk_tags = [tag for tag in risk_tags if tag != RISK_SINGLE_PLATFORM_SIGNAL]
+    payload = dict(merged.get("payload") or {})
+    payload["platforms"] = platforms
+    payload["source_opportunity_ids"] = source_ids
+    if merged.get("type") == "keyword" and len(platforms) > 1:
+        payload["merged_platform_signal"] = True
+    merged["payload"] = payload
+    merged["sample_scope"] = sample_scope
+    merged["samples"] = samples
+    merged["risk_tags"] = risk_tags
+    merged["evidence_summary"] = evidence_summary or merged.get("evidence_summary") or []
+    merged["evidence_count"] = max(
+        int(existing.get("evidence_count") or 0),
+        int(incoming.get("evidence_count") or 0),
+        len(samples),
+    )
+    merged["confidence"] = _confidence(
+        float(merged.get("score") or 0),
+        int(merged.get("evidence_count") or 0),
+        int(sample_scope.get("sample_count") or 0),
+    )
+    detail = dict(merged.get("detail") or {})
+    detail["summary"] = merged["evidence_summary"]
+    merged["detail"] = detail
+    if merged.get("type") == "keyword" and len(platforms) > 1:
+        merged["display_subtitle"] = f"{' / '.join(_label_platform(platform) for platform in platforms)}关键词 · 样本 {sample_scope['sample_count']}"
+        merged["reason"] = _append_sentence_once(
+            str(merged.get("reason") or other.get("reason") or ""),
+            "已合并多个平台的同名话题信号。",
+        )
+    return merged
+
+
+def _opportunity_platforms(item: dict[str, Any]) -> list[str]:
+    sample_scope = item.get("sample_scope") or {}
+    platforms = sample_scope.get("platforms")
+    if isinstance(platforms, list) and platforms:
+        return _unique_strings(platforms)
+    platform = item.get("platform") or (item.get("payload") or {}).get("platform")
+    return [str(platform)] if platform else []
+
+
+def _merged_sample_count(existing: dict[str, Any], incoming: dict[str, Any]) -> int:
+    existing_count = int((existing.get("sample_scope") or {}).get("sample_count") or 0)
+    incoming_count = int((incoming.get("sample_scope") or {}).get("sample_count") or 0)
+    existing_platforms = set(_opportunity_platforms(existing))
+    incoming_platforms = set(_opportunity_platforms(incoming))
+    if existing_platforms and incoming_platforms and existing_platforms.isdisjoint(incoming_platforms):
+        return existing_count + incoming_count
+    return max(existing_count, incoming_count)
+
+
+def _dedupe_samples(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for sample in samples:
+        if not isinstance(sample, dict):
+            continue
+        key = _normalize_dedupe_text(
+            sample.get("url")
+            or sample.get("source_url")
+            or sample.get("platform_post_id")
+            or f"{sample.get('platform')}:{sample.get('title')}"
+        )
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        result.append(sample)
+    return result[:12]
+
+
+def _unique_strings(values: list[Any]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result
+
+
+def _normalize_dedupe_text(value: Any) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _append_sentence_once(text: str, sentence: str) -> str:
+    text = str(text or "").strip()
+    sentence = str(sentence or "").strip()
+    if not sentence or sentence in text:
+        return text
+    return f"{text} {sentence}".strip()
+
+
+def _latest_timestamp_values(values: list[Any]) -> str | None:
+    parsed_values = [_parse_datetime(value) for value in values if value]
+    parsed_values = [value for value in parsed_values if value is not None]
+    if parsed_values:
+        return max(parsed_values).isoformat()
+    for value in values:
+        if value:
+            return str(value)
+    return None
 
 
 def _creator_opportunity(item: dict[str, Any]) -> dict[str, Any]:

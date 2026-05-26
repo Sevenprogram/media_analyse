@@ -6,6 +6,7 @@ export interface WorkbenchAccount {
   platform: string;
   creator_id: string;
   monitor_type?: MonitorType;
+  project_ids?: number[];
   display_name?: string | null;
   enabled?: boolean;
   notes?: string | null;

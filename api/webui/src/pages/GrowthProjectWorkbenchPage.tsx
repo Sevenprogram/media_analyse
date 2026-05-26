@@ -304,6 +304,16 @@ function labelRefreshCadence(value?: string | null) {
   return REFRESH_OPTIONS.find((item) => item.value === value)?.label || "手动";
 }
 
+function labelRefreshCadenceWithTime(value?: string | null, refreshTimeUtc8?: string | null) {
+  const label = labelRefreshCadence(value);
+  if (value === "daily" && refreshTimeUtc8) return `${label} ${refreshTimeUtc8} UTC+8`;
+  return label;
+}
+
+function validUtc8Time(value: string) {
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+}
+
 function labelAutomationCadence(enabled?: boolean, intervalMinutes?: number | null) {
   if (!enabled) return "手动触发";
   const minutes = Math.max(0, Math.trunc(intervalMinutes || 0));
@@ -455,6 +465,10 @@ export function GrowthProjectWorkbenchPage({
   const [notice, setNotice] = React.useState<string | null>(null);
   const [activeTab, setActiveTab] = React.useState<WorkspaceTab>("overview");
   const [collectionDialogOpen, setCollectionDialogOpen] = React.useState(false);
+  const [archiveConfirmTarget, setArchiveConfirmTarget] = React.useState<GrowthProjectSummary | null>(null);
+  const [archiveConfirmIntent, setArchiveConfirmIntent] = React.useState<"archive" | "delete">("archive");
+  const [archiving, setArchiving] = React.useState(false);
+  const [archiveError, setArchiveError] = React.useState<string | null>(null);
   const [collectionControls, setCollectionControls] = React.useState<GrowthProjectCollectionRunPayload>(
     DEFAULT_COLLECTION_CONTROLS,
   );
@@ -515,13 +529,30 @@ export function GrowthProjectWorkbenchPage({
     }
   }
 
-  async function archiveProject() {
+  function requestProjectArchive(intent: "archive" | "delete") {
     if (!selectedProject) return;
+    setNotice(null);
+    setArchiveError(null);
+    setArchiveConfirmIntent(intent);
+    setArchiveConfirmTarget(selectedProject);
+  }
+
+  async function confirmProjectArchive() {
+    if (!archiveConfirmTarget) return;
+    setArchiving(true);
     try {
-      await onArchiveProject(selectedProject.id);
+      if (archiveConfirmIntent === "delete") {
+        await onDeleteProject(archiveConfirmTarget.id);
+      } else {
+        await onArchiveProject(archiveConfirmTarget.id);
+      }
+      setArchiveConfirmTarget(null);
+      setArchiveError(null);
       setNotice("项目已归档。");
     } catch (cause) {
-      setNotice(cause instanceof Error ? cause.message : String(cause));
+      setArchiveError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setArchiving(false);
     }
   }
 
@@ -536,6 +567,59 @@ export function GrowthProjectWorkbenchPage({
           }}
         />
       )}
+
+      <ConfirmDialog
+        open={Boolean(archiveConfirmTarget)}
+        onOpenChange={(open) => {
+          if (!open && !archiving) {
+            setArchiveConfirmTarget(null);
+            setArchiveError(null);
+          }
+        }}
+        title={archiveConfirmIntent === "delete" ? "删除项目" : "归档项目"}
+        description={
+          archiveConfirmTarget
+            ? `确认${archiveConfirmIntent === "delete" ? "删除" : "归档"}“${archiveConfirmTarget.name}”？项目会从默认列表隐藏，但已采集样本与任务记录会保留。`
+            : "确认归档项目？项目会从默认列表隐藏，但已采集样本与任务记录会保留。"
+        }
+      >
+        <div className="project-archive-confirm">
+          <div className="project-archive-confirm__summary">
+            <AlertTriangle size={18} />
+            <div>
+              <strong>{archiveConfirmTarget?.name || "当前项目"}</strong>
+              <span>该操作只会归档项目入口，不会删除已经采集的样本、证据和历史任务。</span>
+            </div>
+          </div>
+          <div className="project-archive-confirm__effects">
+            <span>保留采集记录</span>
+            <span>保留样本与证据</span>
+            <span>保留历史任务</span>
+          </div>
+          {archiveError && (
+            <div className="project-archive-confirm__error">
+              <AlertTriangle size={15} />
+              <span>{archiveError}</span>
+            </div>
+          )}
+          <div className="project-archive-confirm__actions">
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setArchiveConfirmTarget(null);
+                setArchiveError(null);
+              }}
+              disabled={archiving}
+            >
+              取消
+            </Button>
+            <Button variant="danger" onClick={() => void confirmProjectArchive()} disabled={archiving}>
+              {archiving ? <RefreshCw size={16} className="spin" /> : <AlertTriangle size={16} />}
+              {archiving ? "处理中" : archiveConfirmIntent === "delete" ? "确认删除" : "确认归档"}
+            </Button>
+          </div>
+        </div>
+      </ConfirmDialog>
 
       <div className="growth-project-layout">
         <aside className="growth-project-list-panel">
@@ -689,7 +773,7 @@ export function GrowthProjectWorkbenchPage({
                 saving={isProjectDetailLoading}
                 onSave={(payload) => onUpdateProject(selectedProject.id, payload)}
                 onOpenPlan={() => setActiveTab("plan")}
-                onDelete={() => void onDeleteProject(selectedProject.id)}
+                onDelete={() => requestProjectArchive("delete")}
               />
             )}
 
@@ -711,7 +795,7 @@ export function GrowthProjectWorkbenchPage({
                 detail={selectedProjectDetail}
                 progress={selectedProjectProgress}
                 onCreateTask={() => setCollectionDialogOpen(true)}
-                onArchive={() => void archiveProject()}
+                onArchive={() => requestProjectArchive("archive")}
                 onPause={() => void pauseCollection()}
                 onStop={() => void stopCollection()}
                 onOpenData={onOpenData}
@@ -730,7 +814,7 @@ export function GrowthProjectWorkbenchPage({
               <button type="button" onClick={onOpenAi}>
                 <FileJson size={14} /> 生成洞察报告
               </button>
-              <button type="button" onClick={() => void archiveProject()}>
+              <button type="button" onClick={() => requestProjectArchive("archive")}>
                 <Download size={14} /> 归档项目
               </button>
             </footer>
@@ -866,7 +950,11 @@ function CollectionPlanPanel({
           <div className="config-impact-grid">
             <ConfigImpactItem icon={<Database size={15} />} label="采集平台" value={supportedCollectionPlatforms(project.platforms).map(labelPlatform).join(" / ") || "未配置"} />
             <ConfigImpactItem icon={<Target size={15} />} label="采集关键词" value={`${activeKeywords.length} 条`} />
-            <ConfigImpactItem icon={<Clock size={15} />} label="刷新频率" value={labelRefreshCadence(detail?.settings?.refresh_cadence)} />
+            <ConfigImpactItem
+              icon={<Clock size={15} />}
+              label="刷新频率"
+              value={labelRefreshCadenceWithTime(detail?.settings?.refresh_cadence, detail?.settings?.refresh_time_utc8)}
+            />
             <ConfigImpactItem icon={<Database size={15} />} label="每日每平台上限" value={`${dailyCollectionLimit} 条`} />
             <ConfigImpactItem icon={<BarChart3 size={15} />} label="项目状态" value={projectStatus(progress?.status || project.status).label} />
           </div>
@@ -1434,6 +1522,7 @@ function ResearchConfigPanel({
     (settings?.refresh_cadence as RefreshCadence | undefined) || "daily",
   );
   const [customIntervalValue, setCustomIntervalValue] = React.useState(settings?.custom_interval_value || 1);
+  const [refreshTimeUtc8, setRefreshTimeUtc8] = React.useState(settings?.refresh_time_utc8 || "");
   const [dailyCollectionLimit, setDailyCollectionLimit] = React.useState(
     settings?.daily_collection_limit_per_platform || DEFAULT_DAILY_COLLECTION_LIMIT_PER_PLATFORM,
   );
@@ -1466,6 +1555,7 @@ function ResearchConfigPanel({
       comment_collection_enabled: settings?.comment_collection_enabled ?? true,
       refresh_cadence: nextCadence,
       custom_interval_value: settings?.custom_interval_value || 1,
+      refresh_time_utc8: settings?.refresh_time_utc8 || "",
       daily_collection_limit_per_platform: settings?.daily_collection_limit_per_platform || DEFAULT_DAILY_COLLECTION_LIMIT_PER_PLATFORM,
       keywords: nextKeywords.map(({ id: _id, ...item }) => item),
     };
@@ -1475,6 +1565,7 @@ function ResearchConfigPanel({
     setCommentsEnabled(nextState.comment_collection_enabled);
     setRefreshCadence(nextState.refresh_cadence);
     setCustomIntervalValue(nextState.custom_interval_value);
+    setRefreshTimeUtc8(nextState.refresh_time_utc8);
     setDailyCollectionLimit(nextState.daily_collection_limit_per_platform);
     setKeywords(nextKeywords);
     setSelectedKeywordIds([]);
@@ -1509,6 +1600,7 @@ function ResearchConfigPanel({
     comment_collection_enabled: commentsEnabled,
     refresh_cadence: refreshCadence,
     custom_interval_value: customCadence ? customIntervalValue : 1,
+    refresh_time_utc8: refreshCadence === "daily" ? refreshTimeUtc8.trim() : "",
     daily_collection_limit_per_platform: dailyCollectionLimit,
     keywords: normalizedKeywordPayload(keywords),
   });
@@ -1645,6 +1737,7 @@ function ResearchConfigPanel({
     setCommentsEnabled(settings?.comment_collection_enabled ?? true);
     setRefreshCadence(((settings?.refresh_cadence as RefreshCadence | undefined) || "daily"));
     setCustomIntervalValue(settings?.custom_interval_value || 1);
+    setRefreshTimeUtc8(settings?.refresh_time_utc8 || "");
     setDailyCollectionLimit(settings?.daily_collection_limit_per_platform || DEFAULT_DAILY_COLLECTION_LIMIT_PER_PLATFORM);
     setKeywords(nextKeywords);
     setSelectedKeywordIds([]);
@@ -1669,6 +1762,10 @@ function ResearchConfigPanel({
       setError("自定义刷新间隔必须大于 0。");
       return;
     }
+    if (refreshCadence === "daily" && refreshTimeUtc8.trim() && !validUtc8Time(refreshTimeUtc8.trim())) {
+      setError("刷新时间必须是 UTC+8 的 HH:mm 格式。");
+      return;
+    }
     if (dailyCollectionLimit < 1 || dailyCollectionLimit > 500) {
       setError("每日每平台上限必须在 1 到 500 之间。");
       return;
@@ -1682,6 +1779,7 @@ function ResearchConfigPanel({
       refresh_cadence: refreshCadence,
       custom_interval_value: customCadence ? Math.max(1, Math.trunc(customIntervalValue)) : undefined,
       custom_interval_unit: refreshCadence === "custom_hours" ? "hours" : refreshCadence === "custom_days" ? "days" : undefined,
+      refresh_time_utc8: refreshCadence === "daily" ? refreshTimeUtc8.trim() || null : null,
       daily_collection_limit_per_platform: Math.max(1, Math.min(500, Math.trunc(dailyCollectionLimit))),
       keywords: payloadKeywords,
     });
@@ -1719,6 +1817,17 @@ function ResearchConfigPanel({
                 ))}
               </select>
             </label>
+            {refreshCadence === "daily" && (
+              <label className="config-field">
+                <span>刷新时间 UTC+8（可选）</span>
+                <input
+                  type="time"
+                  value={refreshTimeUtc8}
+                  onChange={(event) => setRefreshTimeUtc8(event.currentTarget.value)}
+                />
+                <small>不填时按保存时间每 24 小时刷新。</small>
+              </label>
+            )}
             <label className="config-field">
               <span>每日每平台上限</span>
               <input
@@ -2090,7 +2199,7 @@ function ResearchConfigPanel({
               <ConfigImpactItem icon={<Target size={15} />} label="可采集关键词" value={`${activeKeywordCount} 条`} />
               <ConfigImpactItem icon={<ShieldCheck size={15} />} label="排除词" value={`${excludedKeywordCount} 条`} />
               <ConfigImpactItem icon={<Database size={15} />} label="直接采集平台" value={`${collectionReadyPlatforms.length} 个`} />
-              <ConfigImpactItem icon={<Clock size={15} />} label="刷新方式" value={labelRefreshCadence(refreshCadence)} />
+              <ConfigImpactItem icon={<Clock size={15} />} label="刷新方式" value={labelRefreshCadenceWithTime(refreshCadence, refreshTimeUtc8)} />
               <ConfigImpactItem icon={<Target size={15} />} label="每日每平台上限" value={`${dailyCollectionLimit} 条`} />
               <ConfigImpactItem icon={<Sparkles size={15} />} label="待处理候选词" value={`${candidateKeywords.length} 条`} />
             </div>

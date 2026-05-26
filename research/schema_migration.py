@@ -30,16 +30,23 @@ RESEARCH_GROWTH_PROJECT_REQUIRED_COLUMNS = {
     "refresh_cadence",
     "custom_interval_value",
     "custom_interval_unit",
+    "refresh_time_utc8",
     "daily_collection_limit_per_platform",
 }
 
 RESEARCH_CONTENT_TRACKER_REQUIRED_COLUMNS = {
+    "project_id",
     "latest_analysis_run_id",
     "latest_analysis_snapshot_id",
 }
 
 RESEARCH_COMPETITOR_ACCOUNT_REQUIRED_COLUMNS = {
     "monitor_type",
+    "project_ids_json",
+}
+
+RESEARCH_CREATOR_SEARCH_SESSION_REQUIRED_COLUMNS = {
+    "project_id",
 }
 
 TENANT_SCOPED_TABLES = {
@@ -171,6 +178,13 @@ async def ensure_research_schema(conn) -> None:
         statement_builder=_alter_research_competitor_accounts_statement,
         dialect=dialect,
     )
+    await _ensure_columns(
+        conn,
+        table_name="research_creator_search_sessions",
+        required=RESEARCH_CREATOR_SEARCH_SESSION_REQUIRED_COLUMNS,
+        statement_builder=_alter_research_creator_search_sessions_statement,
+        dialect=dialect,
+    )
     for table_name in sorted(TENANT_SCOPED_TABLES):
         await _ensure_columns(
             conn,
@@ -279,13 +293,31 @@ def _alter_research_jobs_statement(dialect: str, column: str) -> str | None:
 
 
 def _alter_research_competitor_accounts_statement(dialect: str, column: str) -> str | None:
-    if column != "monitor_type":
+    statements = {
+        "monitor_type": {
+            "sqlite": "ALTER TABLE research_competitor_accounts ADD COLUMN monitor_type VARCHAR(32) NOT NULL DEFAULT 'competitor'",
+            "postgresql": "ALTER TABLE research_competitor_accounts ADD COLUMN monitor_type VARCHAR(32) NOT NULL DEFAULT 'competitor'",
+            "mysql": "ALTER TABLE research_competitor_accounts ADD COLUMN monitor_type VARCHAR(32) NOT NULL DEFAULT 'competitor'",
+            "mariadb": "ALTER TABLE research_competitor_accounts ADD COLUMN monitor_type VARCHAR(32) NOT NULL DEFAULT 'competitor'",
+        },
+        "project_ids_json": {
+            "sqlite": "ALTER TABLE research_competitor_accounts ADD COLUMN project_ids_json JSON NOT NULL DEFAULT '[]'",
+            "postgresql": "ALTER TABLE research_competitor_accounts ADD COLUMN project_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb",
+            "mysql": "ALTER TABLE research_competitor_accounts ADD COLUMN project_ids_json JSON NULL",
+            "mariadb": "ALTER TABLE research_competitor_accounts ADD COLUMN project_ids_json JSON NULL",
+        },
+    }
+    return statements.get(column, {}).get(dialect)
+
+
+def _alter_research_creator_search_sessions_statement(dialect: str, column: str) -> str | None:
+    if column != "project_id":
         return None
     statements = {
-        "sqlite": "ALTER TABLE research_competitor_accounts ADD COLUMN monitor_type VARCHAR(32) NOT NULL DEFAULT 'competitor'",
-        "postgresql": "ALTER TABLE research_competitor_accounts ADD COLUMN monitor_type VARCHAR(32) NOT NULL DEFAULT 'competitor'",
-        "mysql": "ALTER TABLE research_competitor_accounts ADD COLUMN monitor_type VARCHAR(32) NOT NULL DEFAULT 'competitor'",
-        "mariadb": "ALTER TABLE research_competitor_accounts ADD COLUMN monitor_type VARCHAR(32) NOT NULL DEFAULT 'competitor'",
+        "sqlite": "ALTER TABLE research_creator_search_sessions ADD COLUMN project_id INTEGER NULL",
+        "postgresql": "ALTER TABLE research_creator_search_sessions ADD COLUMN project_id INTEGER NULL",
+        "mysql": "ALTER TABLE research_creator_search_sessions ADD COLUMN project_id INTEGER NULL",
+        "mariadb": "ALTER TABLE research_creator_search_sessions ADD COLUMN project_id INTEGER NULL",
     }
     return statements.get(dialect)
 
@@ -796,6 +828,7 @@ def _alter_research_growth_projects_statement(dialect: str, column: str) -> str 
             "refresh_cadence": "ALTER TABLE research_growth_projects ADD COLUMN refresh_cadence VARCHAR(32) NOT NULL DEFAULT 'off'",
             "custom_interval_value": "ALTER TABLE research_growth_projects ADD COLUMN custom_interval_value INTEGER NULL",
             "custom_interval_unit": "ALTER TABLE research_growth_projects ADD COLUMN custom_interval_unit VARCHAR(16) NULL",
+            "refresh_time_utc8": "ALTER TABLE research_growth_projects ADD COLUMN refresh_time_utc8 VARCHAR(5) NULL",
             "daily_collection_limit_per_platform": "ALTER TABLE research_growth_projects ADD COLUMN daily_collection_limit_per_platform INTEGER NOT NULL DEFAULT 50",
         },
         "postgresql": {
@@ -803,6 +836,7 @@ def _alter_research_growth_projects_statement(dialect: str, column: str) -> str 
             "refresh_cadence": "ALTER TABLE research_growth_projects ADD COLUMN refresh_cadence VARCHAR(32) NOT NULL DEFAULT 'off'",
             "custom_interval_value": "ALTER TABLE research_growth_projects ADD COLUMN custom_interval_value INTEGER NULL",
             "custom_interval_unit": "ALTER TABLE research_growth_projects ADD COLUMN custom_interval_unit VARCHAR(16) NULL",
+            "refresh_time_utc8": "ALTER TABLE research_growth_projects ADD COLUMN refresh_time_utc8 VARCHAR(5) NULL",
             "daily_collection_limit_per_platform": "ALTER TABLE research_growth_projects ADD COLUMN daily_collection_limit_per_platform INTEGER NOT NULL DEFAULT 50",
         },
         "mysql": {
@@ -810,6 +844,7 @@ def _alter_research_growth_projects_statement(dialect: str, column: str) -> str 
             "refresh_cadence": "ALTER TABLE research_growth_projects ADD COLUMN refresh_cadence VARCHAR(32) NOT NULL DEFAULT 'off'",
             "custom_interval_value": "ALTER TABLE research_growth_projects ADD COLUMN custom_interval_value INTEGER NULL",
             "custom_interval_unit": "ALTER TABLE research_growth_projects ADD COLUMN custom_interval_unit VARCHAR(16) NULL",
+            "refresh_time_utc8": "ALTER TABLE research_growth_projects ADD COLUMN refresh_time_utc8 VARCHAR(5) NULL",
             "daily_collection_limit_per_platform": "ALTER TABLE research_growth_projects ADD COLUMN daily_collection_limit_per_platform INTEGER NOT NULL DEFAULT 50",
         },
         "mariadb": {
@@ -817,6 +852,7 @@ def _alter_research_growth_projects_statement(dialect: str, column: str) -> str 
             "refresh_cadence": "ALTER TABLE research_growth_projects ADD COLUMN refresh_cadence VARCHAR(32) NOT NULL DEFAULT 'off'",
             "custom_interval_value": "ALTER TABLE research_growth_projects ADD COLUMN custom_interval_value INTEGER NULL",
             "custom_interval_unit": "ALTER TABLE research_growth_projects ADD COLUMN custom_interval_unit VARCHAR(16) NULL",
+            "refresh_time_utc8": "ALTER TABLE research_growth_projects ADD COLUMN refresh_time_utc8 VARCHAR(5) NULL",
             "daily_collection_limit_per_platform": "ALTER TABLE research_growth_projects ADD COLUMN daily_collection_limit_per_platform INTEGER NOT NULL DEFAULT 50",
         },
     }
@@ -826,18 +862,22 @@ def _alter_research_growth_projects_statement(dialect: str, column: str) -> str 
 def _alter_research_content_trackers_statement(dialect: str, column: str) -> str | None:
     statements: dict[str, dict[str, str]] = {
         "sqlite": {
+            "project_id": "ALTER TABLE research_content_trackers ADD COLUMN project_id INTEGER NULL",
             "latest_analysis_run_id": "ALTER TABLE research_content_trackers ADD COLUMN latest_analysis_run_id INTEGER NULL",
             "latest_analysis_snapshot_id": "ALTER TABLE research_content_trackers ADD COLUMN latest_analysis_snapshot_id INTEGER NULL",
         },
         "postgresql": {
+            "project_id": "ALTER TABLE research_content_trackers ADD COLUMN project_id INTEGER NULL",
             "latest_analysis_run_id": "ALTER TABLE research_content_trackers ADD COLUMN latest_analysis_run_id INTEGER NULL",
             "latest_analysis_snapshot_id": "ALTER TABLE research_content_trackers ADD COLUMN latest_analysis_snapshot_id INTEGER NULL",
         },
         "mysql": {
+            "project_id": "ALTER TABLE research_content_trackers ADD COLUMN project_id INTEGER NULL",
             "latest_analysis_run_id": "ALTER TABLE research_content_trackers ADD COLUMN latest_analysis_run_id INTEGER NULL",
             "latest_analysis_snapshot_id": "ALTER TABLE research_content_trackers ADD COLUMN latest_analysis_snapshot_id INTEGER NULL",
         },
         "mariadb": {
+            "project_id": "ALTER TABLE research_content_trackers ADD COLUMN project_id INTEGER NULL",
             "latest_analysis_run_id": "ALTER TABLE research_content_trackers ADD COLUMN latest_analysis_run_id INTEGER NULL",
             "latest_analysis_snapshot_id": "ALTER TABLE research_content_trackers ADD COLUMN latest_analysis_snapshot_id INTEGER NULL",
         },

@@ -48,6 +48,7 @@ from research.enums import (
     JOB_CANCELLED,
     JOB_COMPLETED,
     JOB_FAILED,
+    JOB_PAUSED_BY_PLATFORM_CONFIG,
     JOB_PENDING,
     JOB_QUEUED,
     JOB_RUNNING,
@@ -59,6 +60,7 @@ from research.database_guard import (
 )
 from research.platforms import BACKFILL_RESEARCH_PLATFORMS, list_research_platform_options
 from research.repository import ResearchRepository
+from research.schedule_time import next_utc8_daily_run_at
 from research.scheduler import ResearchScheduler
 from research.schemas import (
     AttributionConfigUpdate,
@@ -695,6 +697,7 @@ async def create_growth_project(request: GrowthProjectCreate):
                 "collection_status": "queued" if request.start_immediately else "not_started",
                 "comment_collection_enabled": request.collection_depth != "lightweight",
                 "refresh_cadence": request.refresh_cadence,
+                "refresh_time_utc8": request.refresh_time_utc8 if request.refresh_cadence == "daily" else None,
                 "daily_collection_limit_per_platform": request.daily_collection_limit_per_platform,
                 "sample_status": "sample_insufficient",
                 "recommended_action": "wait_for_collection"
@@ -759,6 +762,7 @@ async def create_growth_project(request: GrowthProjectCreate):
             "refresh_cadence": request.refresh_cadence,
             "custom_interval_value": None,
             "custom_interval_unit": None,
+            "refresh_time_utc8": request.refresh_time_utc8 if request.refresh_cadence == "daily" else None,
             "daily_collection_limit_per_platform": request.daily_collection_limit_per_platform,
         },
         project_name=request.name,
@@ -863,6 +867,8 @@ async def update_growth_project(project_id: str, request: GrowthProjectUpdate):
                 scene_pack_id=scene_pack_id,
                 mode=keyword_mode,
             )
+    if payload.get("refresh_cadence") and payload.get("refresh_cadence") != "daily":
+        payload["refresh_time_utc8"] = None
     project = await repository.update_growth_project(record["id"], payload)
     if project is None:
         raise HTTPException(status_code=404, detail="Growth project not found")
@@ -880,6 +886,7 @@ async def update_growth_project(project_id: str, request: GrowthProjectUpdate):
         or "refresh_cadence" in payload
         or "custom_interval_value" in payload
         or "custom_interval_unit" in payload
+        or "refresh_time_utc8" in payload
     ):
         await _sync_growth_project_collection_plans(repository, project)
     keyword_rows = await repository.list_growth_project_keywords(record["id"])
@@ -2441,6 +2448,11 @@ async def _sync_growth_project_scheduled_job(
 ) -> dict[str, Any]:
     active_keywords = collect_active_project_keywords(keyword_rows)
     interval_minutes = content_strategy_refresh_interval_minutes(project_record)
+    fixed_refresh_time = (
+        project_record.get("refresh_time_utc8")
+        if str(project_record.get("refresh_cadence") or "") == "daily"
+        else None
+    )
     jobs = await repository.list_jobs_for_project([project_id])
     scheduled_job = next(
         (
@@ -2463,6 +2475,7 @@ async def _sync_growth_project_scheduled_job(
         }
     )
     policy.growth_project_key = _growth_project_job_key(int(project_record["id"]))
+    policy.refresh_time_utc8 = fixed_refresh_time
     payload = {
         "name": f"{project_name} scheduled refresh",
         "topic": project_id,
@@ -2478,7 +2491,9 @@ async def _sync_growth_project_scheduled_job(
     schedule_status = JOB_PENDING if start_immediately else JOB_COMPLETED
     next_run_at = None
     if interval_minutes is not None and not start_immediately:
-        next_run_at = datetime.now(timezone.utc) + timedelta(minutes=interval_minutes)
+        next_run_at = next_utc8_daily_run_at(fixed_refresh_time) or (
+            datetime.now(timezone.utc) + timedelta(minutes=interval_minutes)
+        )
 
     if scheduled_job is None:
         created = await get_service().create_job(

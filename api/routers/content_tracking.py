@@ -57,6 +57,16 @@ DEFAULT_REALTIME_COLLECTION_WINDOW_DAYS = 3
 DEFAULT_TRACKER_COLLECTION_PLATFORMS = ["xhs", "dy"]
 COLLECTION_PROGRESS_POLL_SECONDS = 1.2
 COLLECTION_LOG_MAX_LENGTH = 180
+TRACKER_ANALYSIS_ACTIVE_STATUSES = {"queued", "running"}
+TRACKER_ANALYSIS_PROGRESS_STEPS: dict[str, tuple[str, int]] = {
+    "queued": ("已创建分析任务", 8),
+    "loading_posts": ("正在加载内容池", 24),
+    "scoring_candidates": ("正在筛选候选样本", 48),
+    "refining_samples": ("正在优化分析结果", 68),
+    "saving_results": ("正在保存分析结果", 88),
+    "completed": ("分析完成", 100),
+    "failed": ("分析失败", 100),
+}
 PLATFORM_LABELS = {
     "xhs": "小红书",
     "dy": "抖音",
@@ -112,6 +122,18 @@ def _set_collection_latest_log(
 def _initial_collection_summary(tracker: dict[str, Any]) -> dict[str, Any]:
     summary = {"tracker_name": tracker.get("name")}
     return _set_collection_latest_log(summary, "任务已创建，等待开始采集", stage="queued")
+
+
+async def _ensure_growth_project_exists(
+    repository: ResearchRepository,
+    project_id: int | None,
+) -> dict[str, Any] | None:
+    if project_id is None:
+        return None
+    project = await repository.get_growth_project_record(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Growth project not found")
+    return project
 
 
 def _resolve_realtime_platforms(platforms: list[str]) -> list[str]:
@@ -191,36 +213,205 @@ def _build_tracker_collection_comment_policy(
     return policy
 
 
-async def _persist_tracker_analysis_snapshot(
+def _tracker_analysis_input_summary(
+    tracker: dict[str, Any],
+    *,
+    post_pool_size: int | None = None,
+    window_days: int | None = None,
+) -> dict[str, Any]:
+    summary = {
+        "platforms": sorted(item for item in (tracker.get("platforms") or []) if item),
+        "included_keywords": [item for item in (tracker.get("included_keywords") or []) if item],
+        "excluded_keywords": [item for item in (tracker.get("excluded_keywords") or []) if item],
+    }
+    if window_days is not None:
+        summary["window_days"] = int(window_days)
+    if post_pool_size is not None:
+        summary["post_pool_size"] = int(post_pool_size)
+    return summary
+
+
+def _build_tracker_analysis_progress(stage: str, message: str) -> dict[str, Any]:
+    label, percent = TRACKER_ANALYSIS_PROGRESS_STEPS.get(
+        stage,
+        (stage or "分析中", 0),
+    )
+    return {
+        "stage": stage,
+        "label": label,
+        "percent": percent,
+        "message": message,
+        "updated_at": _now_utc().isoformat(),
+    }
+
+
+async def _update_tracker_analysis_progress(
+    repository: ResearchRepository,
+    run_id: int,
+    *,
+    status: str,
+    stage: str,
+    message: str,
+    input_summary: dict[str, Any] | None = None,
+    summary: dict[str, Any] | None = None,
+    error_message: str | None = None,
+    completed_at: datetime | None = None,
+) -> dict[str, Any] | None:
+    next_summary = dict(summary or {})
+    next_summary["progress"] = _build_tracker_analysis_progress(stage, message)
+    payload: dict[str, Any] = {
+        "status": status,
+        "summary": next_summary,
+    }
+    if input_summary is not None:
+        payload["input_summary"] = input_summary
+    if error_message is not None:
+        payload["error_message"] = error_message
+    if completed_at is not None:
+        payload["completed_at"] = completed_at
+    return await repository.update_content_tracker_analysis_run(run_id, payload)
+
+
+async def _create_tracker_analysis_run_record(
     repository: ResearchRepository,
     tracker: dict[str, Any],
     *,
     analysis_version: str = "v1",
     window_days: int = 7,
+    queued_message: str = "已创建分析任务，等待后台开始执行。",
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    run = await repository.create_content_tracker_analysis_run(
+        {
+            "tracker_id": tracker["id"],
+            "status": "queued",
+            "analysis_version": analysis_version,
+            "window_days": window_days,
+            "started_at": _now_utc(),
+            "input_summary": _tracker_analysis_input_summary(
+                tracker,
+                window_days=window_days,
+            ),
+            "summary": {
+                "progress": _build_tracker_analysis_progress("queued", queued_message),
+            },
+        }
+    )
+    tracker_with_run = await repository.set_content_tracker_latest_run(
+        tracker_id=tracker["id"],
+        run_id=run["id"],
+    )
+    return run, tracker_with_run or tracker
+
+
+async def _get_active_tracker_analysis_run(
+    repository: ResearchRepository,
+    tracker: dict[str, Any],
+) -> dict[str, Any] | None:
+    run_id = tracker.get("latest_analysis_run_id")
+    if not run_id:
+        return None
+    run = await repository.get_content_tracker_analysis_run(int(run_id))
+    if run is None:
+        return None
+    if int(run.get("tracker_id") or 0) != int(tracker["id"]):
+        return None
+    status = str(run.get("status") or "").strip().lower()
+    if status not in TRACKER_ANALYSIS_ACTIVE_STATUSES:
+        return None
+    return run
+
+
+async def _persist_tracker_analysis_snapshot(
+    repository: ResearchRepository,
+    tracker: dict[str, Any],
+    *,
+    existing_run_id: int | None = None,
+    analysis_version: str = "v1",
+    window_days: int = 7,
 ) -> dict[str, Any]:
+    run = None
+    if existing_run_id is None:
+        run, tracker = await _create_tracker_analysis_run_record(
+            repository,
+            tracker,
+            analysis_version=analysis_version,
+            window_days=window_days,
+            queued_message="分析任务已创建，准备读取内容池。",
+        )
+        existing_run_id = int(run["id"])
+    else:
+        run = await repository.get_content_tracker_analysis_run(existing_run_id)
+        if run is None:
+            raise RuntimeError("Tracker analysis run not found")
+
+    await _update_tracker_analysis_progress(
+        repository,
+        existing_run_id,
+        status="running",
+        stage="loading_posts",
+        message="正在读取最新内容池。",
+        input_summary=_tracker_analysis_input_summary(
+            tracker,
+            window_days=window_days,
+        ),
+    )
     posts = await repository.list_all_posts(limit=2000)
+    await _update_tracker_analysis_progress(
+        repository,
+        existing_run_id,
+        status="running",
+        stage="scoring_candidates",
+        message=f"已读取 {len(posts)} 条内容，正在筛选候选样本。",
+        input_summary=_tracker_analysis_input_summary(
+            tracker,
+            window_days=window_days,
+            post_pool_size=len(posts),
+        ),
+    )
     analysis_bundle = build_tracker_analysis_snapshot(
         tracker=tracker,
         posts=posts,
         analysis_version=analysis_version,
         window_days=window_days,
     )
+    candidate_rows = analysis_bundle.get("candidate_rows") or []
+    await _update_tracker_analysis_progress(
+        repository,
+        existing_run_id,
+        status="running",
+        stage="refining_samples",
+        message=f"已筛出 {len(candidate_rows)} 条候选内容，正在优化分析结果。",
+        input_summary=_tracker_analysis_input_summary(
+            tracker,
+            window_days=window_days,
+            post_pool_size=len(posts),
+        ),
+        summary=analysis_bundle["run"].get("summary") or {},
+    )
     analysis_bundle = await _maybe_refine_tracker_samples_with_ai(
         repository=repository,
         tracker=tracker,
         analysis_bundle=analysis_bundle,
     )
-    run = await repository.create_content_tracker_analysis_run(analysis_bundle["run"])
+    await _update_tracker_analysis_progress(
+        repository,
+        existing_run_id,
+        status="running",
+        stage="saving_results",
+        message="正在写入分析快照与候选样本。",
+        input_summary=analysis_bundle["run"].get("input_summary") or {},
+        summary=analysis_bundle["run"].get("summary") or {},
+    )
     try:
         await repository.replace_content_tracker_candidate_samples(
-            run_id=run["id"],
+            run_id=existing_run_id,
             tracker_id=tracker["id"],
             candidates=analysis_bundle["candidate_rows"],
         )
         snapshot = await repository.create_content_tracker_analysis_snapshot(
             {
                 "tracker_id": tracker["id"],
-                "run_id": run["id"],
+                "run_id": existing_run_id,
                 "snapshot_date": date.today(),
                 "status": "ready",
                 "overview": analysis_bundle["overview"],
@@ -237,23 +428,38 @@ async def _persist_tracker_analysis_snapshot(
         legacy_snapshot = await repository.create_content_tracking_snapshot(
             analysis_bundle["legacy_snapshot"]
         )
-        await repository.set_content_tracker_latest_analysis(
+        tracker = await repository.set_content_tracker_latest_analysis(
             tracker_id=tracker["id"],
-            run_id=run["id"],
+            run_id=existing_run_id,
             snapshot_id=snapshot["id"],
         )
-    except Exception as exc:
-        await repository.update_content_tracker_analysis_run(
-            run["id"],
+        final_summary = dict(analysis_bundle["run"].get("summary") or {})
+        final_summary["progress"] = _build_tracker_analysis_progress(
+            "completed",
+            "本次分析已完成，结果已刷新。",
+        )
+        run = await repository.update_content_tracker_analysis_run(
+            existing_run_id,
             {
-                "status": "failed",
-                "error_message": str(exc),
+                **analysis_bundle["run"],
+                "status": "completed",
                 "completed_at": _now_utc(),
+                "summary": final_summary,
             },
+        )
+    except Exception as exc:
+        run = await _update_tracker_analysis_progress(
+            repository,
+            existing_run_id,
+            status="failed",
+            stage="failed",
+            message=f"分析失败：{exc}",
+            error_message=str(exc),
+            completed_at=_now_utc(),
         )
         raise
     return {
-        "tracker": analysis_bundle["tracker"],
+        "tracker": tracker or analysis_bundle["tracker"],
         "overview": analysis_bundle["overview"],
         "trends": analysis_bundle["trends"],
         "keywords": analysis_bundle["keywords"],
@@ -263,7 +469,7 @@ async def _persist_tracker_analysis_snapshot(
         "risks": analysis_bundle["risks"],
         "decisions": analysis_bundle["decisions"],
         "meta": analysis_bundle["meta"],
-        "run": run,
+        "run": run or await repository.get_content_tracker_analysis_run(existing_run_id),
         "snapshot": snapshot,
         "legacy_snapshot": legacy_snapshot,
         "legacy_analysis": analysis_bundle["legacy_analysis"],
@@ -350,6 +556,40 @@ async def _maybe_refine_tracker_samples_with_ai(
             error=str(exc),
         )
         return analysis_bundle
+
+
+async def _run_tracker_analysis_task(
+    tracker_id: int,
+    run_id: int,
+    *,
+    analysis_version: str = "v1",
+    window_days: int = 7,
+) -> None:
+    repository = ResearchRepository()
+    try:
+        tracker = await repository.get_content_tracker(tracker_id)
+        if tracker is None:
+            raise RuntimeError("Content tracker not found")
+        await _persist_tracker_analysis_snapshot(
+            repository,
+            tracker,
+            existing_run_id=run_id,
+            analysis_version=analysis_version,
+            window_days=window_days,
+        )
+    except Exception as exc:
+        try:
+            await _update_tracker_analysis_progress(
+                repository,
+                run_id,
+                status="failed",
+                stage="failed",
+                message=f"分析失败：{exc}",
+                error_message=str(exc),
+                completed_at=_now_utc(),
+            )
+        except Exception:
+            pass
 
 
 async def _execute_tracker_collection_job(job_id: int) -> dict[str, Any]:
@@ -938,18 +1178,25 @@ async def analyze_content_with_ai(request: ContentTrackingAIAnalysisRequest):
 @router.post("/trackers")
 async def create_tracker(request: ContentTrackerCreate):
     require_research_database()
-    tracker = await ResearchRepository().create_content_tracker(
-        request.model_dump(mode="python")
-    )
+    repository = ResearchRepository()
+    payload = request.model_dump(mode="python")
+    await _ensure_growth_project_exists(repository, payload.get("project_id"))
+    tracker = await repository.create_content_tracker(payload)
     return tracker
 
 
 @router.get("/trackers")
-async def list_trackers(enabled_only: bool = False):
+async def list_trackers(
+    enabled_only: bool = False,
+    project_id: int | None = None,
+):
     require_research_database()
+    repository = ResearchRepository()
+    await _ensure_growth_project_exists(repository, project_id)
     return {
-        "trackers": await ResearchRepository().list_content_trackers(
+        "trackers": await repository.list_content_trackers(
             enabled_only=enabled_only,
+            project_id=project_id,
         )
     }
 
@@ -958,9 +1205,12 @@ async def list_trackers(enabled_only: bool = False):
 async def update_tracker(tracker_id: int, request: ContentTrackerUpdate):
     require_research_database()
     repository = ResearchRepository()
+    payload = request.model_dump(mode="python", exclude_unset=True)
+    if "project_id" in payload:
+        await _ensure_growth_project_exists(repository, payload.get("project_id"))
     tracker = await repository.update_content_tracker(
         tracker_id,
-        request.model_dump(mode="python", exclude_unset=True),
+        payload,
     )
     if tracker is None:
         raise HTTPException(status_code=404, detail="Content tracker not found")
@@ -1009,7 +1259,23 @@ async def analyze_tracker(tracker_id: int):
     tracker = await repository.get_content_tracker(tracker_id)
     if tracker is None:
         raise HTTPException(status_code=404, detail="Content tracker not found")
-    return await _persist_tracker_analysis_snapshot(repository, tracker)
+    active_run = await _get_active_tracker_analysis_run(repository, tracker)
+    if active_run is not None:
+        return {
+            "tracker": tracker,
+            "run": active_run,
+        }
+    run, tracker_with_run = await _create_tracker_analysis_run_record(repository, tracker)
+    asyncio.create_task(
+        _run_tracker_analysis_task(
+            tracker["id"],
+            run["id"],
+        )
+    )
+    return {
+        "tracker": tracker_with_run,
+        "run": run,
+    }
 
 
 @router.post("/trackers/{tracker_id}/collect")

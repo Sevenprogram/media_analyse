@@ -63,6 +63,7 @@ import type {
   PostRecord,
   RawRecord,
   ResearchJob,
+  TodayIntelligenceSummary,
 } from "../types";
 
 type TodayIntelligencePageProps = {
@@ -70,8 +71,10 @@ type TodayIntelligencePageProps = {
   databaseStats: DatabaseStats;
   aiInsights: AiInsightSummary;
   aiTopicIdeas: AiTopicIdeasSummary;
+  todayIntelligence: TodayIntelligenceSummary | null;
   jobs: ResearchJob[];
   onRefresh: () => Promise<void>;
+  onRegenerate: () => Promise<void>;
   onExecute: (opportunity: DashboardOpportunity) => void;
   onFeedback: (opportunity: DashboardOpportunity, feedback: "valid" | "false_positive" | "watch") => Promise<void>;
 };
@@ -100,6 +103,9 @@ type KeywordHeatPageProps = {
   posts: PostRecord[];
   databaseStats: DatabaseStats;
 };
+
+type OpportunityTypeKey = "content" | "creator" | "topic";
+type OpportunityTabKey = "all" | OpportunityTypeKey;
 
 function number(value: unknown) {
   const next = Number(value);
@@ -409,20 +415,98 @@ const cleanTitle = (title: string) => {
   return title.split(/\s*\/\s*/)[0];
 };
 
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function stringValue(value: unknown, fallback = "") {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function aiStatusLabel(todayIntelligence: TodayIntelligenceSummary | null) {
+  const status = todayIntelligence?.ai_status?.status || todayIntelligence?.status;
+  const source = todayIntelligence?.ai_status?.source || todayIntelligence?.source;
+  if (status === "completed" && source === "ai") return "AI 分析完成";
+  if (status === "fallback") return "AI 降级：规则分析";
+  if (status === "stale") return "数据已过期";
+  if (status === "running") return "AI 分析中";
+  if (status === "error") return "AI 分析失败";
+  return "等待 AI 分析";
+}
+
+function aiStatusTone(todayIntelligence: TodayIntelligenceSummary | null) {
+  const status = todayIntelligence?.ai_status?.status || todayIntelligence?.status;
+  if (status === "completed") return "is-ready";
+  if (status === "fallback" || status === "stale") return "is-fallback";
+  if (status === "error") return "is-error";
+  return "is-pending";
+}
+
+function normalizeAiActions(actions: Array<Record<string, unknown>>) {
+  return actions.slice(0, 8).map((item, index) => {
+    const action = stringValue(item.action, "view_detail");
+    const isHigh = index < 2 || action === "retry_task" || action === "collect_more";
+    return {
+      id: stringValue(item.id, `ai-action-${index}`),
+      title: stringValue(item.title, "处理今日情报动作"),
+      reason: stringValue(item.reason, "AI 基于当前真实数据生成的行动建议。"),
+      bucket: isHigh ? "立即处理" : "今日观察",
+      priority: isHigh ? "高优先级" : "今日观察",
+      dotColor: isHigh ? "red" : "orange",
+      tagClass: isHigh ? "p-high" : "p-medium",
+      deadline: isHigh ? "2 小时内" : "今天",
+      btnText: action === "collect_more" ? "去补采" : action === "contact_creator" ? "去跟进" : "去处理",
+      actionKind: action,
+      rawOpportunity: undefined,
+    };
+  });
+}
+
+function normalizeDashboardActions(actions: Array<DashboardAction & { bucket: string }>) {
+  return actions.map((a, i) => {
+    const isHigh = a.bucket === "立即处理" || i < 2;
+    return {
+      id: `real-action-${i}`,
+      title: a.title,
+      reason: a.reason,
+      bucket: a.bucket,
+      priority: isHigh ? "高优先级" : "今日观察",
+      dotColor: isHigh ? "red" : "orange",
+      tagClass: isHigh ? "p-high" : "p-medium",
+      deadline: isHigh ? "2 小时内" : "今天",
+      btnText: isHigh ? "去处理" : "去查看",
+      actionKind: a.action || "view_detail",
+      rawOpportunity: undefined,
+    };
+  });
+}
+
+function explanationMap(items: Array<Record<string, unknown>>, idField: string) {
+  const map = new Map<string, Record<string, unknown>>();
+  for (const item of items) {
+    const id = stringValue(item[idField]);
+    if (id) map.set(id, item);
+  }
+  return map;
+}
+
 export function TodayIntelligencePage({
   dashboard,
   databaseStats,
   aiInsights,
   aiTopicIdeas,
+  todayIntelligence,
   jobs,
   onRefresh,
+  onRegenerate,
   onExecute,
   onFeedback,
 }: TodayIntelligencePageProps) {
   const [selected, setSelected] = React.useState<any | null>(null);
-  const [activeOpportunityTab, setActiveOpportunityTab] = React.useState<string>("all");
+  const [activeOpportunityTab, setActiveOpportunityTab] = React.useState<OpportunityTabKey>("all");
   const [sortBy, setSortBy] = React.useState<string>("score");
   const [loading, setLoading] = React.useState<boolean>(false);
+  const [regenerating, setRegenerating] = React.useState<boolean>(false);
 
   const failedJobs = jobs.filter((job) => job.status === "failed").length;
   const runningJobs = jobs.filter((job) => job.status === "running").length;
@@ -437,49 +521,70 @@ export function TodayIntelligencePage({
     }
   };
 
+  const triggerRegenerate = async () => {
+    setRegenerating(true);
+    try {
+      await onRegenerate();
+    } finally {
+      setRegenerating(false);
+    }
+  };
+
   // Blended Action Checklist Items
   const blendedActions = React.useMemo(() => {
+    const aiActions = normalizeAiActions((todayIntelligence?.actions || []).map(recordValue));
+    if (aiActions.length) return aiActions;
     const realActions = actionRows(dashboard);
-    const processedReal = realActions.map((a, i) => {
-      const isHigh = a.bucket === "立即处理" || i < 2;
-      return {
-        id: `real-action-${i}`,
-        title: a.title,
-        reason: a.reason,
-        bucket: a.bucket,
-        priority: isHigh ? "高优先级" : "今日观察",
-        dotColor: isHigh ? "red" : "orange",
-        tagClass: isHigh ? "p-high" : "p-medium",
-        deadline: isHigh ? "2 小时内" : "今天",
-        btnText: isHigh ? "去处理" : "去查看",
-        actionKind: "execute_action",
-        rawOpportunity: undefined
-      };
-    });
+    const processedReal = normalizeDashboardActions(realActions);
+    if (processedReal.length) return processedReal;
+    if (number(databaseStats.total_collected) === 0) {
+      return [{
+        id: "empty-start-collection",
+        title: "启动首轮真实采集",
+        reason: "当前还没有真实样本，今日情报会在采集后自动生成 AI 分析。",
+        bucket: "初始化",
+        priority: "先采集",
+        dotColor: "orange",
+        tagClass: "p-medium",
+        deadline: "今天",
+        btnText: "去创建",
+        actionKind: "start_collection",
+        rawOpportunity: undefined,
+      }];
+    }
+    return [];
+  }, [dashboard, databaseStats.total_collected, todayIntelligence]);
 
-    const filteredDefaults = mockActions.filter(
-      (m) => !processedReal.some((r) => r.title.toLowerCase() === m.title.toLowerCase())
-    );
+  const opportunityExplanations = React.useMemo(
+    () => explanationMap((todayIntelligence?.opportunity_explanations || []).map(recordValue), "opportunity_id"),
+    [todayIntelligence],
+  );
 
-    return [...processedReal, ...filteredDefaults];
-  }, [dashboard]);
+  const riskExplanations = React.useMemo(
+    () => explanationMap((todayIntelligence?.risk_explanations || []).map(recordValue), "risk_id"),
+    [todayIntelligence],
+  );
 
   // Merged Opportunities
   const mergedOpportunities = React.useMemo(() => {
     const realOpps = opportunityRows(dashboard);
     const processedReal = realOpps.map((o) => {
       const pld = (o.payload || {}) as any;
+      const aiExplanation = opportunityExplanations.get(o.id);
+      const aiReason = stringValue(aiExplanation?.why_now);
       return {
         id: o.id,
         name: o.name,
         display_title: o.display_title || o.name,
-        type: o.type || "content",
+        type: o.type === "creator" ? "creator" : o.type === "content" ? "content" : "topic",
+        originalType: o.type,
         platform: o.platform || "xhs",
         score: o.score || 50,
         change_24h: o.change_24h || o.trend?.change_24h || 0,
         confidence: o.confidence || "medium",
         evidence_count: o.evidence_count || o.samples?.length || 0,
-        reason: o.reason || o.evidence_summary?.[0] || "暂无证据摘要",
+        reason: aiReason || o.reason || o.evidence_summary?.[0] || "暂无证据摘要",
+        aiExplanation,
         evidence_summary: o.evidence_summary || [],
         samples: o.samples || [],
         estReach: pld.est_reach || "3.5w - 6.2w",
@@ -496,12 +601,9 @@ export function TodayIntelligencePage({
       };
     });
 
-    const filteredDefaults = premiumDefaultOpportunities.filter(
-      (d) => !processedReal.some((r) => r.name.toLowerCase() === d.name.toLowerCase())
-    );
-
-    return [...processedReal, ...filteredDefaults];
-  }, [dashboard]);
+    if (processedReal.length) return processedReal;
+    return number(databaseStats.total_collected) === 0 ? [] : [];
+  }, [dashboard, databaseStats.total_collected, opportunityExplanations]);
 
   // Tab Counts
   const tabCounts = React.useMemo(() => {
@@ -513,69 +615,102 @@ export function TodayIntelligencePage({
     };
   }, [mergedOpportunities]);
 
+  const visibleOpportunityTypes = React.useMemo<OpportunityTypeKey[]>(() => {
+    const types: OpportunityTypeKey[] = [];
+    if (tabCounts.content > 0) types.push("content");
+    if (tabCounts.creator > 0) types.push("creator");
+    if (tabCounts.topic > 0) types.push("topic");
+    return types;
+  }, [tabCounts.content, tabCounts.creator, tabCounts.topic]);
+
+  const showOpportunityTabs = visibleOpportunityTypes.length > 1;
+  const effectiveOpportunityTab: OpportunityTabKey =
+    showOpportunityTabs &&
+    activeOpportunityTab !== "all" &&
+    visibleOpportunityTypes.includes(activeOpportunityTab)
+      ? activeOpportunityTab
+      : "all";
+
+  React.useEffect(() => {
+    if (activeOpportunityTab !== effectiveOpportunityTab) {
+      setActiveOpportunityTab(effectiveOpportunityTab);
+    }
+  }, [activeOpportunityTab, effectiveOpportunityTab]);
+
   // Filtered and Sorted Opportunities
   const filteredOpportunities = React.useMemo(() => {
     let list = mergedOpportunities;
-    if (activeOpportunityTab !== "all") {
-      list = list.filter((o) => o.type === activeOpportunityTab);
+    if (effectiveOpportunityTab !== "all") {
+      list = list.filter((o) => o.type === effectiveOpportunityTab);
     }
     if (sortBy === "score") {
       return [...list].sort((a, b) => b.score - a.score);
     } else {
       return [...list].sort((a, b) => Math.abs(b.change_24h) - Math.abs(a.change_24h));
     }
-  }, [mergedOpportunities, activeOpportunityTab, sortBy]);
+  }, [mergedOpportunities, effectiveOpportunityTab, sortBy]);
 
   // Blended Risk Tasks
   const activeRisks = React.useMemo(() => {
     const list: any[] = [];
     if (dashboard.decision.risk_notes?.length) {
       dashboard.decision.risk_notes.forEach((note, index) => {
-        if (!note.includes("先采集样本") && !note.includes("缺少足够")) {
-          list.push({
-            id: `real-risk-${index}`,
-            platform: "sys",
-            title: "系统研判警示",
-            statusLabel: "影响数据",
-            isRed: true,
-            desc: note,
-            time: "刚刚",
-          });
-        }
+        const id = `decision-risk-${index}`;
+        const aiRisk = riskExplanations.get(id);
+        list.push({
+          id,
+          platform: "sys",
+          title: stringValue(aiRisk?.recommended_action, "系统研判警示"),
+          statusLabel: "影响数据",
+          isRed: true,
+          desc: stringValue(aiRisk?.business_impact, note),
+          time: "刚刚",
+        });
+      });
+    }
+    (dashboard.diagnostics || []).forEach((item) => {
+      const id = `diagnostic-${item.code}`;
+      const aiRisk = riskExplanations.get(id);
+      list.push({
+        id,
+        platform: "sys",
+        title: stringValue(aiRisk?.recommended_action, item.title),
+        statusLabel: item.code?.includes("error") ? "影响数据" : "待确认",
+        isRed: item.code?.includes("error") || item.code?.includes("failed"),
+        desc: stringValue(aiRisk?.business_impact, item.body),
+        time: "刚刚",
+      });
+    });
+    if (failedJobs > 0) {
+      const id = "monitoring-failed-jobs";
+      const aiRisk = riskExplanations.get(id);
+      list.push({
+        id,
+        platform: "sys",
+        title: stringValue(aiRisk?.recommended_action, "采集任务失败"),
+        statusLabel: "影响数据",
+        isRed: true,
+        desc: stringValue(aiRisk?.business_impact, `${failedJobs} 个采集任务失败，需要先查看任务日志。`),
+        time: "刚刚",
       });
     }
 
-    list.push({
-      id: "risk-1",
-      platform: "dy",
-      title: "抖音·运行心跳",
-      statusLabel: "影响数据",
-      isRed: true,
-      desc: "采集仍在运行，账号请求频率超限，已自动暂停 45s 避封。",
-      time: "05/22 06:40",
-    });
-    list.push({
-      id: "risk-2",
-      platform: "xhs",
-      title: "小红书·内容采集",
-      statusLabel: "延迟风险",
-      isRed: false,
-      desc: "代理 IP 切换频繁导致响应延迟，可能延迟今日热门笔记时效。",
-      time: "05/22 06:25",
-    });
-
     return list;
-  }, [dashboard]);
+  }, [dashboard, failedJobs, riskExplanations]);
 
   // Donut Quality Chart Stats
   const donutStats = React.useMemo(() => {
-    const total = databaseStats.research_posts || 10000;
-    const isDefault = total === 10000 || total === 9980 || total === 0;
-    const valid = isDefault ? 8642 : Math.round(total * 0.8642);
-    const lowQuality = isDefault ? 1098 : Math.round(total * 0.1098);
-    const invalid = isDefault ? 260 : total - valid - lowQuality;
+    const valid = Math.max(0, number(databaseStats.research_posts));
+    const lowQuality = Math.max(0, number(databaseStats.raw_records));
+    const invalid = 0;
+    const total = valid + lowQuality + invalid;
+    const percent = total > 0 ? Math.round((valid / total) * 100) : 0;
+    const lowQualityPercent = total > 0 ? Math.round((lowQuality / total) * 100) : 0;
+    const invalidPercent = Math.max(0, 100 - percent - lowQualityPercent);
     return {
-      percent: 86,
+      percent,
+      lowQualityPercent,
+      invalidPercent,
       valid,
       lowQuality,
       invalid,
@@ -586,12 +721,12 @@ export function TodayIntelligencePage({
   // Platform Grid Data
   const platformGridItems = React.useMemo(() => {
     const defaultPlatforms = [
-      { id: "xhs", label: "小红书", iconChar: "书", baseColor: "#ff2442", count: 12846, growth: "↑ 18%" },
-      { id: "dy", label: "抖音", iconChar: "音", baseColor: "#000000", count: 8231, growth: "↑ 12%" },
-      { id: "wb", label: "微博", iconChar: "博", baseColor: "#fc9e24", count: 6542, growth: "↑ 9%" },
-      { id: "tb", label: "贴吧", iconChar: "贴", baseColor: "#2932e1", count: 3214, growth: "↑ 7%" },
-      { id: "wx", label: "微信", iconChar: "信", baseColor: "#07c160", count: 2105, growth: "↑ 6%" },
-      { id: "zh", label: "知乎", iconChar: "知", baseColor: "#0084ff", count: 1876, growth: "↑ 5%" },
+      { id: "xhs", label: "小红书", iconChar: "书", baseColor: "#ff2442", count: 0, growth: "真实统计" },
+      { id: "dy", label: "抖音", iconChar: "音", baseColor: "#000000", count: 0, growth: "真实统计" },
+      { id: "wb", label: "微博", iconChar: "博", baseColor: "#fc9e24", count: 0, growth: "真实统计" },
+      { id: "tb", label: "贴吧", iconChar: "贴", baseColor: "#2932e1", count: 0, growth: "真实统计" },
+      { id: "wx", label: "微信", iconChar: "信", baseColor: "#07c160", count: 0, growth: "真实统计" },
+      { id: "zh", label: "知乎", iconChar: "知", baseColor: "#0084ff", count: 0, growth: "真实统计" },
     ];
 
     return defaultPlatforms.map((p) => {
@@ -603,7 +738,7 @@ export function TodayIntelligencePage({
       }
       return {
         ...p,
-        count: activeCount || p.count,
+        count: activeCount || 0,
       };
     });
   }, [databaseStats]);
@@ -654,6 +789,12 @@ export function TodayIntelligencePage({
     );
   };
 
+  const provider = todayIntelligence?.ai_status?.provider || todayIntelligence?.provider;
+  const providerText = provider ? [provider.name, provider.model].filter(Boolean).join(" / ") : "AI Gateway";
+  const generatedAt = todayIntelligence?.ai_status?.generated_at || todayIntelligence?.generated_at || dashboard.monitoring.last_updated_at;
+  const summaryText = todayIntelligence?.executive_summary || dashboard.decision.headline;
+  const sampleQualityExplanation = recordValue(todayIntelligence?.sample_quality_explanation);
+
   return (
     <section className="gi-page" style={{ padding: "20px 24px" }}>
       {/* Subheading Info Block */}
@@ -668,11 +809,40 @@ export function TodayIntelligencePage({
           <p>基于近 3 天数据，结合全网动态与模型分析，为您生成的增长情报与行动建议</p>
         </div>
         <div className="gi-today-subheading-right" style={{ gap: "10px", alignItems: "center" }}>
-          <span style={{ fontSize: "13px", color: "var(--muted)", fontWeight: 500 }}>最后更新: 今天 09:30</span>
+          <span className={`gi-ai-status-pill ${aiStatusTone(todayIntelligence)}`}>
+            <Bot size={13} />
+            {aiStatusLabel(todayIntelligence)}
+          </span>
+          <span style={{ fontSize: "13px", color: "var(--muted)", fontWeight: 500 }}>
+            最后更新: {generatedAt ? formatDateTime(generatedAt) : "等待生成"}
+          </span>
           <button className="gi-today-refresh-btn" type="button" onClick={triggerRefresh}>
             <RefreshCw size={13} className={loading ? "spin" : ""} />
             <span>刷新</span>
           </button>
+          <button className="gi-today-refresh-btn ai-regenerate" type="button" onClick={triggerRegenerate}>
+            <Bot size={13} className={regenerating ? "spin" : ""} />
+            <span>重新生成</span>
+          </button>
+        </div>
+      </div>
+
+      <div className={`gi-ai-summary-strip ${aiStatusTone(todayIntelligence)}`}>
+        <div className="gi-ai-summary-main">
+          <Bot size={17} />
+          <div>
+            <strong>{summaryText}</strong>
+            <p>
+              {providerText}
+              {todayIntelligence?.error ? ` · ${todayIntelligence.error}` : ""}
+              {runningJobs > 0 ? ` · ${runningJobs} 个任务运行中` : ""}
+              {failedJobs > 0 ? ` · ${failedJobs} 个任务失败` : ""}
+            </p>
+          </div>
+        </div>
+        <div className="gi-ai-summary-meta">
+          <span>基于真实采集数据</span>
+          <span>{dashboard.decision.sample_summary}</span>
         </div>
       </div>
 
@@ -686,11 +856,11 @@ export function TodayIntelligencePage({
               <ListChecks size={18} />
               <span>今日行动清单</span>
             </h2>
-            <span className="badge-todo">待完成 5</span>
+            <span className="badge-todo">待完成 {blendedActions.length}</span>
           </div>
 
           <div className="action-list-holder">
-            {blendedActions.map((action) => (
+            {blendedActions.length ? blendedActions.map((action) => (
               <div className="action-item-card-optimized" key={action.id}>
                 <div className="action-item-top">
                   <div className="action-item-top-left">
@@ -723,7 +893,12 @@ export function TodayIntelligencePage({
                   </div>
                 </div>
               </div>
-            ))}
+            )) : (
+              <div className="gi-empty-panel">
+                <strong>暂无今日动作</strong>
+                <p>真实数据还没有形成可执行动作，重新生成 AI 分析或先补采样本。</p>
+              </div>
+            )}
           </div>
 
           <a href="#all-actions" className="checklist-bottom-link" onClick={(e) => { e.preventDefault(); alert("暂无更多行动，日常任务已全部列出。"); }}>
@@ -736,6 +911,7 @@ export function TodayIntelligencePage({
           <div className="card-header-opt">
             <h2>
               <TrendingUp size={18} />
+              {!showOpportunityTabs && <span className="opp-count-chip">{tabCounts.all} 条</span>}
               <span>机会队列</span>
             </h2>
             <select className="opp-sort-select" value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
@@ -745,24 +921,32 @@ export function TodayIntelligencePage({
           </div>
 
           {/* Sub Navigation Tabs */}
-          <div className="opp-tabs-row">
-            <button className={`opp-tab-btn ${activeOpportunityTab === "all" ? "active" : ""}`} onClick={() => setActiveOpportunityTab("all")}>
-              全部 {tabCounts.all}
-            </button>
-            <button className={`opp-tab-btn ${activeOpportunityTab === "content" ? "active" : ""}`} onClick={() => setActiveOpportunityTab("content")}>
-              内容机会 {tabCounts.content}
-            </button>
-            <button className={`opp-tab-btn ${activeOpportunityTab === "creator" ? "active" : ""}`} onClick={() => setActiveOpportunityTab("creator")}>
-              达人机会 {tabCounts.creator}
-            </button>
-            <button className={`opp-tab-btn ${activeOpportunityTab === "topic" ? "active" : ""}`} onClick={() => setActiveOpportunityTab("topic")}>
-              话题机会 {tabCounts.topic}
-            </button>
-          </div>
+          {showOpportunityTabs && (
+            <div className="opp-tabs-row">
+              <button className={`opp-tab-btn ${effectiveOpportunityTab === "all" ? "active" : ""}`} onClick={() => setActiveOpportunityTab("all")}>
+                全部 {tabCounts.all}
+              </button>
+              {tabCounts.content > 0 && (
+                <button className={`opp-tab-btn ${effectiveOpportunityTab === "content" ? "active" : ""}`} onClick={() => setActiveOpportunityTab("content")}>
+                  内容机会 {tabCounts.content}
+                </button>
+              )}
+              {tabCounts.creator > 0 && (
+                <button className={`opp-tab-btn ${effectiveOpportunityTab === "creator" ? "active" : ""}`} onClick={() => setActiveOpportunityTab("creator")}>
+                  达人机会 {tabCounts.creator}
+                </button>
+              )}
+              {tabCounts.topic > 0 && (
+                <button className={`opp-tab-btn ${effectiveOpportunityTab === "topic" ? "active" : ""}`} onClick={() => setActiveOpportunityTab("topic")}>
+                  话题机会 {tabCounts.topic}
+                </button>
+              )}
+            </div>
+          )}
 
           {/* Opportunities Cards List */}
           <div className="opp-list-holder">
-            {filteredOpportunities.map((opp) => (
+            {filteredOpportunities.length ? filteredOpportunities.map((opp) => (
               <div className="opp-item-card" key={opp.id}>
                 <div className="opp-card-top">
                   <div className="opp-card-type-row" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -875,7 +1059,12 @@ export function TodayIntelligencePage({
                   </div>
                 </div>
               </div>
-            ))}
+            )) : (
+              <div className="gi-empty-panel">
+                <strong>暂无可执行机会</strong>
+                <p>当前没有通过样本质量和风险校验的机会。建议先补采样本或重新生成今日情报。</p>
+              </div>
+            )}
           </div>
 
           <a href="#all-opps" className="opp-bottom-link" onClick={(e) => { e.preventDefault(); alert("目前已展现最优质增长机会，全部机会已加载完毕。"); }}>
@@ -897,7 +1086,7 @@ export function TodayIntelligencePage({
             </div>
 
             <div className="risk-list-optimized">
-              {activeRisks.map((risk) => (
+              {activeRisks.length ? activeRisks.map((risk) => (
                 <div className="risk-item-row" key={risk.id}>
                   <div className={`risk-icon-holder ${risk.isRed ? "red" : "orange"}`}>
                     <AlertTriangle size={14} />
@@ -915,11 +1104,16 @@ export function TodayIntelligencePage({
                     <p style={{ margin: 0, fontSize: "12px", color: "var(--muted)", lineHeight: 1.4 }}>{risk.desc}</p>
                   </div>
                 </div>
-              ))}
+              )) : (
+                <div className="gi-empty-panel compact">
+                  <strong>暂无影响判断的风险</strong>
+                  <p>规则和 AI 未发现需要优先处理的采集或样本风险。</p>
+                </div>
+              )}
             </div>
 
             <a href="#all-risks" className="right-card-bottom-link" onClick={(e) => { e.preventDefault(); alert("暂无其他系统与任务异常，当前运行状态平稳。"); }}>
-              查看全部风险 ({activeRisks.length + 3}) &gt;
+              查看全部风险 ({activeRisks.length}) &gt;
             </a>
           </div>
 
@@ -946,7 +1140,7 @@ export function TodayIntelligencePage({
                     fill="none"
                     stroke="#10b981"
                     strokeWidth="3.2"
-                    strokeDasharray="86 14"
+                    strokeDasharray={`${donutStats.percent} ${100 - donutStats.percent}`}
                     strokeDashoffset="25"
                   />
                   
@@ -958,8 +1152,8 @@ export function TodayIntelligencePage({
                     fill="none"
                     stroke="#f59e0b"
                     strokeWidth="3.2"
-                    strokeDasharray="11 89"
-                    strokeDashoffset="-61"
+                    strokeDasharray={`${donutStats.lowQualityPercent} ${100 - donutStats.lowQualityPercent}`}
+                    strokeDashoffset={`${25 - donutStats.percent}`}
                   />
                   
                   {/* Red segment (3%) */}
@@ -970,8 +1164,8 @@ export function TodayIntelligencePage({
                     fill="none"
                     stroke="#ef4444"
                     strokeWidth="3.2"
-                    strokeDasharray="3 97"
-                    strokeDashoffset="-72"
+                    strokeDasharray={`${donutStats.invalidPercent} ${100 - donutStats.invalidPercent}`}
+                    strokeDashoffset={`${25 - donutStats.percent - donutStats.lowQualityPercent}`}
                   />
                 </svg>
                 <div className="donut-inner-text">
@@ -988,7 +1182,7 @@ export function TodayIntelligencePage({
                     <span>合格样本</span>
                   </span>
                   <span className="legend-item-val">
-                    {formatNumber(donutStats.valid)} <span>(86%)</span>
+                    {formatNumber(donutStats.valid)} <span>({donutStats.percent}%)</span>
                   </span>
                 </div>
 
@@ -998,7 +1192,7 @@ export function TodayIntelligencePage({
                     <span>低质样本</span>
                   </span>
                   <span className="legend-item-val">
-                    {formatNumber(donutStats.lowQuality)} <span>(11%)</span>
+                    {formatNumber(donutStats.lowQuality)} <span>({donutStats.lowQualityPercent}%)</span>
                   </span>
                 </div>
 
@@ -1008,11 +1202,15 @@ export function TodayIntelligencePage({
                     <span>无效样本</span>
                   </span>
                   <span className="legend-item-val">
-                    {formatNumber(donutStats.invalid)} <span>(3%)</span>
+                    {formatNumber(donutStats.invalid)} <span>({donutStats.invalidPercent}%)</span>
                   </span>
                 </div>
               </div>
             </div>
+
+            <p className="gi-ai-card-note">
+              {stringValue(sampleQualityExplanation.summary, "样本质量由真实样本、raw 记录和平台覆盖计算。")}
+            </p>
 
             <a href="#sample-detail" className="right-card-bottom-link" onClick={(e) => { e.preventDefault(); alert("样本详情正同步中，可前往『项目工作台』查看清洗数据报表。"); }}>
               查看样本详情 &gt;
@@ -1044,7 +1242,7 @@ export function TodayIntelligencePage({
               ))}
             </div>
 
-            <span className="platform-evidence-bottom-label">↑ 较前 3 天数据整体增长</span>
+            <span className="platform-evidence-bottom-label">数据来自当前标准化样本库，未用演示默认量</span>
           </div>
 
         </div>
@@ -1069,14 +1267,23 @@ export function TodayIntelligencePage({
             
             <QualityStrip
               label={selected.confidence || "high"}
-              contentCount={selected.samples?.length || 8}
+              contentCount={selected.samples?.length || 0}
               creatorCount={selected.type === "creator" ? 1 : 0}
               platformCount={selected.platform === "all" ? 5 : 1}
             />
+            {selected.aiExplanation && (
+              <div className="gi-ai-explanation-box">
+                <strong>AI 执行建议</strong>
+                <p>{stringValue(selected.aiExplanation.execution_advice, "先复核证据，再执行下一步动作。")}</p>
+                {stringValue(selected.aiExplanation.suggested_angle) && (
+                  <span>{stringValue(selected.aiExplanation.suggested_angle)}</span>
+                )}
+              </div>
+            )}
             
             <div className="gi-evidence-list" style={{ marginTop: "18px" }}>
               <h4 style={{ fontSize: "14px", fontWeight: 700, marginBottom: "10px", color: "var(--text)" }}>
-                研究室核心证据与线索细则 ({selected.evidence_summary?.length || 2})
+                研究室核心证据与线索细则 ({selected.evidence_summary?.length || 0})
               </h4>
               {(selected.evidence_summary || []).map((item: string) => (
                 <p key={item} style={{ fontSize: "13px", color: "#475569", background: "#f8fafc", padding: "10px 12px", borderRadius: "6px", margin: "0 0 8px" }}>
@@ -1093,10 +1300,16 @@ export function TodayIntelligencePage({
                     <strong style={{ fontSize: "13px", color: "var(--text)" }}>{sample.title || `高质证据记录 ${index + 1}`}</strong>
                     <span style={{ fontSize: "11px", color: "var(--muted)" }}>{labelPlatform(sample.platform)} / {formatDateTime(sample.publish_time)}</span>
                   </div>
-                  <p style={{ fontSize: "12px", color: "#4b5563", margin: "0 0 8px", lineHeight: 1.5 }}>{sample.body || "公开互动数据与情感特征高度匹配目标市场群体。"}</p>
+                  <p style={{ fontSize: "12px", color: "#4b5563", margin: "0 0 8px", lineHeight: 1.5 }}>{sample.body || "该证据来自当前标准化样本，暂无正文摘要。"}</p>
                   {sample.url && <a href={sample.url} target="_blank" rel="noreferrer" style={{ fontSize: "12px", color: "var(--accent)", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px", fontWeight: 600 }}>打开来源 <ExternalLink size={12} /></a>}
                 </article>
               ))}
+              {!(selected.samples || []).length && (
+                <div className="gi-empty-panel compact">
+                  <strong>暂无可回溯样本</strong>
+                  <p>该机会还没有附带代表样本，建议先补采或打开来源模块查看详情。</p>
+                </div>
+              )}
             </div>
 
             <div className="button-row right" style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "24px", paddingTop: "16px", borderTop: "1px solid var(--line-soft)" }}>

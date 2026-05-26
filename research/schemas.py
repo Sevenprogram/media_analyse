@@ -14,6 +14,7 @@ from research.enums import (
     RAW_RECORD_MODES,
     SUPPORTED_RESEARCH_PLATFORMS,
 )
+from research.schedule_time import normalize_refresh_time_utc8
 from research.ui_navigation import CONFIGURABLE_SIDE_NAV_TABS
 
 SearchSortMode = Literal[
@@ -49,6 +50,7 @@ class CommentPolicy(BaseModel):
     fill_strategy: SearchFillStrategy = "prefer_fill"
     max_extra_pages: int = Field(default=5, ge=0, le=50)
     growth_project_key: str | None = None
+    refresh_time_utc8: str | None = None
 
     @classmethod
     def default(cls) -> "CommentPolicy":
@@ -165,6 +167,7 @@ class GrowthProjectCreate(BaseModel):
     keywords: list[str] = Field(default_factory=list)
     collection_depth: Literal["lightweight", "standard", "deep"] = "standard"
     refresh_cadence: Literal["off", "daily", "three_days", "weekly"] = "daily"
+    refresh_time_utc8: str | None = None
     daily_collection_limit_per_platform: int = Field(default=50, ge=1, le=500)
     auto_ai_analysis: bool = True
     start_immediately: bool = False
@@ -182,12 +185,19 @@ class GrowthProjectCreate(BaseModel):
     def strip_growth_project_keywords(cls, value: list[str]) -> list[str]:
         return _strip_string_list(value)
 
+    @field_validator("refresh_time_utc8")
+    @classmethod
+    def validate_refresh_time_utc8(cls, value: str | None) -> str | None:
+        return normalize_refresh_time_utc8(value)
+
     @model_validator(mode="after")
     def validate_growth_project_inputs(self):
         if self.scene_pack_id is None and not self.keywords:
             raise ValueError("growth project requires keywords or scene_pack_id")
         if self.scene_pack_id is None and not self.platforms:
             raise ValueError("growth project requires platforms or scene_pack_id")
+        if self.refresh_cadence != "daily":
+            self.refresh_time_utc8 = None
         return self
 
 
@@ -233,6 +243,7 @@ class GrowthProjectUpdate(BaseModel):
     ] | None = None
     custom_interval_value: int | None = Field(default=None, ge=1)
     custom_interval_unit: Literal["hours", "days"] | None = None
+    refresh_time_utc8: str | None = None
     daily_collection_limit_per_platform: int | None = Field(default=None, ge=1, le=500)
     keywords: list[GrowthProjectKeywordUpdate] | None = None
 
@@ -250,6 +261,11 @@ class GrowthProjectUpdate(BaseModel):
             raise ValueError("growth project requires at least one platform")
         return value
 
+    @field_validator("refresh_time_utc8")
+    @classmethod
+    def validate_refresh_time_utc8(cls, value: str | None) -> str | None:
+        return normalize_refresh_time_utc8(value)
+
     @model_validator(mode="after")
     def validate_custom_interval(self):
         if self.refresh_cadence == "custom_hours":
@@ -263,6 +279,9 @@ class GrowthProjectUpdate(BaseModel):
         if self.refresh_cadence == "off":
             self.custom_interval_value = None
             self.custom_interval_unit = None
+            self.refresh_time_utc8 = None
+        if self.refresh_cadence and self.refresh_cadence != "daily":
+            self.refresh_time_utc8 = None
         if self.keywords is not None:
             active_keywords = [
                 item
@@ -989,6 +1008,7 @@ class SimilarContentSearchRequest(BaseModel):
 
 
 class ContentTrackerCreate(BaseModel):
+    project_id: int | None = Field(default=None, ge=1)
     name: str = Field(min_length=1, max_length=128)
     description: str | None = None
     vertical_id: int | None = Field(default=None, ge=1)
@@ -1027,6 +1047,7 @@ class ContentTrackerCreate(BaseModel):
 
 
 class ContentTrackerUpdate(BaseModel):
+    project_id: int | None = Field(default=None, ge=1)
     name: str | None = Field(default=None, min_length=1, max_length=128)
     description: str | None = None
     vertical_id: int | None = Field(default=None, ge=1)
@@ -1158,6 +1179,7 @@ class CreatorSearchIntentRequest(BaseModel):
 class CreatorSearchRequest(BaseModel):
     raw_query: str = Field(default="", max_length=500)
     search_scope: Literal["hybrid", "realtime_only"] = "hybrid"
+    project_id: int | None = Field(default=None, ge=1)
     selected_vertical_id: int | None = Field(default=None, ge=1)
     required_tag_ids: list[int] = Field(default_factory=list)
     optional_tag_ids: list[int] = Field(default_factory=list)
@@ -1226,6 +1248,7 @@ class CompetitorAccountCreate(BaseModel):
     platform: str
     creator_id: str = Field(min_length=1, max_length=255)
     monitor_type: Literal["competitor", "partner_creator"] = "competitor"
+    project_id: int | None = Field(default=None, ge=1)
     display_name: str | None = None
     profile_url: str | None = None
     vertical_id: int | None = Field(default=None, ge=1)

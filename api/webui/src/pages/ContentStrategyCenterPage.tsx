@@ -19,6 +19,7 @@ import {
   RefreshCw,
   Search,
   ShieldAlert,
+  SlidersHorizontal,
   Sparkles,
   TrendingDown,
   TrendingUp,
@@ -26,7 +27,11 @@ import {
   X,
 } from "lucide-react";
 import { Button, Card, Drawer, Select } from "../components/ui";
-import type { GrowthProjectCollectionProgress, GrowthProjectDetail } from "../types";
+import type {
+  GrowthProjectCollectionProgress,
+  GrowthProjectDetail,
+  GrowthProjectUpdatePayload,
+} from "../types";
 import { api } from "../utils/api";
 import { formatDateTime } from "../utils/format";
 
@@ -100,11 +105,18 @@ type CompetitorSample = {
   publish_time?: string | null;
 };
 
+type RiskEvidence = {
+  sources?: string[];
+  metric_summary?: string;
+  notes?: string[];
+};
+
 type RiskRow = {
   title: string;
   detail: string;
   level: "高风险" | "中风险";
   count: number;
+  evidence?: RiskEvidence;
 };
 
 type WeeklyMixRow = {
@@ -133,7 +145,7 @@ type EvidenceItem = {
   payload?: Record<string, unknown>;
 };
 
-type StrategySectionKey = "hero" | "keyword_trends" | "frameworks" | "suggestions" | "risks" | "weekly_mix";
+type StrategySectionKey = "hero" | "pain_distribution" | "keyword_trends" | "frameworks" | "suggestions" | "risks" | "weekly_mix";
 type StrategyAiSectionKey = StrategySectionKey | "overview";
 
 type AiSectionStatus = {
@@ -277,6 +289,21 @@ type TopicDrawerState = {
   emptyLabel: string;
 };
 
+type SectionDrawerKey =
+  | "suggestions"
+  | "pain_distribution"
+  | "keyword_trends"
+  | "frameworks"
+  | "competitor_samples"
+  | "risks"
+  | "weekly_mix";
+
+type SectionDrawerState = {
+  key: SectionDrawerKey;
+  title: string;
+  description: string;
+};
+
 type ContentStrategyCenterPageProps = {
   selectedProjectId: string | null;
   selectedProjectDetail: GrowthProjectDetail | null;
@@ -284,7 +311,29 @@ type ContentStrategyCenterPageProps = {
   sourceTrackerId?: number | null;
   onClearSourceTracker?: () => void;
   onOpenSourceTracker?: (trackerId: number) => void;
+  onUpdateProject?: (projectId: string, payload: GrowthProjectUpdatePayload) => Promise<void>;
 };
+
+type RefreshCadence = NonNullable<GrowthProjectUpdatePayload["refresh_cadence"]>;
+
+const REFRESH_OPTIONS: Array<{ value: RefreshCadence; label: string }> = [
+  { value: "off", label: "关闭自动刷新" },
+  { value: "daily", label: "每天" },
+  { value: "three_days", label: "每 3 天" },
+  { value: "weekly", label: "每周" },
+  { value: "custom_hours", label: "按小时" },
+  { value: "custom_days", label: "按天" },
+];
+
+const PANEL_PREVIEW_LIMITS = {
+  pain_distribution: 5,
+  keyword_trends: 5,
+  frameworks: 4,
+  suggestions: 5,
+  competitor_samples: 5,
+  risks: 4,
+  weekly_mix: 5,
+} as const;
 
 const PLATFORM_OPTIONS: FilterOption[] = [
   { value: "all", label: "全部平台" },
@@ -384,11 +433,109 @@ function riskClass(level: SuggestionRow["risk"] | RiskRow["level"]) {
   return "is-danger";
 }
 
+const RISK_EVIDENCE_SOURCE_LABELS: Record<string, string> = {
+  content_tracking: "内容追踪",
+  keyword_heat: "关键词热度",
+  competitor_sample: "同行样本",
+  dashboard_diagnostic: "看板诊断",
+  opportunity_risk_tag: "机会风险",
+  ai_note: "AI 提示",
+};
+
+function uniqueText(items: Array<string | null | undefined>) {
+  return Array.from(
+    new Set(
+      items
+        .map((item) => String(item || "").trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function parseRiskEvidenceFromDetail(detail: string): RiskEvidence {
+  const text = String(detail || "");
+  const sources: string[] = [];
+  if (/hot_post_rate|热帖率|total_content_count/i.test(text)) sources.push("content_tracking");
+  if (/关键词|热度|XHS|DY|抖音|小红书/i.test(text)) sources.push("keyword_heat");
+  if (/竞品|同行|互动/i.test(text)) sources.push("competitor_sample");
+  if (/AI/i.test(text)) sources.push("ai_note");
+
+  const hotRateMatch = text.match(/(?:hot_post_rate|热帖率)[^\d]*([0-9]+(?:\.[0-9]+)?)/i);
+  const totalCountMatch = text.match(/(?:total_content_count)[^\d]*([0-9]+)/i) || text.match(/在(\d+)条内容中/);
+  const notes = uniqueText([
+    /热帖阈值|>=\s*100|互动/.test(text) && sources.includes("content_tracking")
+      ? "当前热帖判定阈值为总互动 >= 100。"
+      : "",
+  ]);
+
+  return {
+    sources,
+    metric_summary: hotRateMatch
+      ? `热帖率 ${hotRateMatch[1]}${totalCountMatch ? `，样本 ${totalCountMatch[1]} 条` : ""}`
+      : undefined,
+    notes,
+  };
+}
+
+function resolveRiskEvidence(item: RiskRow): RiskEvidence {
+  const parsed = parseRiskEvidenceFromDetail(item.detail);
+  return {
+    sources: uniqueText([...(item.evidence?.sources || []), ...(parsed.sources || [])]),
+    metric_summary: item.evidence?.metric_summary || parsed.metric_summary,
+    notes: uniqueText([...(item.evidence?.notes || []), ...(parsed.notes || [])]),
+  };
+}
+
 function formatDate(value?: string | null) {
   if (!value) return "暂无更新";
   const formatted = formatDateTime(value);
   if (formatted === "-" || formatted === value) return value;
   return `${formatted} UTC+8`;
+}
+
+function normalizeRefreshCadence(value?: string | null): RefreshCadence {
+  if (
+    value === "off" ||
+    value === "daily" ||
+    value === "three_days" ||
+    value === "weekly" ||
+    value === "custom_hours" ||
+    value === "custom_days"
+  ) {
+    return value;
+  }
+  return "daily";
+}
+
+function normalizePositiveInteger(value?: number | null, fallback = 1) {
+  const next = Number(value);
+  if (!Number.isFinite(next)) return fallback;
+  return Math.max(1, Math.trunc(next));
+}
+
+function validUtc8Time(value: string) {
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+}
+
+function latestRefreshInfo(refreshStatus?: ContentStrategySummary["refresh_status"]) {
+  const scheduledAt = refreshStatus?.scheduled_refresh?.last_completed_at || null;
+  const manualAt = refreshStatus?.manual_analysis?.last_refreshed_at || null;
+  const scheduledTime = scheduledAt ? Date.parse(scheduledAt) : Number.NaN;
+  const manualTime = manualAt ? Date.parse(manualAt) : Number.NaN;
+
+  if (Number.isFinite(manualTime) && (!Number.isFinite(scheduledTime) || manualTime >= scheduledTime)) {
+    return { label: formatDate(manualAt), source: "来自手动刷新" };
+  }
+  if (Number.isFinite(scheduledTime)) {
+    return { label: formatDate(scheduledAt), source: "来自自动刷新" };
+  }
+  if (manualAt) {
+    return { label: formatDate(manualAt), source: "来自手动刷新" };
+  }
+  if (scheduledAt) {
+    return { label: formatDate(scheduledAt), source: "来自自动刷新" };
+  }
+  return { label: "暂无刷新", source: "等待首次生成" };
 }
 
 function normalizeExternalUrl(value?: string | null) {
@@ -415,6 +562,19 @@ function formatCadenceLabel(
     return `每 ${Math.max(1, customValue)} ${customUnit === "hours" ? "小时" : "天"} 1 次`;
   }
   return "已关闭";
+}
+
+function formatCadenceDisplayLabel(
+  value?: string | null,
+  customValue?: number | null,
+  customUnit?: "hours" | "days" | null,
+  refreshTimeUtc8?: string | null,
+) {
+  if (value === "daily") {
+    const timeLabel = (refreshTimeUtc8 || "").trim();
+    if (validUtc8Time(timeLabel)) return `每天 ${timeLabel}`;
+  }
+  return formatCadenceLabel(value, customValue, customUnit);
 }
 
 function scheduledRefreshStatusLabel(status?: string | null) {
@@ -478,18 +638,27 @@ function buildSummaryMarkdown(summary: ContentStrategySummary) {
 }
 
 function sectionSource(summary: ContentStrategySummary | null, key: StrategySectionKey) {
-  return summary?.section_sources?.[key] === "ai" ? "ai" : "rules";
+  const source = summary?.section_sources?.[key];
+  return source === "ai" || source === "sample" ? source : "rules";
 }
 
 function sourceBadgeClass(source: string) {
-  return source === "ai" ? "is-safe" : "is-warn";
+  if (source === "ai") return "is-safe";
+  if (source === "sample") return "is-data";
+  return "is-warn";
 }
 
 function sourceBadgeLabel(source: string) {
   return source === "ai" ? "AI 分析" : "规则托底";
 }
 
-const AI_SECTION_LABELS: Record<StrategyAiSectionKey, string> = {
+function strategySourceBadgeLabel(source: string) {
+  if (source === "ai") return "AI 分析";
+  if (source === "sample") return "样本归类";
+  return "规则兜底";
+}
+
+const AI_SECTION_LABELS: Record<Exclude<StrategyAiSectionKey, "pain_distribution">, string> = {
   overview: "总览",
   hero: "头部",
   keyword_trends: "关键词",
@@ -497,6 +666,11 @@ const AI_SECTION_LABELS: Record<StrategyAiSectionKey, string> = {
   suggestions: "选题",
   risks: "风险",
   weekly_mix: "周计划",
+};
+
+const AI_SECTION_LABELS_FULL: Record<StrategyAiSectionKey, string> = {
+  ...AI_SECTION_LABELS,
+  pain_distribution: "样本痛点",
 };
 
 function aiModeLabel(summary: ContentStrategySummary | null) {
@@ -546,9 +720,9 @@ function aiStatusDetail(summary: ContentStrategySummary | null) {
 
 function aiSectionStatusItems(summary: ContentStrategySummary | null) {
   const statuses = summary?.ai_status.section_statuses || summary?.refresh_status?.ai_insights.section_statuses || {};
-  return (Object.keys(AI_SECTION_LABELS) as StrategyAiSectionKey[])
+  return (Object.keys(AI_SECTION_LABELS_FULL) as StrategyAiSectionKey[])
     .filter((key) => statuses[key])
-    .map((key) => ({ key, label: AI_SECTION_LABELS[key], status: statuses[key] as AiSectionStatus }));
+    .map((key) => ({ key, label: AI_SECTION_LABELS_FULL[key], status: statuses[key] as AiSectionStatus }));
 }
 
 function aiSectionStatusLabel(status?: AiSectionStatus) {
@@ -716,6 +890,7 @@ export function ContentStrategyCenterPage({
   sourceTrackerId = null,
   onClearSourceTracker,
   onOpenSourceTracker,
+  onUpdateProject,
 }: ContentStrategyCenterPageProps) {
   const [platform, setPlatform] = React.useState("all");
   const [range, setRange] = React.useState("30d");
@@ -730,11 +905,19 @@ export function ContentStrategyCenterPage({
   const [notice, setNotice] = React.useState<string | null>(null);
   const [evidenceDrawer, setEvidenceDrawer] = React.useState<EvidenceDrawerState | null>(null);
   const [topicDrawer, setTopicDrawer] = React.useState<TopicDrawerState | null>(null);
+  const [sectionDrawer, setSectionDrawer] = React.useState<SectionDrawerState | null>(null);
+  const [refreshDrawerOpen, setRefreshDrawerOpen] = React.useState(false);
+  const [refreshCadence, setRefreshCadence] = React.useState<RefreshCadence>("daily");
+  const [customIntervalValue, setCustomIntervalValue] = React.useState(1);
+  const [refreshTimeUtc8, setRefreshTimeUtc8] = React.useState("");
+  const [savingRefreshSettings, setSavingRefreshSettings] = React.useState(false);
+  const [refreshSettingsError, setRefreshSettingsError] = React.useState<string | null>(null);
   const [draftOpen, setDraftOpen] = React.useState(false);
   const [draftLoading, setDraftLoading] = React.useState(false);
   const [draftResponse, setDraftResponse] = React.useState<DraftResponse | null>(null);
   const [draftError, setDraftError] = React.useState<string | null>(null);
   const [drafts, setDrafts] = React.useState<SuggestionRow[]>([]);
+  const lastEnabledCadenceRef = React.useRef<RefreshCadence>("daily");
 
   const filters = React.useMemo(
     () => ({ platform, range, goal, audience, stage, note: strategyNote }),
@@ -841,6 +1024,37 @@ export function ContentStrategyCenterPage({
     }
   }, [platform, selectedProjectDetail]);
 
+  function syncRefreshSettingsDraft() {
+    const cadence = normalizeRefreshCadence(
+      selectedProjectDetail?.settings.refresh_cadence ||
+      summary?.project_context?.refresh_cadence ||
+      summary?.refresh_status?.cadence?.value,
+    );
+    const intervalValue = normalizePositiveInteger(
+      selectedProjectDetail?.settings.custom_interval_value ??
+      summary?.project_context?.custom_interval_value ??
+      summary?.refresh_status?.cadence?.custom_interval_value,
+    );
+    setRefreshCadence(cadence);
+    setCustomIntervalValue(intervalValue);
+    setRefreshTimeUtc8((selectedProjectDetail?.settings.refresh_time_utc8 || "").trim());
+    setRefreshSettingsError(null);
+    if (cadence !== "off") {
+      lastEnabledCadenceRef.current = cadence;
+    }
+  }
+
+  React.useEffect(() => {
+    if (refreshDrawerOpen) return;
+    syncRefreshSettingsDraft();
+  }, [refreshDrawerOpen, selectedProjectDetail, summary]);
+
+  React.useEffect(() => {
+    if (refreshCadence !== "off") {
+      lastEnabledCadenceRef.current = refreshCadence;
+    }
+  }, [refreshCadence]);
+
   React.useEffect(() => {
     setSummary(null);
     setError(null);
@@ -848,13 +1062,63 @@ export function ContentStrategyCenterPage({
     setNotice(null);
     setEvidenceDrawer(null);
     setTopicDrawer(null);
+    setSectionDrawer(null);
+    setRefreshDrawerOpen(false);
+    setRefreshSettingsError(null);
     setDraftOpen(false);
     setDraftResponse(null);
     setDraftError(null);
   }, [selectedProjectId, sourceTrackerId]);
 
+  function openRefreshSettings() {
+    syncRefreshSettingsDraft();
+    setRefreshDrawerOpen(true);
+  }
+
+  async function saveRefreshSettings() {
+    if (!selectedProjectId || !onUpdateProject) return;
+
+    const trimmedTime = refreshTimeUtc8.trim();
+    const normalizedInterval = normalizePositiveInteger(customIntervalValue);
+    const customCadence = refreshCadence === "custom_hours" || refreshCadence === "custom_days";
+
+    if (refreshCadence === "daily" && !validUtc8Time(trimmedTime)) {
+      setRefreshSettingsError("请输入有效的北京时间，格式为 HH:MM。");
+      return;
+    }
+
+    setSavingRefreshSettings(true);
+    setRefreshSettingsError(null);
+    setError(null);
+
+    try {
+      await onUpdateProject(selectedProjectId, {
+        refresh_cadence: refreshCadence,
+        custom_interval_value: customCadence ? normalizedInterval : undefined,
+        custom_interval_unit:
+          refreshCadence === "custom_hours"
+            ? "hours"
+            : refreshCadence === "custom_days"
+              ? "days"
+              : undefined,
+        refresh_time_utc8: refreshCadence === "daily" ? trimmedTime : null,
+      });
+      await loadSummary();
+      setRefreshDrawerOpen(false);
+      setNotice(refreshCadence === "off" ? "已关闭自动刷新，仍可手动刷新策略。" : "刷新设置已保存。");
+    } catch (err) {
+      setRefreshSettingsError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingRefreshSettings(false);
+    }
+  }
+
   function openEvidence(title: string, items: EvidenceItem[], raw?: unknown) {
     setEvidenceDrawer({ title, items, raw });
+  }
+
+  function openSectionDrawer(key: SectionDrawerKey, title: string, description: string) {
+    setSectionDrawer({ key, title, description });
   }
 
   function openMetricTopics(metric: MetricItem) {
@@ -940,7 +1204,6 @@ export function ContentStrategyCenterPage({
     () => sortFrameworkRows(summary?.frameworks || []),
     [summary?.frameworks],
   );
-  const painTotal = summary?.pain_distribution.reduce((sum, item) => sum + Number(item.count || 0), 0) || 0;
   const trendColor = (direction: "up" | "down") => (direction === "up" ? "#0f8f85" : "#e35d5d");
   const projectContext = summary?.project_context;
   const sourceTracker = summary?.source_tracker;
@@ -952,15 +1215,19 @@ export function ContentStrategyCenterPage({
   const noProjectSelected = !selectedProjectId;
   const displayProjectName = projectContext?.project_name || selectedProjectDetail?.project.name || "未选择项目";
   const strategyTitle = noProjectSelected ? "内容策略中心" : `内容策略中心 · ${displayProjectName}`;
-  const cadenceLabel = formatCadenceLabel(
-    refreshStatus?.cadence?.value || projectContext?.refresh_cadence || selectedProjectDetail?.settings.refresh_cadence,
-    refreshStatus?.cadence?.custom_interval_value
-    ?? projectContext?.custom_interval_value
-    ?? selectedProjectDetail?.settings.custom_interval_value,
-    refreshStatus?.cadence?.custom_interval_unit
-    ?? projectContext?.custom_interval_unit
-    ?? selectedProjectDetail?.settings.custom_interval_unit,
+  const cadenceLabel = formatCadenceDisplayLabel(
+    selectedProjectDetail?.settings.refresh_cadence ||
+      refreshStatus?.cadence?.value ||
+      projectContext?.refresh_cadence,
+    selectedProjectDetail?.settings.custom_interval_value ??
+      refreshStatus?.cadence?.custom_interval_value ??
+      projectContext?.custom_interval_value,
+    selectedProjectDetail?.settings.custom_interval_unit ??
+      refreshStatus?.cadence?.custom_interval_unit ??
+      projectContext?.custom_interval_unit,
+    selectedProjectDetail?.settings.refresh_time_utc8,
   );
+  const latestRefresh = latestRefreshInfo(refreshStatus);
   const collectionBusy = selectedProjectProgress?.status === "running" || selectedProjectProgress?.status === "queued";
   const effectiveScheduledStatus = collectionBusy
     ? "collecting"
@@ -977,6 +1244,326 @@ export function ContentStrategyCenterPage({
       summary?.ai_status.strategy_summary_source !== "partial_ai",
   );
   const aiSectionItems = aiSectionStatusItems(summary);
+  const autoRefreshEnabled = refreshCadence !== "off";
+  const customCadenceSelected = refreshCadence === "custom_hours" || refreshCadence === "custom_days";
+  const painPreview = (summary?.pain_distribution || []).slice(0, PANEL_PREVIEW_LIMITS.pain_distribution);
+  const keywordPreview = (summary?.keyword_trends || []).slice(0, PANEL_PREVIEW_LIMITS.keyword_trends);
+  const frameworkPreview = frameworkRows.slice(0, PANEL_PREVIEW_LIMITS.frameworks);
+  const suggestionPreview = (summary?.suggestions || []).slice(0, PANEL_PREVIEW_LIMITS.suggestions);
+  const competitorPreview = (summary?.competitor_samples || []).slice(0, PANEL_PREVIEW_LIMITS.competitor_samples);
+  const riskPreview = (summary?.risks || []).slice(0, PANEL_PREVIEW_LIMITS.risks);
+  const weeklyPreview = (summary?.weekly_mix || []).slice(0, PANEL_PREVIEW_LIMITS.weekly_mix);
+
+  function renderPainList(items: DistributionItem[]) {
+    return (
+      <div className="ks-pain-list">
+        {items.map((item, index) => {
+          const percentage = Math.max(0, Math.min(100, Number(item.value) || 0));
+          return (
+            <div key={item.label} className="ks-pain-row">
+              <span className="ks-pain-rank" style={{ background: item.color }}>{index + 1}</span>
+              <div className="ks-pain-row__main">
+                <div className="ks-pain-row__head">
+                  <strong>{item.label}</strong>
+                  <span>占比 {item.value}%</span>
+                </div>
+                <div className="ks-pain-bar" aria-label={`${item.label} 占比 ${item.value}%`}>
+                  <i style={{ width: `${percentage}%`, background: item.color }} />
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  function renderKeywordTrendTable(items: KeywordTrend[]) {
+    return (
+      <div className="ks-table ks-table--compact">
+        <div className="ks-table__head">
+          <span>排名</span>
+          <span>关键词</span>
+          <span>热度</span>
+          <span>趋势</span>
+          <span>机会值</span>
+        </div>
+        {items.map((item) => (
+          <button
+            type="button"
+            key={`${item.platform || "all"}-${item.keyword}`}
+            className="ks-table__row ks-table__row--button"
+            onClick={() => openEvidence(item.keyword, [{ type: "keyword", title: item.keyword, platform: item.platform, reason: `${platformLabel(item.platform)} 机会值 ${item.score}`, payload: item }], item)}
+          >
+            <strong className="ks-rank">{item.rank}</strong>
+            <span className="ks-row-title">{item.keyword}</span>
+            <span>{item.heat}</span>
+            <span className="ks-trend-cell">
+              <Sparkline points={item.points} color={trendColor(item.direction)} />
+            </span>
+            <em className={item.direction === "up" ? "is-up" : "is-down"}>
+              {item.score}
+              {item.direction === "up" ? <TrendingUp size={13} /> : <TrendingDown size={13} />}
+            </em>
+          </button>
+        ))}
+      </div>
+    );
+  }
+
+  function renderFrameworkList(items: FrameworkRow[]) {
+    return (
+      <div className="ks-framework-list">
+        {items.map((item) => (
+          <article key={item.title} className="ks-framework-card">
+            <div className="ks-framework-card__main">
+              <strong>{item.title}</strong>
+              <div className="ks-chip-row">
+                {item.tags.map((tag) => <span key={tag}>{tag}</span>)}
+              </div>
+            </div>
+            <div className="ks-framework-card__stats">
+              <div><span>参考内容</span><strong>{item.posts}</strong></div>
+              <div><span>互动中位数</span><strong>{frameworkMetricText(item.interactions)}</strong></div>
+              <div><span>线索估算</span><strong>{item.leads}</strong></div>
+            </div>
+            <Button variant="ghost" onClick={() => generateDraft("framework", { ...item, title: item.title })}>
+              使用框架
+            </Button>
+          </article>
+        ))}
+      </div>
+    );
+  }
+
+  function renderSuggestionTable(items: SuggestionRow[]) {
+    return (
+      <div className="ks-table">
+        <div className="ks-table__head ks-table__head--suggestions">
+          <span>标题建议</span>
+          <span>目标人群</span>
+          <span>机会值</span>
+          <span>风险等级</span>
+          <span>操作</span>
+        </div>
+        {items.map((item) => (
+          <div key={item.id} className="ks-table__row ks-table__row--suggestion">
+            <button
+              type="button"
+              className="ks-suggestion-main"
+              onClick={() => openEvidence(item.title, [{ type: "suggestion", title: item.title, platform: item.platform, reason: item.reason || item.direction, payload: item }], item)}
+            >
+              <strong>{item.title}</strong>
+              <small>{item.source === "ai" ? "AI 增强" : item.direction}</small>
+            </button>
+            <span>{item.audience}</span>
+            <b className="ks-score">{item.chance}</b>
+            <span className={`ks-badge ${riskClass(item.risk)}`}>{item.risk}</span>
+            <div className="ks-action-row">
+              <Button variant="ghost" size="sm" onClick={() => addSuggestionDraft(item)}>
+                <Plus size={14} />
+                加入草稿
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => generateDraft("copy", item as unknown as Record<string, unknown>)}>
+                <FileText size={14} />
+                生成文案
+              </Button>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  function renderCompetitorList(items: CompetitorSample[]) {
+    return (
+      <div className="ks-competitor-list">
+        {items.map((item) => {
+          const sourceUrl = normalizeExternalUrl(item.url);
+          const openItemEvidence = () => {
+            openEvidence(item.title, [{ type: "competitor_sample", title: item.title, platform: item.platform_key, reason: `互动 ${item.interaction}`, payload: item }], item);
+          };
+          return (
+            <article key={`${item.platform}-${item.title}`} className="ks-competitor-card">
+              <span className={`ks-platform-badge ${item.badge}`}>{item.platform}</span>
+              <button type="button" className="ks-sample-thumb ks-sample-thumb--button" onClick={openItemEvidence} aria-label={`查看证据：${item.title}`}>
+                <FileText size={18} />
+              </button>
+              <div className="ks-competitor-card__main">
+                {sourceUrl ? (
+                  <a className="ks-competitor-card__title-link" href={sourceUrl} target="_blank" rel="noreferrer" title={`打开原帖：${item.title}`}>
+                    <strong>{item.title}</strong>
+                    <ExternalLink size={13} aria-hidden="true" />
+                  </a>
+                ) : (
+                  <button type="button" className="ks-competitor-card__title-button" onClick={openItemEvidence} title="查看证据">
+                    <strong>{item.title}</strong>
+                  </button>
+                )}
+                <small>互动 {item.interaction}</small>
+              </div>
+              <div className="ks-competitor-card__stats">
+                <span>点赞 {item.likes}</span>
+                <span>评论 {item.comments}</span>
+                <span>收藏 {item.favorites}</span>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    );
+  }
+
+  function renderRiskList(items: RiskRow[]) {
+    return (
+      <div className="ks-risk-list">
+        {items.map((item) => {
+          const evidence = resolveRiskEvidence(item);
+          return (
+            <article key={item.title} className="ks-risk-card">
+              <div className="ks-risk-card__top">
+                <span className={`ks-badge ${riskClass(item.level)}`}>{item.level}</span>
+                <strong>{item.count}</strong>
+              </div>
+              <h3>{item.title}</h3>
+              <p>{item.detail}</p>
+              {(evidence.sources?.length || evidence.metric_summary || evidence.notes?.length) ? (
+                <div className="ks-risk-evidence">
+                  {evidence.sources?.length ? (
+                    <div className="ks-risk-evidence__sources">
+                      {evidence.sources.map((source) => (
+                        <span key={`${item.title}-${source}`} className="ks-risk-evidence__chip">
+                          {RISK_EVIDENCE_SOURCE_LABELS[source] || "数据证据"}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                  {evidence.metric_summary ? <small className="ks-risk-evidence__metric">{evidence.metric_summary}</small> : null}
+                  {evidence.notes?.length ? (
+                    <ul className="ks-risk-evidence__notes">
+                      {evidence.notes.slice(0, 2).map((note) => <li key={`${item.title}-${note}`}>{note}</li>)}
+                    </ul>
+                  ) : null}
+                </div>
+              ) : null}
+            </article>
+          );
+        })}
+      </div>
+    );
+  }
+
+  function renderWeeklyMixTable(items: WeeklyMixRow[]) {
+    return (
+      <div className="ks-weekly-table">
+        {items.map((item) => (
+          <div key={item.label} className="ks-weekly-row">
+            <div className="ks-weekly-row__main">
+              <span><i style={{ background: item.color }} />{item.label}</span>
+              <strong>{item.percent}%</strong>
+            </div>
+            <div className="ks-weekly-row__bar">
+              <i style={{ width: `${item.percent}%`, background: item.color }} />
+            </div>
+            <div className="ks-weekly-row__meta">
+              <span>{item.pieces} 篇</span>
+              <span>{item.exposure}</span>
+              <span>{item.leads}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  function renderSectionDrawerContent() {
+    if (!summary || !sectionDrawer) return null;
+    switch (sectionDrawer.key) {
+      case "suggestions":
+        return (
+          <div className="ks-topic-drawer">
+            <div className="ks-topic-drawer__summary">
+              <strong>{summary.suggestions.length} 个候选选题</strong>
+              <p>{sectionDrawer.description}</p>
+            </div>
+            {summary.suggestions.length ? renderSuggestionTable(summary.suggestions) : <EmptyState label="暂无选题建议" />}
+          </div>
+        );
+      case "pain_distribution":
+        return (
+          <div className="ks-topic-drawer">
+            <div className="ks-topic-drawer__summary">
+              <strong>{summary.pain_distribution.length} 条痛点分布</strong>
+              <p>{sectionDrawer.description}</p>
+            </div>
+            {summary.pain_distribution.length ? renderPainList(summary.pain_distribution) : <EmptyState label="暂无痛点样本" />}
+          </div>
+        );
+      case "keyword_trends":
+        return (
+          <div className="ks-topic-drawer">
+            <div className="ks-topic-drawer__summary">
+              <strong>{summary.keyword_trends.length} 个关键词趋势</strong>
+              <p>{sectionDrawer.description}</p>
+            </div>
+            {summary.keyword_trends.length ? renderKeywordTrendTable(summary.keyword_trends) : <EmptyState label="暂无关键词趋势" />}
+          </div>
+        );
+      case "frameworks":
+        return (
+          <div className="ks-topic-drawer">
+            <div className="ks-topic-drawer__summary">
+              <strong>{frameworkRows.length} 个内容框架</strong>
+              <p>{sectionDrawer.description}</p>
+            </div>
+            {frameworkRows.length ? renderFrameworkList(frameworkRows) : <EmptyState label="暂无可复用框架" />}
+          </div>
+        );
+      case "competitor_samples":
+        return (
+          <div className="ks-topic-drawer">
+            <div className="ks-topic-drawer__summary">
+              <strong>{summary.competitor_samples.length} 条同行样本</strong>
+              <p>{sectionDrawer.description}</p>
+            </div>
+            {summary.competitor_samples.length ? renderCompetitorList(summary.competitor_samples) : <EmptyState label="暂无同行样本" />}
+          </div>
+        );
+      case "risks":
+        return (
+          <div className="ks-topic-drawer">
+            <div className="ks-topic-drawer__summary">
+              <strong>{summary.risks.length} 条风险提醒</strong>
+              <p>{sectionDrawer.description}</p>
+            </div>
+            {summary.risks.length ? renderRiskList(summary.risks) : <EmptyState label="暂无风险提醒" />}
+          </div>
+        );
+      case "weekly_mix":
+        return (
+          <div className="ks-topic-drawer">
+            <div className="ks-topic-drawer__summary">
+              <strong>{summary.weekly_mix.length} 条组合建议</strong>
+              <p>{sectionDrawer.description}</p>
+            </div>
+            {summary.weekly_mix.length ? (
+              <div className="ks-section-detail-stack">
+                <div className="ks-weekly-layout">
+                  <Donut value={`${summary.weekly_mix.reduce((sum, item) => sum + item.pieces, 0)}篇`} label="建议发布" segments={summary.weekly_mix.map((item) => ({ label: item.label, value: item.percent, color: item.color }))} />
+                  {renderWeeklyMixTable(summary.weekly_mix)}
+                </div>
+                <Button variant="primary" onClick={() => generateDraft("weekly_plan", { title: "本周内容计划", weekly_mix: summary.weekly_mix, drafts })}>
+                  <Sparkles size={15} />
+                  生成本周内容计划
+                </Button>
+              </div>
+            ) : <EmptyState label="暂无组合建议" />}
+          </div>
+        );
+      default:
+        return null;
+    }
+  }
 
   return (
     <section className="ks-page">
@@ -992,9 +1579,13 @@ export function ContentStrategyCenterPage({
             <span>证据 {summary?.hero.evidence_count ?? 0} 条</span>
             <span className={`ks-badge ${aiModeClass(summary)}`}>{aiModeText}</span>
             {sourceTracker && <span>来源追踪器：{sourceTracker.name}</span>}
-            <span className={`ks-badge ${sourceBadgeClass(aiSummarySource)}`}>{sourceBadgeLabel(aiSummarySource)}</span>
+            <span className={`ks-badge ${sourceBadgeClass(aiSummarySource)}`}>{strategySourceBadgeLabel(aiSummarySource)}</span>
           </div>
           <div className="ks-hero__actions">
+            <Button variant="ghost" onClick={openRefreshSettings} disabled={noProjectSelected || !onUpdateProject || savingRefreshSettings}>
+              <SlidersHorizontal size={15} />
+              刷新设置
+            </Button>
             <Button variant="ghost" onClick={refreshSummary} disabled={loading || aiRefreshRunning || noProjectSelected}>
               {loading || aiRefreshRunning ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
               {loading || aiRefreshRunning ? "AI 分段分析中" : "AI 刷新策略"}
@@ -1027,12 +1618,19 @@ export function ContentStrategyCenterPage({
         </div>
         <div className="ks-project-strip__meta">
           <div>
+            <span>最近一次策略刷新</span>
+            <strong>{latestRefresh.label}</strong>
+            <small>{latestRefresh.source}</small>
+          </div>
+          <div>
             <span>刷新频率</span>
             <strong>{cadenceLabel}</strong>
+            <small>{selectedProjectDetail?.settings.refresh_cadence === "off" ? "当前仅支持手动刷新" : "已应用到当前项目"}</small>
           </div>
           <div>
             <span>上次定时刷新</span>
-            <strong>{formatDate(refreshStatus?.scheduled_refresh?.last_completed_at)}</strong>
+            <strong>{latestRefresh.label}</strong>
+            <small>{latestRefresh.source}</small>
           </div>
           <div>
             <span>上次手动分析</span>
@@ -1188,7 +1786,7 @@ export function ContentStrategyCenterPage({
       </Card>}
 
       {!noProjectSelected && <div className="ks-grid ks-grid--top">
-        <Card className="ks-panel">
+        <Card className="ks-panel ks-panel--with-footer">
           <div className="ks-panel__head">
             <div>
               <h2>今日重点选题</h2>
@@ -1196,7 +1794,8 @@ export function ContentStrategyCenterPage({
             </div>
             <span className="ks-panel__total">共 {summary?.suggestions.length ?? 0} 个</span>
           </div>
-          <div className="ks-metric-grid">
+          <div className="ks-panel__preview ks-panel__preview--metrics">
+            <div className="ks-metric-grid">
             {metrics.length ? metrics.map((item) => (
               <button
                 type="button"
@@ -1210,281 +1809,206 @@ export function ContentStrategyCenterPage({
                 <small>{item.hint}</small>
               </button>
             )) : <EmptyState label={loading ? "策略计算中" : "暂无指标"} />}
+            </div>
           </div>
+          {summary?.suggestions.length ? (
+            <button
+              type="button"
+              className="ks-panel__footer-link"
+              onClick={() => openSectionDrawer("suggestions", "今日重点选题", "查看当前项目下的全部选题建议与机会评分。")}
+            >
+              查看全部选题 <ChevronRight size={14} />
+            </button>
+          ) : <div className="ks-panel__footer-spacer" />}
         </Card>
 
-        <Card className="ks-panel">
+        <Card className="ks-panel ks-panel--with-footer">
           <div className="ks-panel__head">
             <div>
               <h2>人群痛点分布</h2>
               <p>按标题、正文、选题和机会证据归类</p>
             </div>
+            <span className={`ks-badge ${sourceBadgeClass(sectionSource(summary, "pain_distribution"))}`}>
+              {strategySourceBadgeLabel(sectionSource(summary, "pain_distribution"))}
+            </span>
           </div>
           {summary?.pain_distribution.length ? (
-            <div className="ks-distribution">
-              <Donut value={painTotal ? `${painTotal}` : `${summary.pain_distribution.length}`} label="痛点样本" segments={summary.pain_distribution} />
-              <div className="ks-legend">
-                {summary.pain_distribution.map((item) => (
-                  <div key={item.label} className="ks-legend__row">
-                    <span><i style={{ background: item.color }} />{item.label}</span>
-                    <strong>{item.value}%</strong>
-                  </div>
-                ))}
-              </div>
+            <div className="ks-panel__preview ks-panel__preview--list">
+              {renderPainList(painPreview)}
             </div>
           ) : <EmptyState label={loading ? "正在归类痛点" : "暂无痛点样本"} />}
+          {summary?.pain_distribution.length ? (
+            <button
+              type="button"
+              className="ks-panel__footer-link"
+              onClick={() => openSectionDrawer("pain_distribution", "人群痛点分布", "查看当前项目下所有痛点分布及占比。")}
+            >
+              查看全部痛点 <ChevronRight size={14} />
+            </button>
+          ) : <div className="ks-panel__footer-spacer" />}
         </Card>
 
-        <Card className="ks-panel">
+        <Card className="ks-panel ks-panel--with-footer">
           <div className="ks-panel__head">
             <div>
               <h2>热门关键词趋势榜</h2>
               <p>热度、趋势与机会值综合排序</p>
               <span className={`ks-badge ${sourceBadgeClass(sectionSource(summary, "keyword_trends"))}`}>
-                {sourceBadgeLabel(sectionSource(summary, "keyword_trends"))}
+                {strategySourceBadgeLabel(sectionSource(summary, "keyword_trends"))}
               </span>
             </div>
-            <button type="button" className="ks-link-btn" onClick={() => openEvidence("关键词证据", evidenceItems.filter((item) => item.type === "keyword"))}>
-              查看全部 <ChevronRight size={14} />
-            </button>
           </div>
           {summary?.keyword_trends.length ? (
-            <div className="ks-table ks-table--compact">
-              <div className="ks-table__head">
-                <span>排名</span>
-                <span>关键词</span>
-                <span>热度</span>
-                <span>趋势</span>
-                <span>机会值</span>
-              </div>
-              {summary.keyword_trends.slice(0, 5).map((item) => (
-                <button
-                  type="button"
-                  key={`${item.platform || "all"}-${item.keyword}`}
-                  className="ks-table__row ks-table__row--button"
-                  onClick={() => openEvidence(item.keyword, [{ type: "keyword", title: item.keyword, platform: item.platform, reason: `${platformLabel(item.platform)} 机会值 ${item.score}`, payload: item }], item)}
-                >
-                  <strong className="ks-rank">{item.rank}</strong>
-                  <span className="ks-row-title">{item.keyword}</span>
-                  <span>{item.heat}</span>
-                  <span className="ks-trend-cell">
-                    <Sparkline points={item.points} color={trendColor(item.direction)} />
-                  </span>
-                  <em className={item.direction === "up" ? "is-up" : "is-down"}>
-                    {item.score}
-                    {item.direction === "up" ? <TrendingUp size={13} /> : <TrendingDown size={13} />}
-                  </em>
-                </button>
-              ))}
+            <div className="ks-panel__preview ks-panel__preview--table">
+              {renderKeywordTrendTable(keywordPreview)}
             </div>
           ) : <EmptyState label={loading ? "正在计算趋势" : "暂无关键词趋势"} />}
+          {summary?.keyword_trends.length ? (
+            <button
+              type="button"
+              className="ks-panel__footer-link"
+              onClick={() => openSectionDrawer("keyword_trends", "热门关键词趋势榜", "查看当前项目下的全部关键词趋势与机会值。")}
+            >
+              查看全部关键词 <ChevronRight size={14} />
+            </button>
+          ) : <div className="ks-panel__footer-spacer" />}
         </Card>
       </div>}
 
       {!noProjectSelected && <div className="ks-grid ks-grid--middle">
-        <Card className="ks-panel">
+        <Card className="ks-panel ks-panel--with-footer">
           <div className="ks-panel__head">
             <div>
               <h2>内容框架库</h2>
               <p>从样本标题和高互动证据聚类</p>
               <span className={`ks-badge ${sourceBadgeClass(sectionSource(summary, "frameworks"))}`}>
-                {sourceBadgeLabel(sectionSource(summary, "frameworks"))}
+                {strategySourceBadgeLabel(sectionSource(summary, "frameworks"))}
               </span>
             </div>
-            <button type="button" className="ks-link-btn" onClick={() => openEvidence("框架样本", evidenceItems.filter((item) => item.type === "post_sample"))}>
-              查看更多 <ChevronRight size={14} />
-            </button>
           </div>
           {frameworkRows.length ? (
-            <div className="ks-framework-list">
-              {frameworkRows.slice(0, 5).map((item) => (
-                <article key={item.title} className="ks-framework-card">
-                  <div className="ks-framework-card__main">
-                    <strong>{item.title}</strong>
-                    <div className="ks-chip-row">
-                      {item.tags.map((tag) => <span key={tag}>{tag}</span>)}
-                    </div>
-                  </div>
-                  <div className="ks-framework-card__stats">
-                    <div><span>参考内容</span><strong>{item.posts}</strong></div>
-                    <div><span>互动中位数</span><strong>{frameworkMetricText(item.interactions)}</strong></div>
-                    <div><span>线索估算</span><strong>{item.leads}</strong></div>
-                  </div>
-                  <Button variant="ghost" onClick={() => generateDraft("framework", { ...item, title: item.title })}>
-                    使用框架
-                  </Button>
-                </article>
-              ))}
+            <div className="ks-panel__preview ks-panel__preview--cards">
+              {renderFrameworkList(frameworkPreview)}
             </div>
           ) : <EmptyState label={loading ? "正在聚类框架" : "暂无可复用框架"} />}
+          {frameworkRows.length ? (
+            <button
+              type="button"
+              className="ks-panel__footer-link"
+              onClick={() => openSectionDrawer("frameworks", "内容框架库", "查看当前项目下的全部内容框架与复用指标。")}
+            >
+              查看全部框架 <ChevronRight size={14} />
+            </button>
+          ) : <div className="ks-panel__footer-spacer" />}
         </Card>
 
-        <Card className="ks-panel">
+        <Card className="ks-panel ks-panel--with-footer">
           <div className="ks-panel__head">
             <div>
               <h2>选题建议</h2>
               <p>综合 AI 选题、机会评分和关键词趋势</p>
               <span className={`ks-badge ${sourceBadgeClass(sectionSource(summary, "suggestions"))}`}>
-                {sourceBadgeLabel(sectionSource(summary, "suggestions"))}
+                {strategySourceBadgeLabel(sectionSource(summary, "suggestions"))}
               </span>
             </div>
-            <button type="button" className="ks-link-btn" onClick={() => openEvidence("选题证据", evidenceItems.filter((item) => item.type === "suggestion"))}>
-              查看更多 <ChevronRight size={14} />
-            </button>
           </div>
           {summary?.suggestions.length ? (
-            <div className="ks-table">
-              <div className="ks-table__head ks-table__head--suggestions">
-                <span>标题建议</span>
-                <span>目标人群</span>
-                <span>机会值</span>
-                <span>风险等级</span>
-                <span>操作</span>
-              </div>
-              {summary.suggestions.slice(0, 7).map((item) => (
-                <div key={item.id} className="ks-table__row ks-table__row--suggestion">
-                  <button
-                    type="button"
-                    className="ks-suggestion-main"
-                    onClick={() => openEvidence(item.title, [{ type: "suggestion", title: item.title, platform: item.platform, reason: item.reason || item.direction, payload: item }], item)}
-                  >
-                    <strong>{item.title}</strong>
-                    <small>{item.source === "ai" ? "AI 增强" : item.direction}</small>
-                  </button>
-                  <span>{item.audience}</span>
-                  <b className="ks-score">{item.chance}</b>
-                  <span className={`ks-badge ${riskClass(item.risk)}`}>{item.risk}</span>
-                  <div className="ks-action-row">
-                    <Button variant="ghost" size="sm" onClick={() => addSuggestionDraft(item)}>
-                      <Plus size={14} />
-                      加入草稿
-                    </Button>
-                    <Button variant="ghost" size="sm" onClick={() => generateDraft("copy", item as unknown as Record<string, unknown>)}>
-                      <FileText size={14} />
-                      生成文案
-                    </Button>
-                  </div>
-                </div>
-              ))}
+            <div className="ks-panel__preview ks-panel__preview--table">
+              {renderSuggestionTable(suggestionPreview)}
             </div>
           ) : <EmptyState label={loading ? "正在生成选题" : "暂无选题建议"} />}
+          {summary?.suggestions.length ? (
+            <button
+              type="button"
+              className="ks-panel__footer-link"
+              onClick={() => openSectionDrawer("suggestions", "选题建议", "查看当前项目下的全部选题建议、评分与执行动作。")}
+            >
+              查看全部建议 <ChevronRight size={14} />
+            </button>
+          ) : <div className="ks-panel__footer-spacer" />}
         </Card>
 
-        <Card className="ks-panel">
+        <Card className="ks-panel ks-panel--with-footer">
           <div className="ks-panel__head">
             <div>
               <h2>高表现同行内容样本</h2>
               <p>用于拆解标题、结构和互动入口</p>
             </div>
-            <button type="button" className="ks-link-btn" onClick={() => openEvidence("同行样本证据", evidenceItems.filter((item) => item.type === "competitor_sample"))}>
-              查看全部 <ChevronRight size={14} />
-            </button>
           </div>
           {summary?.competitor_samples.length ? (
-            <div className="ks-competitor-list">
-              {summary.competitor_samples.slice(0, 6).map((item) => {
-                const sourceUrl = normalizeExternalUrl(item.url);
-                const openItemEvidence = () => {
-                  openEvidence(item.title, [{ type: "competitor_sample", title: item.title, platform: item.platform_key, reason: `互动 ${item.interaction}`, payload: item }], item);
-                };
-                return (
-                  <article key={`${item.platform}-${item.title}`} className="ks-competitor-card">
-                    <span className={`ks-platform-badge ${item.badge}`}>{item.platform}</span>
-                    <button type="button" className="ks-sample-thumb ks-sample-thumb--button" onClick={openItemEvidence} aria-label={`查看证据：${item.title}`}>
-                      <FileText size={18} />
-                    </button>
-                    <div className="ks-competitor-card__main">
-                      {sourceUrl ? (
-                        <a className="ks-competitor-card__title-link" href={sourceUrl} target="_blank" rel="noreferrer" title={`打开原帖：${item.title}`}>
-                          <strong>{item.title}</strong>
-                          <ExternalLink size={13} aria-hidden="true" />
-                        </a>
-                      ) : (
-                        <button type="button" className="ks-competitor-card__title-button" onClick={openItemEvidence} title="查看证据">
-                          <strong>{item.title}</strong>
-                        </button>
-                      )}
-                      <small>互动 {item.interaction}</small>
-                    </div>
-                    <div className="ks-competitor-card__stats">
-                      <span>点赞 {item.likes}</span>
-                      <span>评论 {item.comments}</span>
-                      <span>收藏 {item.favorites}</span>
-                    </div>
-                  </article>
-                );
-              })}
+            <div className="ks-panel__preview ks-panel__preview--cards">
+              {renderCompetitorList(competitorPreview)}
             </div>
           ) : <EmptyState label={loading ? "正在整理同行样本" : "暂无同行样本"} />}
+          {summary?.competitor_samples.length ? (
+            <button
+              type="button"
+              className="ks-panel__footer-link"
+              onClick={() => openSectionDrawer("competitor_samples", "高表现同行内容样本", "查看当前项目下的全部同行样本与互动指标。")}
+            >
+              查看全部样本 <ChevronRight size={14} />
+            </button>
+          ) : <div className="ks-panel__footer-spacer" />}
         </Card>
       </div>}
 
       {!noProjectSelected && <div className="ks-grid ks-grid--bottom">
-        <Card className="ks-panel">
+        <Card className="ks-panel ks-panel--with-footer">
           <div className="ks-panel__head">
             <div>
               <h2>风险提醒</h2>
               <p>由机会风险、诊断和 AI 风险合并</p>
               <span className={`ks-badge ${sourceBadgeClass(sectionSource(summary, "risks"))}`}>
-                {sourceBadgeLabel(sectionSource(summary, "risks"))}
+                {strategySourceBadgeLabel(sectionSource(summary, "risks"))}
               </span>
             </div>
-            <button type="button" className="ks-link-btn" onClick={() => openEvidence("风险证据", [], summary?.risks)}>
-              查看全部 <ChevronRight size={14} />
-            </button>
           </div>
           {summary?.risks.length ? (
-            <div className="ks-risk-list">
-              {summary.risks.slice(0, 5).map((item) => (
-                <article key={item.title} className="ks-risk-card">
-                  <div className="ks-risk-card__top">
-                    <span className={`ks-badge ${riskClass(item.level)}`}>{item.level}</span>
-                    <strong>{item.count}</strong>
-                  </div>
-                  <h3>{item.title}</h3>
-                  <p>{item.detail}</p>
-                </article>
-              ))}
+            <div className="ks-panel__preview ks-panel__preview--cards">
+              {renderRiskList(riskPreview)}
             </div>
           ) : <EmptyState label={loading ? "正在检查风险" : "暂无风险提示"} />}
+          {summary?.risks.length ? (
+            <button
+              type="button"
+              className="ks-panel__footer-link"
+              onClick={() => openSectionDrawer("risks", "风险提醒", "查看当前项目下的全部风险项、计数和解释说明。")}
+            >
+              查看全部风险 <ChevronRight size={14} />
+            </button>
+          ) : <div className="ks-panel__footer-spacer" />}
         </Card>
 
-        <Card className="ks-panel">
+        <Card className="ks-panel ks-panel--with-footer">
           <div className="ks-panel__head">
             <div>
               <h2>本周内容组合建议</h2>
               <p>按目标和可用选题估算发布结构</p>
               <span className={`ks-badge ${sourceBadgeClass(sectionSource(summary, "weekly_mix"))}`}>
-                {sourceBadgeLabel(sectionSource(summary, "weekly_mix"))}
+                {strategySourceBadgeLabel(sectionSource(summary, "weekly_mix"))}
               </span>
             </div>
           </div>
           {summary?.weekly_mix.length ? (
             <>
-              <div className="ks-weekly-layout">
+              <div className="ks-panel__preview ks-panel__preview--weekly">
+                <div className="ks-weekly-layout">
                 <Donut value={`${summary.weekly_mix.reduce((sum, item) => sum + item.pieces, 0)}篇`} label="建议发布" segments={summary.weekly_mix.map((item) => ({ label: item.label, value: item.percent, color: item.color }))} />
-                <div className="ks-weekly-table">
-                  {summary.weekly_mix.map((item) => (
-                    <div key={item.label} className="ks-weekly-row">
-                      <div className="ks-weekly-row__main">
-                        <span><i style={{ background: item.color }} />{item.label}</span>
-                        <strong>{item.percent}%</strong>
-                      </div>
-                      <div className="ks-weekly-row__bar">
-                        <i style={{ width: `${item.percent}%`, background: item.color }} />
-                      </div>
-                      <div className="ks-weekly-row__meta">
-                        <span>{item.pieces} 篇</span>
-                        <span>{item.exposure}</span>
-                        <span>{item.leads}</span>
-                      </div>
-                    </div>
-                  ))}
+                {renderWeeklyMixTable(weeklyPreview)}
                 </div>
               </div>
-              <button type="button" className="ks-link-btn ks-link-btn--bottom" onClick={() => generateDraft("weekly_plan", { title: "本周内容计划", weekly_mix: summary.weekly_mix, drafts })}>
-                调整方案 <ArrowRight size={14} />
-              </button>
+              <div className="ks-panel__footer-row">
+                <button
+                  type="button"
+                  className="ks-panel__footer-link"
+                  onClick={() => openSectionDrawer("weekly_mix", "本周内容组合建议", "查看完整的发布组合建议与预估收益。")}
+                >
+                  查看全部组合 <ChevronRight size={14} />
+                </button>
+                <button type="button" className="ks-link-btn ks-link-btn--bottom" onClick={() => generateDraft("weekly_plan", { title: "本周内容计划", weekly_mix: summary.weekly_mix, drafts })}>
+                  调整方案 <ArrowRight size={14} />
+                </button>
+              </div>
             </>
           ) : <EmptyState label={loading ? "正在生成组合" : "暂无组合建议"} />}
         </Card>
@@ -1549,6 +2073,150 @@ export function ContentStrategyCenterPage({
           </Button>
         </div>
       </div>}
+
+      <Drawer
+        open={!!sectionDrawer}
+        onOpenChange={(open) => {
+          if (!open) setSectionDrawer(null);
+        }}
+        title={sectionDrawer?.title || "全部内容"}
+        description={sectionDrawer?.description || "查看当前板块的完整内容。"}
+      >
+        <div className="ks-drawer-body">
+          {sectionDrawer ? renderSectionDrawerContent() : null}
+        </div>
+      </Drawer>
+
+      <Drawer
+        open={refreshDrawerOpen}
+        onOpenChange={(open) => {
+          setRefreshDrawerOpen(open);
+          if (!open) {
+            setRefreshSettingsError(null);
+          }
+        }}
+        title="刷新设置"
+        description="配置内容策略中心的自动刷新频率和执行时间。"
+      >
+        <div className="ks-drawer-body ks-refresh-drawer">
+          <div className="ks-refresh-summary-grid">
+            <article className="ks-refresh-summary-card">
+              <span>最近一次策略刷新</span>
+              <strong>{latestRefresh.label}</strong>
+              <small>{latestRefresh.source}</small>
+            </article>
+            <article className="ks-refresh-summary-card">
+              <span>上次自动刷新</span>
+              <strong>{formatDate(refreshStatus?.scheduled_refresh?.last_completed_at)}</strong>
+              <small>{scheduledRefreshStatusLabel(effectiveScheduledStatus)}</small>
+            </article>
+            <article className="ks-refresh-summary-card">
+              <span>上次手动分析</span>
+              <strong>{formatDate(refreshStatus?.manual_analysis?.last_refreshed_at)}</strong>
+              <small>点击“AI 刷新策略”立即触发</small>
+            </article>
+            <article className="ks-refresh-summary-card">
+              <span>AI 生成时间</span>
+              <strong>{formatDate(refreshStatus?.ai_insights?.generated_at)}</strong>
+              <small>{aiModeText}</small>
+            </article>
+          </div>
+
+          <label className="ks-refresh-toggle">
+            <input
+              type="checkbox"
+              checked={autoRefreshEnabled}
+              onChange={(event) => {
+                if (event.currentTarget.checked) {
+                  setRefreshCadence(lastEnabledCadenceRef.current === "off" ? "daily" : lastEnabledCadenceRef.current);
+                  return;
+                }
+                if (refreshCadence !== "off") {
+                  lastEnabledCadenceRef.current = refreshCadence;
+                }
+                setRefreshCadence("off");
+              }}
+            />
+            <div>
+              <strong>启用自动刷新</strong>
+              <p>开启后，内容策略中心会按项目设置自动从数据库快照重组并刷新摘要。</p>
+            </div>
+          </label>
+
+          {autoRefreshEnabled ? (
+            <div className="ks-refresh-form">
+              <div className="ks-refresh-inline">
+                <label className="ks-refresh-field">
+                  <span>刷新频率</span>
+                  <Select
+                    value={refreshCadence}
+                    onValueChange={(value) => setRefreshCadence(value as RefreshCadence)}
+                    options={REFRESH_OPTIONS.filter((item) => item.value !== "off")}
+                    label="刷新频率"
+                  />
+                </label>
+
+                {refreshCadence === "daily" ? (
+                  <label className="ks-refresh-field">
+                    <span>刷新时间（UTC+8）</span>
+                    <input
+                      value={refreshTimeUtc8}
+                      onChange={(event) => setRefreshTimeUtc8(event.currentTarget.value)}
+                      placeholder="09:00"
+                      inputMode="numeric"
+                    />
+                  </label>
+                ) : customCadenceSelected ? (
+                  <label className="ks-refresh-field">
+                    <span>{refreshCadence === "custom_hours" ? "每隔几小时" : "每隔几天"}</span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={customIntervalValue}
+                      onChange={(event) => setCustomIntervalValue(Number(event.currentTarget.value))}
+                    />
+                  </label>
+                ) : (
+                  <div className="ks-refresh-field ks-refresh-field--static">
+                    <span>执行说明</span>
+                    <p>保存后会按当前频率自动刷新；你仍然可以随时手动触发一次 AI 刷新。</p>
+                  </div>
+                )}
+              </div>
+
+              {refreshCadence === "daily" && (
+                <p className="ks-refresh-hint">请输入北京时间，格式为 HH:MM，例如 09:00。</p>
+              )}
+              {customCadenceSelected && (
+                <p className="ks-refresh-hint">
+                  {refreshCadence === "custom_hours" ? "系统会按小时级间隔自动刷新。" : "系统会按天级间隔自动刷新。"}
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="ks-refresh-callout">
+              自动刷新已关闭。页面仍会读取数据库里的现有结果，你也可以随时手动点击“AI 刷新策略”重新分析。
+            </div>
+          )}
+
+          {refreshSettingsError && (
+            <div className="ks-notice is-error">
+              <AlertTriangle size={16} />
+              <span>{refreshSettingsError}</span>
+            </div>
+          )}
+
+          <div className="ks-refresh-actions">
+            <Button variant="ghost" onClick={() => setRefreshDrawerOpen(false)} disabled={savingRefreshSettings}>
+              取消
+            </Button>
+            <Button variant="primary" onClick={saveRefreshSettings} disabled={savingRefreshSettings || !selectedProjectId || !onUpdateProject}>
+              {savingRefreshSettings ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}
+              {savingRefreshSettings ? "保存中..." : "保存设置"}
+            </Button>
+          </div>
+        </div>
+      </Drawer>
 
       <Drawer
         open={!!evidenceDrawer}

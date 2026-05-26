@@ -19,6 +19,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  SlidersHorizontal,
   Sparkles,
   Star,
   Target,
@@ -766,7 +767,15 @@ function mapCreatorRows(rows: UnknownRecord[]): CreatorRecord[] {
     .filter((item): item is CreatorRecord => item !== null);
 }
 
-export function CreatorDiscoveryPage() {
+export function CreatorDiscoveryPage({
+  selectedProjectId,
+  selectedProjectRecordId,
+  selectedProjectName,
+}: {
+  selectedProjectId?: string | null;
+  selectedProjectRecordId?: number | null;
+  selectedProjectName?: string | null;
+}) {
   const [query, setQuery] = React.useState("K12 家长");
   const [activeTab, setActiveTab] = React.useState<TierKey>("recommended");
   const [platformFilter, setPlatformFilter] = React.useState<PlatformKey>("all");
@@ -841,6 +850,11 @@ export function CreatorDiscoveryPage() {
     const defaultVertical = verticals.find((item) => item.code === "education") || verticals[0];
     return defaultVertical ? String(defaultVertical.id) : "";
   }, [verticals]);
+
+  const projectQuery = React.useMemo(() => {
+    if (!selectedProjectRecordId) return "";
+    return `project_id=${encodeURIComponent(String(selectedProjectRecordId))}`;
+  }, [selectedProjectRecordId]);
 
   const averageEngagement = React.useMemo(() => {
     const values = filteredBaseRecords
@@ -1032,10 +1046,14 @@ export function CreatorDiscoveryPage() {
         method: "POST",
         body: JSON.stringify({
           raw_query: query.trim(),
+          project_id: selectedProjectRecordId || null,
           selected_vertical_id: selectedVerticalId === "all" ? null : Number(selectedVerticalId),
           search_payload: searchPayload,
           view_state: {
             query: query.trim(),
+            selectedProjectId,
+            selectedProjectRecordId,
+            selectedProjectName,
             selectedVerticalId,
             platformFilter,
             activeTab,
@@ -1065,6 +1083,9 @@ export function CreatorDiscoveryPage() {
       filters,
       platformFilter,
       query,
+      selectedProjectId,
+      selectedProjectName,
+      selectedProjectRecordId,
       searchMode,
       selectedVerticalId,
     ],
@@ -1079,6 +1100,7 @@ export function CreatorDiscoveryPage() {
     try {
       const params = new URLSearchParams();
       params.set("include_profile_candidates", "false");
+      if (selectedProjectRecordId) params.set("project_id", String(selectedProjectRecordId));
       if (verticalId !== "all") params.set("vertical_id", verticalId);
       const data = await api<CreatorCandidatePoolResponse>(`/api/creator-search/candidate-pool?${params.toString()}`);
       const mapped = mapCreatorRows(data.candidates || []);
@@ -1097,7 +1119,7 @@ export function CreatorDiscoveryPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [selectedVertical?.name]);
+  }, [selectedProjectRecordId, selectedVertical?.name]);
 
   const handleSearch = React.useCallback(async () => {
     const trimmedQuery = query.trim();
@@ -1124,6 +1146,7 @@ export function CreatorDiscoveryPage() {
       const payload: Record<string, unknown> = {
         raw_query: trimmedQuery,
         search_scope: "realtime_only",
+        project_id: selectedProjectRecordId || undefined,
         platforms: backendPlatforms(platformFilter),
         limit: displayLimit,
         include_realtime: true,
@@ -1221,7 +1244,7 @@ export function CreatorDiscoveryPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [displayLimit, filters, loadCandidatePool, persistSearchSession, platformFilter, query, searchMode, selectedVerticalId]);
+  }, [displayLimit, filters, loadCandidatePool, persistSearchSession, platformFilter, query, searchMode, selectedProjectRecordId, selectedVerticalId]);
 
   const handleSaveSearch = React.useCallback(async () => {
     if (!currentSessionId) {
@@ -1259,6 +1282,7 @@ export function CreatorDiscoveryPage() {
           platform: backendPlatform,
           creator_id: creatorId,
           monitor_type: "partner_creator",
+          project_id: selectedProjectRecordId || undefined,
           display_name: record.name,
           profile_url: record.profileUrl || undefined,
           notes: selectedVertical?.name ? `来自达人发现：${selectedVertical.name}` : "来自达人发现",
@@ -1273,6 +1297,21 @@ export function CreatorDiscoveryPage() {
       setAddingMonitorKey(null);
     }
   }
+
+  React.useEffect(() => {
+    setLatestSessionResolved(false);
+    setLatestSessionRestored(false);
+    setCandidatePoolBootstrapDone(false);
+    setCurrentSessionId(null);
+    setRecords([]);
+    setSelectedId(null);
+    setAnalysisDiagnostics({});
+    setAnalysisRealtime({});
+    setAnalysisStatus("idle");
+    setResultSummary("等待搜索");
+    setRunStartedAt(null);
+    setRunLogLine("");
+  }, [selectedProjectRecordId]);
 
   React.useEffect(() => {
     if (!displayedRecords.length) {
@@ -1318,8 +1357,12 @@ export function CreatorDiscoveryPage() {
 
   React.useEffect(() => {
     if (latestSessionResolved) return;
+    if (selectedProjectId && !selectedProjectRecordId) return;
     let cancelled = false;
-    api<CreatorSearchSessionResponse>("/api/creator-search/search-sessions/latest")
+    const latestUrl = projectQuery
+      ? `/api/creator-search/search-sessions/latest?${projectQuery}`
+      : "/api/creator-search/search-sessions/latest";
+    api<CreatorSearchSessionResponse>(latestUrl)
       .then((data) => {
         if (cancelled) return;
         const sessionRow = asRecord(data.session);
@@ -1340,7 +1383,7 @@ export function CreatorDiscoveryPage() {
     return () => {
       cancelled = true;
     };
-  }, [latestSessionResolved, restoreLatestSearchSession]);
+  }, [latestSessionResolved, projectQuery, restoreLatestSearchSession, selectedProjectId, selectedProjectRecordId]);
 
   React.useEffect(() => {
     if (!latestSessionResolved || latestSessionRestored) return;
@@ -1373,10 +1416,31 @@ export function CreatorDiscoveryPage() {
       <div className="cdv2-layout">
         <div className="cdv2-main">
           <section className="cdv2-panel cdv2-search-panel">
-            <div className="cdv2-section-head">
-              <div>
-                <h1>达人发现</h1>
-                <p>选择赛道后输入自然语言需求，基于本地画像、标签和内容证据发现可跟进达人</p>
+            <div className="cdv2-search-toolbar">
+              <div className="cdv2-section-head">
+                <div>
+                  <h1>达人发现</h1>
+                  <p>通过智能搜索和多维筛选，发现高潜力达人并评估合作价值</p>
+                </div>
+              </div>
+              <div className="cdv2-search-actions">
+                <button
+                  type="button"
+                  className="cdv2-button ghost"
+                  onClick={() => void handleSaveSearch()}
+                >
+                  <Bookmark size={16} />
+                  保存搜索
+                </button>
+                <button
+                  type="button"
+                  className="cdv2-button primary"
+                  disabled={isLoading}
+                  onClick={() => void handleSearch()}
+                >
+                  <Sparkles size={16} />
+                  {isLoading ? "分析中" : "智能发现"}
+                </button>
               </div>
             </div>
 
@@ -1395,23 +1459,10 @@ export function CreatorDiscoveryPage() {
                   placeholder="请输入要搜索的内容，例如：帮我找近期活跃的宠物主粮领域，擅长测评与科普的抖音/小红书达人"
                 />
               </label>
-              <button
-                type="button"
-                className="cdv2-button primary"
-                disabled={isLoading}
-                onClick={() => void handleSearch()}
-              >
-                <Sparkles size={16} />
-                {isLoading ? "分析中" : "智能发现"}
-              </button>
-              <button
-                type="button"
-                className="cdv2-button ghost"
-                onClick={() => void handleSaveSearch()}
-              >
-                <Bookmark size={16} />
-                保存搜索
-              </button>
+              <SearchModeControl
+                value={searchMode}
+                onChange={setSearchMode}
+              />
             </div>
 
             <div className="cdv2-steps">
@@ -1457,19 +1508,6 @@ export function CreatorDiscoveryPage() {
                   { value: "weibo", label: "微博" },
                 ]}
               />
-              <SearchModeControl
-                value={searchMode}
-                onChange={setSearchMode}
-              />
-              <FilterInputControl
-                label="展示数量"
-                value={pageSizeInput}
-                placeholder="10"
-                suffix="位"
-                inputMode="numeric"
-                onChange={setPageSizeInput}
-                onBlur={() => setPageSizeInput(String(displayLimit))}
-              />
               <FilterRangeControl
                 label="粉丝数"
                 minValue={filters.followerMinCount}
@@ -1479,13 +1517,6 @@ export function CreatorDiscoveryPage() {
                 suffix="个"
                 onMinChange={(value) => setFilters((current) => ({ ...current, followerMinCount: value }))}
                 onMaxChange={(value) => setFilters((current) => ({ ...current, followerMaxCount: value }))}
-              />
-              <FilterInputControl
-                label="近30天样本发文"
-                value={filters.recentPostsMin}
-                placeholder="不限"
-                suffix="篇"
-                onChange={(value) => setFilters((current) => ({ ...current, recentPostsMin: value }))}
               />
               <FilterSelectControl
                 label="活跃度"
@@ -1498,38 +1529,62 @@ export function CreatorDiscoveryPage() {
                   { value: "dormant", label: "沉寂" },
                 ]}
               />
-              <FilterInputControl
-                label="互动率"
-                value={filters.engagementMinPercent}
-                placeholder="不限"
-                suffix="%"
-                onChange={(value) => setFilters((current) => ({ ...current, engagementMinPercent: value }))}
-              />
-              <FilterInputControl
-                label="爆款率"
-                value={filters.viralMinPercent}
-                placeholder="不限"
-                suffix="%"
-                onChange={(value) => setFilters((current) => ({ ...current, viralMinPercent: value }))}
-              />
-              <button
-                type="button"
-                className="cdv2-reset"
-                onClick={() => {
-                  setQuery("");
-                  setSelectedVerticalId(verticals[0] ? String(verticals[0].id) : "all");
-                  setFilters(DEFAULT_FILTERS);
-                  setSearchMode("realtime");
-                  setPageSizeInput(DEFAULT_PAGE_SIZE);
-                  setPlatformFilter("all");
-                  setActiveTab("recommended");
-                  setRunStartedAt(null);
-                  setRunLogLine("");
-                  setMessage("筛选器已恢复为默认推荐组合。");
-                }}
-              >
-                重置
-              </button>
+              <details className="cdv2-more-filters">
+                <summary>
+                  <SlidersHorizontal size={16} />
+                  更多筛选
+                </summary>
+                <div className="cdv2-more-filter-panel">
+                  <FilterInputControl
+                    label="展示数量"
+                    value={pageSizeInput}
+                    placeholder="10"
+                    suffix="位"
+                    inputMode="numeric"
+                    onChange={setPageSizeInput}
+                    onBlur={() => setPageSizeInput(String(displayLimit))}
+                  />
+                  <FilterInputControl
+                    label="近30天样本发文"
+                    value={filters.recentPostsMin}
+                    placeholder="不限"
+                    suffix="篇"
+                    onChange={(value) => setFilters((current) => ({ ...current, recentPostsMin: value }))}
+                  />
+                  <FilterInputControl
+                    label="互动率"
+                    value={filters.engagementMinPercent}
+                    placeholder="不限"
+                    suffix="%"
+                    onChange={(value) => setFilters((current) => ({ ...current, engagementMinPercent: value }))}
+                  />
+                  <FilterInputControl
+                    label="爆款率"
+                    value={filters.viralMinPercent}
+                    placeholder="不限"
+                    suffix="%"
+                    onChange={(value) => setFilters((current) => ({ ...current, viralMinPercent: value }))}
+                  />
+                  <button
+                    type="button"
+                    className="cdv2-reset"
+                    onClick={() => {
+                      setQuery("");
+                      setSelectedVerticalId(verticals[0] ? String(verticals[0].id) : "all");
+                      setFilters(DEFAULT_FILTERS);
+                      setSearchMode("realtime");
+                      setPageSizeInput(DEFAULT_PAGE_SIZE);
+                      setPlatformFilter("all");
+                      setActiveTab("recommended");
+                      setRunStartedAt(null);
+                      setRunLogLine("");
+                      setMessage("筛选器已恢复为默认推荐组合。");
+                    }}
+                  >
+                    重置
+                  </button>
+                </div>
+              </details>
             </div>
           </section>
 

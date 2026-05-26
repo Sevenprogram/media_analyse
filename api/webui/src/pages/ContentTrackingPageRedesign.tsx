@@ -1,20 +1,24 @@
 import React from "react";
 import {
   ChevronDown,
+  Edit3,
   ExternalLink,
   FileSearch,
   Info,
+  Plus,
   RefreshCw,
   Search,
   WandSparkles,
 } from "lucide-react";
-import { Button, Card } from "../components/ui";
+import { Button, Card, Drawer } from "../components/ui";
 import { api, ApiError } from "../utils/api";
 
-type SubTab = "input" | "trackers" | "records";
+type SubTab = "input" | "records";
+type TrackerSidebarFilter = "all" | "active" | "paused";
 
 type ContentTracker = {
   id: number;
+  project_id?: number | null;
   name?: string | null;
   description?: string | null;
   platforms?: string[] | null;
@@ -59,7 +63,11 @@ type TrackerAnalysisRun = {
   decision_confidence?: number | null;
   started_at?: string | null;
   completed_at?: string | null;
+  input_summary?: Record<string, unknown> | null;
   summary?: Record<string, unknown> | null;
+  error_message?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
 };
 
 type DistributionMap = Record<string, number>;
@@ -268,6 +276,16 @@ type AnalysisHistoryResponse = {
   snapshots: TrackerAnalysisSnapshot[];
 };
 
+type AnalysisRunResponse = {
+  run: TrackerAnalysisRun;
+  candidates?: SampleRow[] | null;
+};
+
+type AnalysisEnqueueResponse = {
+  tracker?: ContentTracker | null;
+  run: TrackerAnalysisRun;
+};
+
 type CollectionRun = {
   id: number;
   status?: string | null;
@@ -305,6 +323,7 @@ type LoadAnalysisOptions = {
 };
 
 const TRACKER_ANALYSIS_CACHE = new Map<number, AnalysisCacheEntry>();
+const TRACKER_ANALYSIS_RUN_CACHE = new Map<number, TrackerAnalysisRun | null>();
 const TRACKER_COLLECTION_RUN_CACHE = new Map<number, CollectionRun | null>();
 const TRACKER_ANALYSIS_CACHE_TTL_MS = 5 * 60 * 1000;
 let LAST_SELECTED_TRACKER_ID: number | null = null;
@@ -343,6 +362,8 @@ type NormalizedTracker = {
   excludedKeywords: string[];
   scheduleIntervalMinutes: number;
   enabled: boolean;
+  latestAnalysisRunId: number | null;
+  latestAnalysisSnapshotId: number | null;
   updatedAt: string | null;
 };
 
@@ -434,6 +455,7 @@ const COLLECTION_REQUEST_CONFIG = {
 
 type ContentTrackingPageProps = {
   focusTrackerId?: number | null;
+  selectedProjectRecordId?: number | null;
   selectedProjectName?: string | null;
   onUseTrackerForStrategy?: (trackerId: number) => void;
 };
@@ -497,6 +519,7 @@ function DonutChartMock({ total, label }: { total: number; label: string }) {
 
 export function ContentTrackingPage({
   focusTrackerId = null,
+  selectedProjectRecordId = null,
   selectedProjectName = null,
   onUseTrackerForStrategy,
 }: ContentTrackingPageProps = {}) {
@@ -504,14 +527,17 @@ export function ContentTrackingPage({
   const [trackers, setTrackers] = React.useState<ContentTracker[]>([]);
   const [selectedTrackerId, setSelectedTrackerId] = React.useState<number | null>(null);
   const [latestAnalysis, setLatestAnalysis] = React.useState<LatestAnalysisResponse | null>(null);
+  const [analysisRun, setAnalysisRun] = React.useState<TrackerAnalysisRun | null>(null);
   const [history, setHistory] = React.useState<TrackerAnalysisSnapshot[]>([]);
   const [query, setQuery] = React.useState("");
-  const [trackerMenuOpen, setTrackerMenuOpen] = React.useState(false);
+  const [trackerSidebarFilter, setTrackerSidebarFilter] = React.useState<TrackerSidebarFilter>("all");
   const [trackersLoading, setTrackersLoading] = React.useState(false);
   const [analysisLoading, setAnalysisLoading] = React.useState(false);
   const [running, setRunning] = React.useState(false);
   const [collecting, setCollecting] = React.useState(false);
   const [collectionRun, setCollectionRun] = React.useState<CollectionRun | null>(null);
+  const [trackerEditorOpen, setTrackerEditorOpen] = React.useState(false);
+  const [editingTrackerId, setEditingTrackerId] = React.useState<number | null>(null);
   const [savingTracker, setSavingTracker] = React.useState(false);
   const [suggestingTrackerKeywords, setSuggestingTrackerKeywords] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -525,6 +551,7 @@ export function ContentTrackingPage({
   const mountedRef = React.useRef(false);
   const selectedTrackerIdRef = React.useRef<number | null>(null);
   const analysisRequestSeqRef = React.useRef(0);
+  const watchedAnalysisRunRef = React.useRef<number | null>(null);
   const watchedCollectionRunRef = React.useRef<number | null>(null);
 
   const normalizedTrackers = React.useMemo(
@@ -548,15 +575,41 @@ export function ContentTrackingPage({
     });
   }, [normalizedTrackers, query]);
 
-  const trackerMenuItems = React.useMemo(
-    () => filteredTrackers.slice(0, 12),
-    [filteredTrackers],
+  const trackerFilterOptions = React.useMemo(
+    () => [
+      { key: "all" as const, label: "全部", count: normalizedTrackers.length },
+      { key: "active" as const, label: "运行中", count: normalizedTrackers.filter((tracker) => tracker.enabled).length },
+      { key: "paused" as const, label: "已暂停", count: normalizedTrackers.filter((tracker) => !tracker.enabled).length },
+    ],
+    [normalizedTrackers],
   );
+
+  const sidebarTrackers = React.useMemo(() => {
+    if (trackerSidebarFilter === "active") {
+      return filteredTrackers.filter((tracker) => tracker.enabled);
+    }
+    if (trackerSidebarFilter === "paused") {
+      return filteredTrackers.filter((tracker) => !tracker.enabled);
+    }
+    return filteredTrackers;
+  }, [filteredTrackers, trackerSidebarFilter]);
 
   const selectedTracker = React.useMemo(
     () => normalizedTrackers.find((item) => item.id === selectedTrackerId) || null,
     [normalizedTrackers, selectedTrackerId],
   );
+
+  const editingTracker = React.useMemo(
+    () => normalizedTrackers.find((item) => item.id === editingTrackerId) || null,
+    [editingTrackerId, normalizedTrackers],
+  );
+
+  const analysisProgress = React.useMemo(
+    () => readAnalysisProgress(analysisRun),
+    [analysisRun],
+  );
+
+  const analysisInFlight = running || isAnalysisRunActive(analysisRun);
 
   React.useEffect(() => {
     mountedRef.current = true;
@@ -597,7 +650,7 @@ export function ContentTrackingPage({
   const hasSelectedTracker = Boolean(selectedTracker);
   const hasAnalysis = Boolean(latestAnalysis?.snapshot);
   const isInitialLoading = trackersLoading && !hasTrackers;
-  const noSnapshotYet = hasSelectedTracker && !hasAnalysis && !analysisLoading && !running;
+  const noSnapshotYet = hasSelectedTracker && !hasAnalysis && !analysisLoading && !analysisInFlight;
   const collectionLookbackDays = clampInteger(
     collectionForm.lookbackDays,
     COLLECTION_REQUEST_CONFIG.lookbackDays,
@@ -647,8 +700,8 @@ export function ContentTrackingPage({
         ? "请选择一个追踪器查看分析。"
         : "数据库中还没有可用追踪器，请先创建。";
 
-  const analysisStatusMessage = running
-    ? "分析任务运行中，页面会保留最近一次成功结果。"
+  const analysisStatusMessage = analysisInFlight
+    ? analysisProgress?.message || "分析任务运行中，页面会保留最近一次成功结果。"
     : analysisLoading
       ? "正在加载分析结果..."
       : noSnapshotYet
@@ -660,7 +713,13 @@ export function ContentTrackingPage({
   const loadTrackers = React.useCallback(async () => {
     setTrackersLoading(true);
     try {
-      const data = await api<{ trackers: ContentTracker[] }>("/api/content-tracking/trackers");
+      const params = new URLSearchParams();
+      if (selectedProjectRecordId) {
+        params.set("project_id", String(selectedProjectRecordId));
+      }
+      const data = await api<{ trackers: ContentTracker[] }>(
+        `/api/content-tracking/trackers${params.toString() ? `?${params.toString()}` : ""}`,
+      );
       const nextTrackers = safeArray(data.trackers);
       setTrackers(nextTrackers);
       setSelectedTrackerId((current) => {
@@ -680,7 +739,7 @@ export function ContentTrackingPage({
     } finally {
       setTrackersLoading(false);
     }
-  }, []);
+  }, [selectedProjectRecordId]);
 
   const loadTrackerAnalysis = React.useCallback(async (
     trackerId: number | null,
@@ -739,6 +798,96 @@ export function ContentTrackingPage({
       }
     }
   }, []);
+
+  const upsertTrackerInState = React.useCallback((tracker: ContentTracker | null | undefined) => {
+    if (!tracker) return;
+    setTrackers((current) => {
+      const next = current.slice();
+      const index = next.findIndex((item) => item.id === tracker.id);
+      if (index >= 0) {
+        next[index] = tracker;
+        return next;
+      }
+      next.unshift(tracker);
+      return next;
+    });
+  }, []);
+
+  const followAnalysisRun = React.useCallback(async (
+    run: TrackerAnalysisRun,
+    trackerId: number,
+  ) => {
+    if (!isAnalysisRunActive(run)) return;
+    if (watchedAnalysisRunRef.current === run.id) return;
+
+    watchedAnalysisRunRef.current = run.id;
+    TRACKER_ANALYSIS_RUN_CACHE.set(trackerId, run);
+    if (mountedRef.current && selectedTrackerIdRef.current === trackerId) {
+      setAnalysisRun(run);
+    }
+    try {
+      const finished = await waitForAnalysisRun(run.id, trackerId);
+      if (finished.status === "failed") {
+        if (mountedRef.current && selectedTrackerIdRef.current === trackerId) {
+          setError(finished.error_message || "分析任务失败");
+        }
+        return;
+      }
+      await loadTrackers();
+      await loadTrackerAnalysis(trackerId, { force: true, silent: true });
+      if (mountedRef.current && selectedTrackerIdRef.current === trackerId) {
+        setError(null);
+      }
+    } catch (err) {
+      if (mountedRef.current && selectedTrackerIdRef.current === trackerId) {
+        setError(readErrorMessage(err, "恢复分析任务状态失败"));
+      }
+    } finally {
+      if (watchedAnalysisRunRef.current === run.id) {
+        watchedAnalysisRunRef.current = null;
+      }
+      if (mountedRef.current && selectedTrackerIdRef.current === trackerId) {
+        setRunning(false);
+      }
+    }
+  }, [loadTrackerAnalysis, loadTrackers]);
+
+  const restoreLatestAnalysisRun = React.useCallback(async (trackerId: number | null) => {
+    if (!trackerId) {
+      setAnalysisRun(null);
+      setRunning(false);
+      return;
+    }
+
+    const cachedRun = TRACKER_ANALYSIS_RUN_CACHE.get(trackerId);
+    if (cachedRun !== undefined && mountedRef.current && selectedTrackerIdRef.current === trackerId) {
+      setAnalysisRun(cachedRun);
+    }
+
+    const tracker = normalizedTrackers.find((item) => item.id === trackerId);
+    const latestRunId = tracker?.latestAnalysisRunId ?? null;
+    if (!latestRunId) {
+      if (cachedRun === undefined && mountedRef.current && selectedTrackerIdRef.current === trackerId) {
+        setAnalysisRun(null);
+      }
+      return;
+    }
+
+    try {
+      const data = await api<AnalysisRunResponse>(`/api/content-tracking/analysis-runs/${latestRunId}`);
+      TRACKER_ANALYSIS_RUN_CACHE.set(trackerId, data.run);
+      if (mountedRef.current && selectedTrackerIdRef.current === trackerId) {
+        setAnalysisRun(data.run);
+      }
+      if (isAnalysisRunActive(data.run)) {
+        void followAnalysisRun(data.run, trackerId);
+      }
+    } catch {
+      if (cachedRun === undefined && mountedRef.current && selectedTrackerIdRef.current === trackerId) {
+        setAnalysisRun(null);
+      }
+    }
+  }, [followAnalysisRun, normalizedTrackers]);
 
   const followCollectionRun = React.useCallback(async (
     run: CollectionRun,
@@ -817,6 +966,18 @@ export function ContentTrackingPage({
   }, [followCollectionRun, loadTrackerAnalysis]);
 
   React.useEffect(() => {
+    setSelectedTrackerId(null);
+    setEditingTrackerId(null);
+    setTrackerEditorOpen(false);
+    setLatestAnalysis(null);
+    setAnalysisRun(null);
+    setHistory([]);
+    setCollectionRun(null);
+    setRunning(false);
+    setCollecting(false);
+  }, [selectedProjectRecordId]);
+
+  React.useEffect(() => {
     void loadTrackers();
   }, [loadTrackers]);
 
@@ -825,13 +986,13 @@ export function ContentTrackingPage({
     if (!normalizedTrackers.some((tracker) => tracker.id === focusTrackerId)) return;
     setSelectedTrackerId(focusTrackerId);
     setSubTab("input");
-    setTrackerMenuOpen(false);
   }, [focusTrackerId, normalizedTrackers]);
 
   React.useEffect(() => {
     void loadTrackerAnalysis(selectedTrackerId, { preferCache: true, silent: true });
+    void restoreLatestAnalysisRun(selectedTrackerId);
     void restoreLatestCollectionRun(selectedTrackerId);
-  }, [loadTrackerAnalysis, restoreLatestCollectionRun, selectedTrackerId]);
+  }, [loadTrackerAnalysis, restoreLatestAnalysisRun, restoreLatestCollectionRun, selectedTrackerId]);
 
   React.useEffect(() => {
     if (!selectedTracker) {
@@ -868,10 +1029,16 @@ export function ContentTrackingPage({
     if (!selectedTrackerId) return;
     setRunning(true);
     try {
-      await api(`/api/content-tracking/trackers/${selectedTrackerId}/analysis`, {
-        method: "POST",
-      });
-      await loadTrackerAnalysis(selectedTrackerId);
+      const queued = await api<AnalysisEnqueueResponse>(
+        `/api/content-tracking/trackers/${selectedTrackerId}/analysis`,
+        {
+          method: "POST",
+        },
+      );
+      upsertTrackerInState(queued.tracker);
+      TRACKER_ANALYSIS_RUN_CACHE.set(selectedTrackerId, queued.run);
+      setAnalysisRun(queued.run);
+      void followAnalysisRun(queued.run, selectedTrackerId);
       setError(null);
     } catch (err) {
       setError(readErrorMessage(err, "运行分析失败"));
@@ -891,6 +1058,22 @@ export function ContentTrackingPage({
         platforms: nextPlatforms,
       };
     });
+  }
+
+  async function waitForAnalysisRun(runId: number, trackerId: number): Promise<TrackerAnalysisRun> {
+    let latest: TrackerAnalysisRun | null = null;
+    for (;;) {
+      const data = await api<AnalysisRunResponse>(`/api/content-tracking/analysis-runs/${runId}`);
+      latest = data.run;
+      TRACKER_ANALYSIS_RUN_CACHE.set(trackerId, latest);
+      if (mountedRef.current && selectedTrackerIdRef.current === trackerId) {
+        setAnalysisRun(latest);
+      }
+      if (!isAnalysisRunActive(latest)) {
+        return latest;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 1200));
+    }
   }
 
   async function waitForCollectionRun(runId: number, trackerId: number): Promise<CollectionRun> {
@@ -1005,27 +1188,46 @@ export function ContentTrackingPage({
       if (mode === "create") {
         const created = await api<ContentTracker>("/api/content-tracking/trackers", {
           method: "POST",
-          body: JSON.stringify(payload),
+          body: JSON.stringify({
+            ...payload,
+            project_id: selectedProjectRecordId ?? null,
+          }),
         });
         await loadTrackers();
         setSelectedTrackerId(created.id);
         setRunning(true);
-        await api(`/api/content-tracking/trackers/${created.id}/analysis`, {
-          method: "POST",
-        });
-        await loadTrackerAnalysis(created.id);
+        const queued = await api<AnalysisEnqueueResponse>(
+          `/api/content-tracking/trackers/${created.id}/analysis`,
+          {
+            method: "POST",
+          },
+        );
+        upsertTrackerInState(queued.tracker);
+        TRACKER_ANALYSIS_RUN_CACHE.set(created.id, queued.run);
+        setAnalysisRun(queued.run);
+        void followAnalysisRun(queued.run, created.id);
       } else {
-        if (!selectedTrackerId) {
+        if (!editingTrackerId) {
           setError("请先选择要编辑的追踪器。");
           return;
         }
-        await api<ContentTracker>(`/api/content-tracking/trackers/${selectedTrackerId}`, {
+        await api<ContentTracker>(`/api/content-tracking/trackers/${editingTrackerId}`, {
           method: "PATCH",
-          body: JSON.stringify(payload),
+          body: JSON.stringify(
+            selectedProjectRecordId
+              ? {
+                  ...payload,
+                  project_id: selectedProjectRecordId,
+                }
+              : payload,
+          ),
         });
         await loadTrackers();
-        await loadTrackerAnalysis(selectedTrackerId);
+        if (editingTrackerId === selectedTrackerId) {
+          await loadTrackerAnalysis(editingTrackerId);
+        }
       }
+      setTrackerEditorOpen(false);
       setError(null);
     } catch (err) {
       setError(readErrorMessage(err, mode === "create" ? "创建追踪器失败" : "保存追踪器失败"));
@@ -1074,41 +1276,34 @@ export function ContentTrackingPage({
   }
 
   function resetTrackerForm() {
-    if (!selectedTracker) {
+    if (!editingTracker) {
       setTrackerForm(DEFAULT_TRACKER_FORM);
       return;
     }
 
-    setTrackerForm({
-      name: selectedTracker.name,
-      description: selectedTracker.description,
-      platformsText: selectedTracker.platforms.join(","),
-      includedKeywordsText: selectedTracker.includedKeywords.join(","),
-      excludedKeywordsText: selectedTracker.excludedKeywords.join(","),
-      scheduleIntervalMinutes: `${selectedTracker.scheduleIntervalMinutes}`,
-      enabled: selectedTracker.enabled,
-    });
+    setTrackerForm(buildTrackerFormState(editingTracker));
   }
 
   function prepareNewTracker() {
-    setSelectedTrackerId(null);
-    setLatestAnalysis(null);
-    setHistory([]);
+    setEditingTrackerId(null);
     setTrackerForm(DEFAULT_TRACKER_FORM);
+    setTrackerEditorOpen(true);
     setError(null);
   }
 
   function selectTrackerForAnalysis(trackerId: number) {
     setSelectedTrackerId(trackerId);
     setSubTab("input");
-    setTrackerMenuOpen(false);
     setError(null);
   }
 
   function selectTrackerForEditing(trackerId: number) {
-    setSelectedTrackerId(trackerId);
-    setSubTab("trackers");
-    setTrackerMenuOpen(false);
+    const tracker = normalizedTrackers.find((item) => item.id === trackerId);
+    setEditingTrackerId(trackerId);
+    if (tracker) {
+      setTrackerForm(buildTrackerFormState(tracker));
+    }
+    setTrackerEditorOpen(true);
     setError(null);
   }
 
@@ -1121,96 +1316,135 @@ export function ContentTrackingPage({
           <Info size={16} />
         </div>
         <div className="ct-topbar-controls">
-          <div className="ct-tracker-switcher">
-            <button
-              type="button"
-              className="ct-select-pill"
-              onClick={() => setTrackerMenuOpen((current) => !current)}
-              aria-expanded={trackerMenuOpen}
-              aria-haspopup="listbox"
-              disabled={!hasTrackers && trackersLoading}
-            >
-              {selectedTracker?.name || "请选择追踪器"}
-              <ChevronDown size={16} />
-            </button>
-            {trackerMenuOpen && (
-              <div className="ct-tracker-menu" role="listbox">
-                {trackerMenuItems.length > 0 ? (
-                  trackerMenuItems.map((tracker) => (
-                    <button
-                      type="button"
-                      key={tracker.id}
-                      className={`ct-tracker-menu-item${tracker.id === selectedTrackerId ? " active" : ""}`}
-                      onClick={() => selectTrackerForAnalysis(tracker.id)}
-                      role="option"
-                      aria-selected={tracker.id === selectedTrackerId}
-                    >
-                      <span className="ct-tracker-menu-main">
-                        <strong>{tracker.name}</strong>
-                        <em>{tracker.enabled ? "启用中" : "已停用"}</em>
-                      </span>
-                      <span className="ct-tracker-menu-meta">
-                        {tracker.platforms.map(platformLabel).join(" / ") || "未配置平台"}
-                      </span>
-                      <span className="ct-tracker-menu-meta">
-                        {tracker.includedKeywords.join("、") || "未配置关键词"}
-                      </span>
-                    </button>
-                  ))
-                ) : (
-                  <div className="ct-tracker-menu-empty">
-                    {trackersLoading ? "正在加载追踪器..." : "没有匹配的追踪器"}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-          <label className="ct-search-box">
-            <Search size={16} />
-            <input
-              value={query}
-              onFocus={() => setTrackerMenuOpen(true)}
-              onChange={(event) => {
-                setQuery(event.target.value);
-                setTrackerMenuOpen(true);
-              }}
-              placeholder="搜索追踪器或关键词"
-            />
-          </label>
+          <button type="button" className="ct-link-btn" onClick={() => void loadTrackers()}>
+            <RefreshCw size={14} />
+            刷新追踪器
+          </button>
         </div>
       </div>
 
-      <div className="ct-subtabs">
-        <button
-          type="button"
-          className={subTab === "input" ? "active" : ""}
-          onClick={() => setSubTab("input")}
-        >
-          分析概览
-        </button>
-        <button
-          type="button"
-          className={subTab === "trackers" ? "active" : ""}
-          onClick={() => setSubTab("trackers")}
-        >
-          追踪器列表
-        </button>
-        <button
-          type="button"
-          className={subTab === "records" ? "active" : ""}
-          onClick={() => setSubTab("records")}
-        >
-          分析记录
-        </button>
-      </div>
+      <div className="ct-workbench-layout">
+        <aside className="ct-tracker-sidebar" aria-label="追踪器选择">
+          <div className="ct-sidebar-head">
+            <div>
+              <h3>追踪器列表</h3>
+              <span>共 {normalizedTrackers.length} 项</span>
+            </div>
+            <button type="button" className="ct-sidebar-new-btn" onClick={prepareNewTracker}>
+              <Plus size={14} />
+              新建
+            </button>
+          </div>
 
-      {error && <div className="notice error">{error}</div>}
+          <label className="ct-sidebar-search">
+            <Search size={15} />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索追踪器"
+            />
+          </label>
+
+          <div className="ct-sidebar-filters" role="tablist" aria-label="追踪器状态筛选">
+            {trackerFilterOptions.map((option) => (
+              <button
+                key={option.key}
+                type="button"
+                className={trackerSidebarFilter === option.key ? "active" : ""}
+                onClick={() => setTrackerSidebarFilter(option.key)}
+                role="tab"
+                aria-selected={trackerSidebarFilter === option.key}
+              >
+                {option.label} <span>{option.count}</span>
+              </button>
+            ))}
+          </div>
+
+          <div className="ct-sidebar-list">
+            {sidebarTrackers.length > 0 ? (
+              sidebarTrackers.map((tracker) => (
+                <button
+                  type="button"
+                  key={tracker.id}
+                  className={`ct-sidebar-tracker-card${tracker.id === selectedTrackerId ? " active" : ""}`}
+                  onClick={() => selectTrackerForAnalysis(tracker.id)}
+                  aria-pressed={tracker.id === selectedTrackerId}
+                >
+                  <span className="ct-sidebar-card-top">
+                    <strong>{tracker.name}</strong>
+                    <em className={tracker.enabled ? "active" : "paused"}>
+                      {tracker.enabled ? "运行中" : "已暂停"}
+                    </em>
+                  </span>
+                  <span className="ct-sidebar-platforms">
+                    {tracker.platforms.length > 0
+                      ? tracker.platforms.slice(0, 3).map(platformLabel).join(" / ")
+                      : "未配置平台"}
+                  </span>
+                  <span className="ct-sidebar-keywords">
+                    {tracker.includedKeywords.slice(0, 4).join("、") || "未配置关键词"}
+                  </span>
+                  <span className="ct-sidebar-card-foot">
+                    <span>更新：{formatDateTime(tracker.updatedAt)}</span>
+                    <span>
+                      最近快照
+                      <strong>{tracker.latestAnalysisSnapshotId ? `#${tracker.latestAnalysisSnapshotId}` : "-"}</strong>
+                    </span>
+                  </span>
+                </button>
+              ))
+            ) : (
+              <div className="ct-sidebar-empty">
+                {trackersLoading ? "正在加载追踪器..." : "没有匹配的追踪器"}
+              </div>
+            )}
+          </div>
+        </aside>
+
+        <div className="ct-workbench-main">
+          <div className="ct-subtabs">
+            <button
+              type="button"
+              className={subTab === "input" ? "active" : ""}
+              onClick={() => setSubTab("input")}
+            >
+              分析概览
+            </button>
+            <button
+              type="button"
+              className={subTab === "records" ? "active" : ""}
+              onClick={() => setSubTab("records")}
+            >
+              分析记录
+            </button>
+          </div>
+
+          {error && <div className="notice error">{error}</div>}
+
+          {selectedTracker && analysisProgress && analysisInFlight && (
+            <div className="ct-analysis-progress-banner" role="status" aria-live="polite">
+              <div className="ct-analysis-progress-head">
+                <div>
+                  <strong>正在分析</strong>
+                  <span>{analysisProgress.label}</span>
+                </div>
+                <em>{analysisProgress.percent}%</em>
+              </div>
+              <div className="ct-analysis-progress-track" aria-hidden="true">
+                <div
+                  className="ct-analysis-progress-fill"
+                  style={{ width: `${analysisProgress.percent}%` }}
+                />
+              </div>
+              <p>{analysisProgress.message}</p>
+            </div>
+          )}
 
       {subTab === "input" && (
         <div className="ct-main-grid">
           <div className="ct-content-area">
             <div className="ct-top-content-grid">
-              <Card className="ct-input-card">
+              <Card className="ct-input-card ct-current-tracker-card">
                 <div className="ct-section-head">
                   <h3>当前追踪器</h3>
                   <button type="button" className="ct-link-btn" onClick={() => void loadTrackers()}>
@@ -1288,11 +1522,19 @@ export function ContentTrackingPage({
                       )}
                       <Button
                         type="button"
+                        variant="ghost"
+                        onClick={() => selectTrackerForEditing(selectedTracker.id)}
+                      >
+                        <Edit3 size={15} />
+                        编辑追踪器
+                      </Button>
+                      <Button
+                        type="button"
                         onClick={() => void rerunAnalysis()}
-                        disabled={running || collecting || analysisLoading}
+                        disabled={analysisInFlight || collecting || analysisLoading}
                       >
                         <WandSparkles size={15} />
-                        {running ? "分析中..." : "重新分析"}
+                        {analysisInFlight ? "分析中..." : "重新分析"}
                       </Button>
                     </div>
                   </>
@@ -1306,13 +1548,13 @@ export function ContentTrackingPage({
               </Card>
 
               {selectedTracker && (
-                <Card className="ct-keyword-card">
+                <Card className="ct-keyword-card ct-collection-card">
                   <div className="ct-section-head">
                     <h3>内容采集</h3>
                     <Button
                       type="button"
                       onClick={() => void collectAndAnalyze()}
-                      disabled={running || collecting || analysisLoading || Boolean(collectionConfigError)}
+                      disabled={analysisInFlight || collecting || analysisLoading || Boolean(collectionConfigError)}
                     >
                       <RefreshCw size={15} />
                       {collecting ? "采集中..." : "采集并分析"}
@@ -1405,7 +1647,7 @@ export function ContentTrackingPage({
                 </Card>
               )}
 
-              <Card className="ct-keyword-card">
+              <Card className="ct-keyword-card ct-keyword-summary-card">
                 <div className="ct-section-head">
                   <h3>关键词分析</h3>
                   <button
@@ -1479,7 +1721,7 @@ export function ContentTrackingPage({
                     type="button"
                     className="ct-ghost-btn"
                     onClick={() => void rerunAnalysis()}
-                    disabled={!selectedTrackerId || running || analysisLoading}
+                    disabled={!selectedTrackerId || analysisInFlight || analysisLoading}
                   >
                     重跑
                   </button>
@@ -1660,7 +1902,7 @@ export function ContentTrackingPage({
           </div>
 
           <div className="ct-right-column">
-            <Card className="ct-tracker-card">
+            <Card className="ct-tracker-card ct-analysis-summary-card">
               <div className="ct-section-head">
                 <h3>分析结论</h3>
               </div>
@@ -1763,9 +2005,9 @@ export function ContentTrackingPage({
                 <Button
                   type="button"
                   onClick={() => void rerunAnalysis()}
-                  disabled={running || !selectedTrackerId || analysisLoading}
+                  disabled={analysisInFlight || !selectedTrackerId || analysisLoading}
                 >
-                  {running ? "分析中..." : "运行分析"}
+                  {analysisInFlight ? "分析中..." : "运行分析"}
                 </Button>
               </div>
             </Card>
@@ -1823,174 +2065,6 @@ export function ContentTrackingPage({
         </div>
       )}
 
-      {subTab === "trackers" && (
-        <div className="ct-secondary-state">
-          <Card className="ct-secondary-card">
-            <div className="ct-section-head">
-              <h3>{selectedTrackerId ? "编辑追踪器" : "创建追踪器"}</h3>
-              <span className="ct-status-badge">{selectedTrackerId ? `ID ${selectedTrackerId}` : "new"}</span>
-            </div>
-            <div className="ct-form-block">
-              <label>名称</label>
-              <input
-                value={trackerForm.name}
-                onChange={(event) => setTrackerForm((current) => ({ ...current, name: event.target.value }))}
-                placeholder="例如：新手养猫 / 猫粮测评追踪"
-              />
-            </div>
-            <div className="ct-form-block">
-              <label>描述</label>
-              <textarea
-                value={trackerForm.description}
-                onChange={(event) =>
-                  setTrackerForm((current) => ({ ...current, description: event.target.value }))
-                }
-                placeholder="补充追踪范围、目标和说明"
-                rows={3}
-              />
-            </div>
-            <div className="ct-form-grid">
-              <div className="ct-form-block">
-                <label>平台</label>
-                <input
-                  value={trackerForm.platformsText}
-                  onChange={(event) =>
-                    setTrackerForm((current) => ({ ...current, platformsText: event.target.value }))
-                  }
-                  placeholder="xhs,dy,bili"
-                />
-              </div>
-              <div className="ct-form-block">
-                <label>刷新频率(分钟)</label>
-                <input
-                  value={trackerForm.scheduleIntervalMinutes}
-                  onChange={(event) =>
-                    setTrackerForm((current) => ({
-                      ...current,
-                      scheduleIntervalMinutes: event.target.value,
-                    }))
-                  }
-                  placeholder="720"
-                />
-              </div>
-            </div>
-            <div className="ct-form-block">
-              <label>包含关键词</label>
-              <textarea
-                value={trackerForm.includedKeywordsText}
-                onChange={(event) =>
-                  setTrackerForm((current) => ({
-                    ...current,
-                    includedKeywordsText: event.target.value,
-                  }))
-                }
-                placeholder="猫粮测评,新手养猫,猫粮推荐"
-                rows={3}
-              />
-            </div>
-            <div className="ct-form-block">
-              <label>排除关键词</label>
-              <textarea
-                value={trackerForm.excludedKeywordsText}
-                onChange={(event) =>
-                  setTrackerForm((current) => ({
-                    ...current,
-                    excludedKeywordsText: event.target.value,
-                  }))
-                }
-                placeholder="抽奖,广告,赞助"
-                rows={2}
-              />
-            </div>
-            <div className="ct-form-block">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={trackerForm.enabled}
-                  onChange={(event) =>
-                    setTrackerForm((current) => ({ ...current, enabled: event.target.checked }))
-                  }
-                />
-                启用追踪器
-              </label>
-            </div>
-            <div className="ct-tracker-actions">
-              <button type="button" className="ct-ghost-btn" onClick={prepareNewTracker}>
-                新建
-              </button>
-              <button
-                type="button"
-                className="ct-ghost-btn"
-                onClick={() => void suggestTrackerKeywords()}
-                disabled={suggestingTrackerKeywords || savingTracker}
-              >
-                <WandSparkles size={14} />
-                {suggestingTrackerKeywords ? "AI 优化中..." : "AI 优化关键词"}
-              </button>
-              <button type="button" className="ct-ghost-btn" onClick={resetTrackerForm}>
-                重置
-              </button>
-              <Button
-                type="button"
-                onClick={() => void saveTracker(selectedTrackerId ? "update" : "create")}
-                disabled={savingTracker}
-              >
-                {savingTracker ? "保存中..." : selectedTrackerId ? "保存修改" : "创建追踪器"}
-              </Button>
-            </div>
-          </Card>
-          {filteredTrackers.length > 0 ? (
-            filteredTrackers.map((tracker) => (
-              <Card key={tracker.id} className="ct-secondary-card">
-                <div className="ct-section-head">
-                  <h3>{tracker.name}</h3>
-                  <span className="ct-status-badge">{tracker.enabled ? "启用中" : "已停用"}</span>
-                </div>
-                <p>平台：{tracker.platforms.map(platformLabel).join(" / ") || "-"}</p>
-                <p>包含关键词：{tracker.includedKeywords.join("、") || "-"}</p>
-                <p>排除关键词：{tracker.excludedKeywords.join("、") || "-"}</p>
-                <p>刷新频率：每 {tracker.scheduleIntervalMinutes} 分钟</p>
-                <div className="ct-tracker-actions">
-                  <button
-                    type="button"
-                    className="ct-ghost-btn"
-                    onClick={() => selectTrackerForAnalysis(tracker.id)}
-                  >
-                    查看分析
-                  </button>
-                  {onUseTrackerForStrategy && (
-                    <button
-                      type="button"
-                      className="ct-ghost-btn"
-                      onClick={() => onUseTrackerForStrategy(tracker.id)}
-                    >
-                      查看策略建议
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    className="ct-ghost-btn"
-                    onClick={() => selectTrackerForEditing(tracker.id)}
-                  >
-                    编辑
-                  </button>
-                  <button type="button" className="ct-ghost-btn" onClick={() => void toggleTrackerEnabled(tracker)}>
-                    {tracker.enabled ? "停用" : "启用"}
-                  </button>
-                  <button type="button" className="ct-ghost-btn" onClick={() => void softDeleteTracker(tracker)}>
-                    软删除
-                  </button>
-                </div>
-              </Card>
-            ))
-          ) : (
-            <Card className="ct-secondary-card">
-              <p>{trackersLoading ? "正在加载追踪器..." : "没有匹配的追踪器。"}</p>
-            </Card>
-          )}
-        </div>
-      )}
-
       {subTab === "records" && (
         <div className="ct-secondary-state">
           {historyRows.length > 0 ? (
@@ -2016,6 +2090,129 @@ export function ContentTrackingPage({
           )}
         </div>
       )}
+        </div>
+      </div>
+
+      <Drawer
+        open={trackerEditorOpen}
+        onOpenChange={setTrackerEditorOpen}
+        title={editingTrackerId ? "编辑追踪器" : "新建追踪器"}
+        description="配置内容追踪器的名称、平台、关键词和刷新频率"
+      >
+        <div className="ct-tracker-editor-form">
+          <div className="ct-editor-status-row">
+            <span className="ct-status-badge">{editingTrackerId ? `ID ${editingTrackerId}` : "new"}</span>
+            {editingTracker ? (
+              <span>{editingTracker.enabled ? "当前启用中" : "当前已暂停"}</span>
+            ) : (
+              <span>保存后会自动选择并运行首轮分析</span>
+            )}
+          </div>
+          <div className="ct-form-block">
+            <label>名称</label>
+            <input
+              value={trackerForm.name}
+              onChange={(event) => setTrackerForm((current) => ({ ...current, name: event.target.value }))}
+              placeholder="例如：新手养猫 / 猫粮测评追踪"
+            />
+          </div>
+          <div className="ct-form-block">
+            <label>描述</label>
+            <textarea
+              value={trackerForm.description}
+              onChange={(event) =>
+                setTrackerForm((current) => ({ ...current, description: event.target.value }))
+              }
+              placeholder="补充追踪范围、目标和说明"
+              rows={3}
+            />
+          </div>
+          <div className="ct-form-grid">
+            <div className="ct-form-block">
+              <label>平台</label>
+              <input
+                value={trackerForm.platformsText}
+                onChange={(event) =>
+                  setTrackerForm((current) => ({ ...current, platformsText: event.target.value }))
+                }
+                placeholder="xhs,dy,bili"
+              />
+            </div>
+            <div className="ct-form-block">
+              <label>刷新频率(分钟)</label>
+              <input
+                value={trackerForm.scheduleIntervalMinutes}
+                onChange={(event) =>
+                  setTrackerForm((current) => ({
+                    ...current,
+                    scheduleIntervalMinutes: event.target.value,
+                  }))
+                }
+                placeholder="720"
+              />
+            </div>
+          </div>
+          <div className="ct-form-block">
+            <label>包含关键词</label>
+            <textarea
+              value={trackerForm.includedKeywordsText}
+              onChange={(event) =>
+                setTrackerForm((current) => ({
+                  ...current,
+                  includedKeywordsText: event.target.value,
+                }))
+              }
+              placeholder="猫粮测评,新手养猫,猫粮推荐"
+              rows={3}
+            />
+          </div>
+          <div className="ct-form-block">
+            <label>排除关键词</label>
+            <textarea
+              value={trackerForm.excludedKeywordsText}
+              onChange={(event) =>
+                setTrackerForm((current) => ({
+                  ...current,
+                  excludedKeywordsText: event.target.value,
+                }))
+              }
+              placeholder="抽奖,广告,赞助"
+              rows={2}
+            />
+          </div>
+          <label className="ct-editor-check-row">
+            <input
+              type="checkbox"
+              checked={trackerForm.enabled}
+              onChange={(event) =>
+                setTrackerForm((current) => ({ ...current, enabled: event.target.checked }))
+              }
+            />
+            启用追踪器
+          </label>
+          <div className="ct-editor-actions">
+            <button
+              type="button"
+              className="ct-ghost-btn"
+              onClick={() => void suggestTrackerKeywords()}
+              disabled={suggestingTrackerKeywords || savingTracker}
+            >
+              <WandSparkles size={14} />
+              {suggestingTrackerKeywords ? "AI 优化中..." : "AI 优化关键词"}
+            </button>
+            <button type="button" className="ct-ghost-btn" onClick={resetTrackerForm}>
+              重置
+            </button>
+            <Button
+              type="button"
+              onClick={() => void saveTracker(editingTrackerId ? "update" : "create")}
+              disabled={savingTracker}
+            >
+              {savingTracker ? "保存中..." : editingTrackerId ? "保存修改" : "创建追踪器"}
+            </Button>
+          </div>
+        </div>
+      </Drawer>
     </section>
   );
 }
@@ -2053,6 +2250,8 @@ function normalizeTracker(tracker: ContentTracker): NormalizedTracker {
     excludedKeywords: safeArray(tracker.excluded_keywords).map((item) => item.trim()).filter(Boolean),
     scheduleIntervalMinutes: Math.max(1, safeNumber(tracker.schedule_interval_minutes, 720)),
     enabled: Boolean(tracker.enabled),
+    latestAnalysisRunId: safeNullableNumber(tracker.latest_analysis_run_id),
+    latestAnalysisSnapshotId: safeNullableNumber(tracker.latest_analysis_snapshot_id),
     updatedAt: tracker.updated_at || null,
   };
 }
@@ -2289,6 +2488,32 @@ function safeNumber(value: number | null | undefined, fallback = 0) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function progressLabelForStage(stage: string) {
+  const mapping: Record<string, string> = {
+    queued: "已创建分析任务",
+    loading_posts: "正在加载内容池",
+    scoring_candidates: "正在筛选候选样本",
+    refining_samples: "正在优化分析结果",
+    saving_results: "正在保存分析结果",
+    completed: "分析完成",
+    failed: "分析失败",
+  };
+  return mapping[stage] || "正在分析";
+}
+
+function progressPercentForStage(stage: string) {
+  const mapping: Record<string, number> = {
+    queued: 8,
+    loading_posts: 24,
+    scoring_candidates: 48,
+    refining_samples: 68,
+    saving_results: 88,
+    completed: 100,
+    failed: 100,
+  };
+  return mapping[stage] ?? 12;
+}
+
 function clampInteger(value: string, fallback: number, min: number, max: number) {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed)) return fallback;
@@ -2323,6 +2548,48 @@ function uniqueDisplayTerms(values: string[], excluded: Set<string> = new Set())
 function safeRounded(value: number | null | undefined, fallback: string | number = 0) {
   if (typeof value !== "number" || Number.isNaN(value)) return fallback;
   return Math.round(value);
+}
+
+function isAnalysisRunActive(run?: TrackerAnalysisRun | null) {
+  const normalized = String(run?.status || "").trim().toLowerCase();
+  return ["queued", "pending", "running", "preparing", "collecting", "analyzing"].includes(normalized);
+}
+
+function readAnalysisProgress(run?: TrackerAnalysisRun | null) {
+  if (!run) return null;
+  const summary = run.summary;
+  if (summary && typeof summary === "object") {
+    const raw = (summary as Record<string, unknown>).progress;
+    if (raw && typeof raw === "object") {
+      const record = raw as Record<string, unknown>;
+      const stage = safeString(record.stage) || "queued";
+      const label = safeString(record.label) || progressLabelForStage(stage);
+      const message = safeString(record.message) || "???????";
+      const percentValue = typeof record.percent === "number"
+        ? record.percent
+        : typeof record.percent === "string"
+          ? Number.parseInt(record.percent, 10)
+          : Number.NaN;
+      const percent = Number.isFinite(percentValue)
+        ? Math.max(0, Math.min(100, Math.round(percentValue)))
+        : progressPercentForStage(stage);
+      return {
+        stage,
+        label,
+        message,
+        percent,
+      };
+    }
+  }
+
+  const status = String(run.status || "").trim().toLowerCase();
+  if (!isAnalysisRunActive(run)) return null;
+  return {
+    stage: status || "queued",
+    label: progressLabelForStage(status || "queued"),
+    message: "???????",
+    percent: progressPercentForStage(status || "queued"),
+  };
 }
 
 function formatStatusLabel(status?: string | null) {
@@ -2416,6 +2683,18 @@ function readErrorMessage(error: unknown, fallback = "加载失败") {
     return error.message || fallback;
   }
   return fallback;
+}
+
+function buildTrackerFormState(tracker: NormalizedTracker): TrackerFormState {
+  return {
+    name: tracker.name,
+    description: tracker.description,
+    platformsText: tracker.platforms.join(","),
+    includedKeywordsText: tracker.includedKeywords.join(","),
+    excludedKeywordsText: tracker.excludedKeywords.join(","),
+    scheduleIntervalMinutes: `${tracker.scheduleIntervalMinutes}`,
+    enabled: tracker.enabled,
+  };
 }
 
 function buildTrackerPayload(form: TrackerFormState) {

@@ -1367,10 +1367,12 @@ def _profile_payload(creator: dict[str, Any]) -> dict[str, Any]:
 
 def _candidate_payload(creator: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
     evidence = _evidence_payload(creator)
+    project_id = request.get("project_id")
+    pool_name = f"project:{project_id}:realtime" if project_id else "realtime"
     return {
         "platform": creator["platform"],
         "creator_id": creator["creator_id"],
-        "pool_name": "realtime",
+        "pool_name": pool_name,
         "vertical_id": request.get("selected_vertical_id"),
         "match_score": creator.get("match_score"),
         "matched_tags_json": _matched_tags(creator),

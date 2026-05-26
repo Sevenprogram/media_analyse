@@ -129,6 +129,151 @@ def test_build_content_strategy_summary_combines_ai_topics_and_local_evidence() 
     assert result["evidence_pack"]["total"] > 0
 
 
+def test_build_content_strategy_summary_prefers_sample_pain_distribution_from_post_fingerprints() -> None:
+    filters = normalize_strategy_filters(
+        platform="xhs",
+        time_range="30d",
+        goal="conversion",
+        audience="parents",
+        stage="boost",
+    )
+    result = build_content_strategy_summary(
+        filters=filters,
+        dashboard={
+            "decision": {},
+            "opportunities": [],
+            "top_opportunities": [],
+            "watchlist": [],
+            "diagnostics": [],
+        },
+        posts=[
+            {
+                "id": "post-1",
+                "platform": "xhs",
+                "title": "孩子提分焦虑越来越重怎么办",
+                "content": "成绩落后和提分压力一直压着家长。",
+                "engagement_json": {},
+            },
+            {
+                "id": "post-2",
+                "platform": "xhs",
+                "title": "英语启蒙到底怎么做",
+                "content": "英语启蒙和自然拼读怎么安排更稳。",
+                "engagement_json": {},
+            },
+            {
+                "id": "post-3",
+                "platform": "xhs",
+                "title": "小升初择校规划要提前多久",
+                "content": "择校规划这件事别拖到最后。",
+                "engagement_json": {},
+            },
+            {
+                "id": "post-4",
+                "platform": "xhs",
+                "title": "提分焦虑不是孩子懒",
+                "content": "家长先别把提分问题简单归因。",
+                "engagement_json": {},
+            },
+        ],
+        keyword_heat_snapshots=[],
+        content_snapshots=[],
+        competitor_compositions=[],
+        ai_insights={},
+        ai_topic_ideas=[],
+    )
+
+    assert result["section_sources"]["pain_distribution"] == "sample"
+    assert result["pain_distribution"][0]["label"] == "提分焦虑"
+    assert result["pain_distribution"][0]["count"] == 2
+    assert sum(item["count"] for item in result["pain_distribution"]) == 4
+
+
+def test_build_content_strategy_summary_falls_back_to_rules_when_no_specific_pain_samples_exist() -> None:
+    filters = normalize_strategy_filters(
+        platform="xhs",
+        time_range="30d",
+        goal="conversion",
+        audience="parents",
+        stage="boost",
+    )
+    result = build_content_strategy_summary(
+        filters=filters,
+        dashboard={
+            "decision": {},
+            "opportunities": [],
+            "top_opportunities": [],
+            "watchlist": [],
+            "diagnostics": [],
+        },
+        posts=[
+            {
+                "id": "generic-post",
+                "platform": "xhs",
+                "title": "普通内容记录",
+                "content": "今天分享一个学习流程和执行笔记。",
+                "engagement_json": {},
+            }
+        ],
+        keyword_heat_snapshots=[],
+        content_snapshots=[],
+        competitor_compositions=[],
+        ai_insights={},
+        ai_topic_ideas=[
+            {
+                "id": 1,
+                "title": "新手怎么选课程更省钱",
+                "platform": "xhs",
+                "target_audience": "家长",
+                "keywords": ["选课"],
+                "content_angle": "入门决策",
+                "risk_notes": [],
+            }
+        ],
+    )
+
+    assert result["section_sources"]["pain_distribution"] == "rules"
+    assert any(item["label"] == "选择困难" for item in result["pain_distribution"])
+
+
+def test_build_content_strategy_summary_exposes_risk_evidence_for_low_hot_post_rate() -> None:
+    filters = normalize_strategy_filters(
+        platform="xhs",
+        time_range="30d",
+        goal="conversion",
+        audience="parents",
+        stage="boost",
+    )
+    result = build_content_strategy_summary(
+        filters=filters,
+        dashboard={
+            "decision": {},
+            "opportunities": [],
+            "top_opportunities": [],
+            "watchlist": [],
+            "diagnostics": [],
+        },
+        posts=[],
+        keyword_heat_snapshots=[],
+        content_snapshots=[
+            {
+                "platform": "xhs",
+                "total_content_count": 40,
+                "hot_post_rate": 0.0,
+                "evidence": {"hot_content": []},
+            }
+        ],
+        competitor_compositions=[],
+        ai_insights={},
+        ai_topic_ideas=[],
+    )
+
+    row = next(item for item in result["risks"] if item["title"] == "内容扩散效率不足")
+    assert row["evidence"]["sources"] == ["content_tracking"]
+    assert "热帖率 0 / 40" in row["evidence"]["metric_summary"]
+    assert any("样本 40 条" in note for note in row["evidence"]["notes"])
+
+
 def test_content_frameworks_sort_by_median_interaction() -> None:
     posts = [
         {

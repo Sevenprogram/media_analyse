@@ -81,6 +81,7 @@ class CompetitorFromUrlRequest(BaseModel):
     platform: str
     profile_url: str
     monitor_type: str = Field(default="competitor", pattern="^(competitor|partner_creator)$")
+    project_id: int | None = Field(default=None, ge=1)
     display_name: str | None = None
     vertical_id: int | None = Field(default=None, ge=1)
     notes: str | None = None
@@ -90,6 +91,7 @@ class CompetitorFromCandidateRequest(BaseModel):
     platform: str
     creator_id: str = Field(min_length=1)
     monitor_type: str = Field(default="competitor", pattern="^(competitor|partner_creator)$")
+    project_id: int | None = Field(default=None, ge=1)
     display_name: str | None = None
     profile_url: str | None = None
     vertical_id: int | None = Field(default=None, ge=1)
@@ -795,6 +797,7 @@ async def create_competitor_from_url(request: CompetitorFromUrlRequest):
                 "platform": request.platform,
                 "creator_id": creator_id,
                 "monitor_type": request.monitor_type,
+                "project_id": request.project_id,
                 "display_name": request.display_name,
                 "profile_url": request.profile_url,
                 "vertical_id": request.vertical_id,
@@ -821,6 +824,7 @@ async def create_competitor_from_candidate(request: CompetitorFromCandidateReque
                 "platform": request.platform,
                 "creator_id": request.creator_id,
                 "monitor_type": request.monitor_type,
+                "project_id": request.project_id,
                 "display_name": request.display_name,
                 "profile_url": request.profile_url,
                 "vertical_id": request.vertical_id,
@@ -837,12 +841,20 @@ async def create_competitor_from_candidate(request: CompetitorFromCandidateReque
 
 
 @router.get("")
-async def list_competitor_accounts(enabled_only: bool = False, monitor_type: str | None = "competitor"):
+async def list_competitor_accounts(
+    enabled_only: bool = False,
+    monitor_type: str | None = "competitor",
+    project_id: int | None = None,
+):
     require_research_database()
     if monitor_type not in {"competitor", "partner_creator", None}:
         raise HTTPException(status_code=400, detail="monitor_type must be competitor or partner_creator")
     repository = ResearchRepository()
-    competitors = await repository.list_competitor_accounts(enabled_only=enabled_only, monitor_type=monitor_type)
+    competitors = await repository.list_competitor_accounts(
+        enabled_only=enabled_only,
+        monitor_type=monitor_type,
+        project_id=project_id,
+    )
     return {
         "competitors": await _enrich_competitors_with_display_names(repository, competitors)
     }

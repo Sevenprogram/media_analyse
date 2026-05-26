@@ -102,6 +102,7 @@ class ResearchJobService:
             detail["settings"]["refresh_cadence"] = record.get("refresh_cadence") or "off"
             detail["settings"]["custom_interval_value"] = record.get("custom_interval_value")
             detail["settings"]["custom_interval_unit"] = record.get("custom_interval_unit")
+            detail["settings"]["refresh_time_utc8"] = record.get("refresh_time_utc8")
             detail["settings"]["daily_collection_limit_per_platform"] = int(
                 record.get("daily_collection_limit_per_platform") or 50
             )
@@ -367,6 +368,7 @@ def _record_only_growth_project_detail(project_id: str, record: dict[str, Any]) 
             "refresh_cadence": record.get("refresh_cadence") or "off",
             "custom_interval_value": record.get("custom_interval_value"),
             "custom_interval_unit": record.get("custom_interval_unit"),
+            "refresh_time_utc8": record.get("refresh_time_utc8"),
             "daily_collection_limit_per_platform": int(
                 record.get("daily_collection_limit_per_platform") or 50
             ),

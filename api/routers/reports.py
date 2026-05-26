@@ -41,6 +41,11 @@ from research.lead_attribution import (
 from research.growth_projects import project_key_for_job
 from research.reporting import build_boss_report, build_growth_report
 from research.repository import ResearchRepository
+from research.today_intelligence import (
+    DEFAULT_MAX_AGE_MINUTES,
+    get_latest_today_intelligence,
+    run_today_intelligence_analysis,
+)
 
 router = APIRouter(
     prefix="/reports",
@@ -76,6 +81,12 @@ class ContentStrategyDraftRequest(BaseModel):
     context: dict[str, Any] = Field(default_factory=dict)
     filters: dict[str, Any] = Field(default_factory=dict)
     provider_config_id: int | None = Field(default=None, ge=1)
+
+
+class TodayIntelligenceRunRequest(BaseModel):
+    force: bool = False
+    platform: str | None = Field(default=None, max_length=32)
+    project_id: str | None = Field(default=None, max_length=128)
 
 
 @router.get("/growth-summary")
@@ -311,6 +322,68 @@ async def get_dashboard_summary(
         platform=platform,
         feedback=feedback,
     )
+
+
+@router.get("/today-intelligence")
+async def get_today_intelligence(
+    platform: str | None = None,
+    project_id: str | None = Query(default=None, max_length=128),
+    max_age_minutes: int = Query(DEFAULT_MAX_AGE_MINUTES, ge=1, le=24 * 60),
+):
+    require_research_database()
+    await create_tables()
+    repository = ResearchRepository()
+    project_record = await _resolve_today_project(repository, project_id)
+    latest = await get_latest_today_intelligence(
+        repository,
+        platform=platform,
+        project_id=project_id,
+        project_record=project_record,
+        max_age_minutes=max_age_minutes,
+    )
+    if latest:
+        return latest
+    return await run_today_intelligence_analysis(
+        repository,
+        platform=platform,
+        project_id=project_id,
+        project_record=project_record,
+    )
+
+
+@router.post("/today-intelligence/run")
+async def run_today_intelligence(request: TodayIntelligenceRunRequest):
+    require_research_database()
+    await create_tables()
+    repository = ResearchRepository()
+    project_record = await _resolve_today_project(repository, request.project_id)
+    if not request.force:
+        latest = await get_latest_today_intelligence(
+            repository,
+            platform=request.platform,
+            project_id=request.project_id,
+            project_record=project_record,
+            max_age_minutes=DEFAULT_MAX_AGE_MINUTES,
+        )
+        if latest:
+            return latest
+    return await run_today_intelligence_analysis(
+        repository,
+        platform=request.platform,
+        project_id=request.project_id,
+        project_record=project_record,
+        force=request.force,
+    )
+
+
+async def _resolve_today_project(
+    repository: ResearchRepository,
+    project_id: str | None,
+) -> dict | None:
+    normalized = str(project_id or "").strip()
+    if not normalized:
+        return None
+    return await _get_growth_project_record_by_identifier(repository, normalized)
 
 
 @router.get("/lead-attribution/summary")

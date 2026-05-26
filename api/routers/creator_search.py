@@ -53,6 +53,7 @@ class CreatorSearchTaskRequest(CreatorSearchRequest):
 
 
 class CreatorSearchSessionPersistRequest(BaseModel):
+    project_id: int | None = Field(default=None, ge=1)
     raw_query: str = Field(default="", max_length=500)
     selected_vertical_id: int | None = Field(default=None, ge=1)
     search_payload: dict[str, Any] = Field(default_factory=dict)
@@ -121,6 +122,7 @@ async def persist_creator_search_session(request: CreatorSearchSessionPersistReq
     session = await repository.create_creator_search_session(
         {
             "raw_query": request.raw_query,
+            "project_id": request.project_id,
             "selected_vertical_id": request.selected_vertical_id,
             "search_payload_json": request.search_payload,
             "view_state_json": request.view_state,
@@ -140,9 +142,9 @@ async def persist_creator_search_session(request: CreatorSearchSessionPersistReq
 
 
 @router.get("/search-sessions/latest")
-async def get_latest_creator_search_session():
+async def get_latest_creator_search_session(project_id: int | None = None):
     require_research_database()
-    session = await ResearchRepository().get_latest_creator_search_session()
+    session = await ResearchRepository().get_latest_creator_search_session(project_id=project_id)
     return {"session": session}
 
 
@@ -325,12 +327,14 @@ async def list_creator_candidates(
     pool_name: str | None = None,
     platform: str | None = None,
     vertical_id: int | None = None,
+    project_id: int | None = None,
     include_profile_candidates: bool = False,
 ):
     require_research_database()
     repository = ResearchRepository()
+    effective_pool_name = pool_name or (f"project:{project_id}:realtime" if project_id is not None else None)
     candidates = await repository.list_creator_candidates(
-        pool_name=pool_name,
+        pool_name=effective_pool_name,
         platform=platform,
         vertical_id=vertical_id,
     )
@@ -340,7 +344,7 @@ async def list_creator_candidates(
             candidates,
             include_profile_candidates=include_profile_candidates,
             platform=platform,
-            pool_name=pool_name,
+            pool_name=effective_pool_name,
             vertical_id=vertical_id,
         ))
     }

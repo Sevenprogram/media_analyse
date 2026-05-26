@@ -29,7 +29,23 @@ from research.models import (
     ResearchPost,
 )
 from research.repository import ResearchRepository
+from research.scheduler import ResearchScheduler
 from saas_test_utils import authenticate_test_client
+
+UTC8 = timezone(timedelta(hours=8))
+
+
+def _parse_datetime(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 @pytest_asyncio.fixture
@@ -189,6 +205,84 @@ async def test_create_growth_project_defaults_to_daily_refresh(
     assert plans_response.status_code == 200, plans_response.text
     plans = plans_response.json()["collection_plans"]
     assert plans[0]["schedule_interval_minutes"] == 1440
+
+
+@pytest.mark.asyncio
+async def test_create_growth_project_daily_refresh_time_uses_utc8_wall_clock(
+    growth_project_client: AsyncClient,
+) -> None:
+    response = await growth_project_client.post(
+        "/api/research/growth-projects",
+        json={
+            "name": "Fixed Daily Time Project",
+            "primary_goal": "mixed_research",
+            "platforms": ["xhs"],
+            "keywords": ["fixed daily time"],
+            "collection_depth": "standard",
+            "refresh_cadence": "daily",
+            "refresh_time_utc8": "09:30",
+            "auto_ai_analysis": False,
+            "start_immediately": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["job"]["comment_policy"]["refresh_time_utc8"] == "09:30"
+    next_run_at = _parse_datetime(payload["job"]["next_run_at"])
+    local_next_run_at = next_run_at.astimezone(UTC8)
+    assert next_run_at > datetime.now(timezone.utc)
+    assert (local_next_run_at.hour, local_next_run_at.minute, local_next_run_at.second) == (9, 30, 0)
+
+    detail_response = await growth_project_client.get(
+        f"/api/research/growth-projects/{payload['project_id']}"
+    )
+    assert detail_response.status_code == 200, detail_response.text
+    detail = detail_response.json()
+    assert detail["settings"]["refresh_cadence"] == "daily"
+    assert detail["settings"]["refresh_time_utc8"] == "09:30"
+
+
+@pytest.mark.asyncio
+async def test_scheduled_growth_project_preserves_daily_refresh_time_after_run(
+    growth_project_client: AsyncClient,
+) -> None:
+    response = await growth_project_client.post(
+        "/api/research/growth-projects",
+        json={
+            "name": "Preserve Fixed Daily Time Project",
+            "primary_goal": "mixed_research",
+            "platforms": ["xhs"],
+            "keywords": ["preserve fixed time"],
+            "collection_depth": "standard",
+            "refresh_cadence": "daily",
+            "refresh_time_utc8": "07:45",
+            "auto_ai_analysis": False,
+            "start_immediately": False,
+        },
+    )
+    assert response.status_code == 200, response.text
+    created = response.json()
+
+    repository = ResearchRepository()
+    scheduler = ResearchScheduler(repository)
+    job_id = int(created["job"]["id"])
+    await repository.update_job(
+        job_id,
+        {
+            "status": "completed",
+            "next_run_at": datetime.now(timezone.utc) - timedelta(minutes=2),
+        },
+    )
+
+    await scheduler.schedule_job(job_id)
+    job = await repository.get_job(job_id)
+
+    assert job is not None
+    assert job["comment_policy"]["refresh_time_utc8"] == "07:45"
+    assert job["next_run_at"] is not None
+    local_next_run_at = _as_utc(job["next_run_at"]).astimezone(UTC8)
+    assert (local_next_run_at.hour, local_next_run_at.minute, local_next_run_at.second) == (7, 45, 0)
 
 
 @pytest.mark.asyncio

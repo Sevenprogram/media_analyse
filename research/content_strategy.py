@@ -6,6 +6,8 @@ from collections import Counter, defaultdict
 from datetime import date, datetime, timezone
 from typing import Any
 
+from research.content_fingerprint import build_content_fingerprint
+
 
 PLATFORM_ALIASES = {
     "all": None,
@@ -119,7 +121,12 @@ def build_content_strategy_summary(
     )
     frameworks = _build_frameworks(posts, opportunities)
     competitor_samples = _build_competitor_samples(competitor_compositions, opportunities)
-    pain_distribution = _build_pain_distribution(posts, suggestions, opportunities)
+    pain_distribution, pain_distribution_source = _build_pain_distribution_enhanced(
+        posts,
+        suggestions,
+        opportunities,
+        content_snapshots,
+    )
     risks = _build_risks(
         dashboard=dashboard,
         opportunities=opportunities + watchlist,
@@ -173,6 +180,7 @@ def build_content_strategy_summary(
     }
     summary["strategy_note"] = ""
     summary["section_sources"] = _default_section_sources()
+    summary["section_sources"]["pain_distribution"] = pain_distribution_source
     if ai_strategy_summary:
         _apply_ai_strategy_summary(summary, ai_strategy_summary)
     return summary
@@ -210,6 +218,9 @@ def build_content_strategy_ai_input(
             "snapshot_date": item.get("snapshot_date"),
             "total_content_count": int(item.get("total_content_count") or 0),
             "hot_post_rate": float(item.get("hot_post_rate") or 0),
+            "hot_post_count": _snapshot_hot_post_count(item),
+            "hot_post_threshold": "总互动 >= 100",
+            "hot_post_formula": _format_hot_post_metric_summary(item),
         }
         for item in content_snapshots[:8]
     ]
@@ -327,7 +338,19 @@ def build_content_strategy_ai_prompt(input_summary: dict[str, Any]) -> str:
                     "risk_notes": ["string"],
                 }
             ],
-            "risks": [{"title": "string", "detail": "string", "level": "low|medium|high", "count": 0}],
+            "risks": [
+                {
+                    "title": "string",
+                    "detail": "string",
+                    "level": "low|medium|high",
+                    "count": 0,
+                    "evidence": {
+                        "sources": ["content_tracking|keyword_heat|competitor_sample|dashboard_diagnostic|opportunity_risk_tag|ai_note"],
+                        "metric_summary": "string",
+                        "notes": ["string"],
+                    },
+                }
+            ],
             "weekly_mix": [{"label": "string", "percent": 0, "pieces": 0, "exposure": "string", "leads": 0}],
         },
     }
@@ -366,7 +389,7 @@ def build_content_strategy_ai_section_prompt(input_summary: dict[str, Any], sect
     elif section == "suggestions":
         rules.append("Return 6-12 execution-ready suggestions. Keep high-opportunity baseline candidates visible.")
     elif section == "risks":
-        rules.append("Return 3-6 evidence-bound risk rows.")
+        rules.append("Return 3-6 evidence-bound risk rows. When citing hot_post_rate or similar metrics, include numerator, denominator, and threshold in evidence.metric_summary.")
     elif section == "weekly_mix":
         rules.append("Return 4-6 rows. Percentages should sum close to 100.")
     else:
@@ -454,7 +477,21 @@ def _content_strategy_ai_section_schema(section: str) -> dict[str, Any]:
             ]
         }
     elif section == "risks":
-        content_schema = {"risks": [{"title": "string", "detail": "string", "level": "low|medium|high", "count": 0}]}
+        content_schema = {
+            "risks": [
+                {
+                    "title": "string",
+                    "detail": "string",
+                    "level": "low|medium|high",
+                    "count": 0,
+                    "evidence": {
+                        "sources": ["content_tracking|keyword_heat|competitor_sample|dashboard_diagnostic|opportunity_risk_tag|ai_note"],
+                        "metric_summary": "string",
+                        "notes": ["string"],
+                    },
+                }
+            ]
+        }
     else:
         content_schema = {"weekly_mix": [{"label": "string", "percent": 0, "pieces": 0, "exposure": "string", "leads": 0}]}
     return {
@@ -757,6 +794,7 @@ def build_strategy_draft_fallback(source_payload: dict[str, Any], *, reason: str
 def _default_section_sources() -> dict[str, str]:
     return {
         "hero": "rules",
+        "pain_distribution": "rules",
         "keyword_trends": "rules",
         "frameworks": "rules",
         "suggestions": "rules",
@@ -940,6 +978,10 @@ def _normalize_ai_risks(value: Any, fallback_rows: list[dict[str, Any]]) -> list
                 "detail": str(item.get("detail") or (fallback or {}).get("detail") or ""),
                 "level": _normalize_ai_risk_label(item.get("level"), fallback=(fallback or {}).get("level")),
                 "count": _safe_int(item.get("count"), fallback=(fallback or {}).get("count"), minimum=1),
+                "evidence": _normalize_risk_evidence(
+                    item.get("evidence"),
+                    fallback=(fallback or {}).get("evidence"),
+                ),
             }
         )
     return normalized
@@ -1128,6 +1170,103 @@ def _build_pain_distribution(
         count = counts.get(label, 0)
         if count <= 0:
             continue
+        rows.append(
+            {
+                "label": label,
+                "value": round(count / total * 100, 1),
+                "count": count,
+                "color": PAIN_COLORS[index % len(PAIN_COLORS)],
+            }
+        )
+    return rows
+
+
+def _build_pain_distribution_enhanced(
+    posts: list[dict[str, Any]],
+    suggestions: list[dict[str, Any]],
+    opportunities: list[dict[str, Any]],
+    content_snapshots: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], str]:
+    snapshot_rows = _pain_distribution_from_tracking_snapshots(content_snapshots)
+    if snapshot_rows:
+        return snapshot_rows, "sample"
+
+    fingerprint_rows = _pain_distribution_from_post_fingerprints(posts)
+    if fingerprint_rows:
+        return fingerprint_rows, "sample"
+
+    return _build_pain_distribution(posts, suggestions, opportunities), "rules"
+
+
+def _pain_distribution_from_tracking_snapshots(
+    content_snapshots: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    counts: Counter[str] = Counter()
+    matched_specific = 0
+    for snapshot in content_snapshots:
+        evidence = snapshot.get("evidence") or {}
+        patterns = snapshot.get("patterns") or evidence.get("patterns") or {}
+        distribution = (
+            patterns.get("pain_point_distribution")
+            or evidence.get("pain_point_distribution")
+            or evidence.get("summary", {}).get("pain_point_distribution")
+            or {}
+        )
+        if not isinstance(distribution, dict):
+            continue
+        for label, value in distribution.items():
+            normalized = _normalize_pain_distribution_label(label)
+            if not normalized:
+                continue
+            try:
+                count = int(value or 0)
+            except (TypeError, ValueError):
+                continue
+            counts[normalized] += count
+            if normalized != "其他":
+                matched_specific += count
+    if matched_specific <= 0:
+        return []
+    return _pain_distribution_rows_from_counts(counts)
+
+
+def _pain_distribution_from_post_fingerprints(
+    posts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    counts: Counter[str] = Counter()
+    matched_samples = 0
+    for post in posts:
+        fingerprint = build_content_fingerprint(post)
+        pain_point = _normalize_pain_distribution_label(fingerprint.get("pain_point"))
+        if not pain_point or pain_point == "其他":
+            counts["其他"] += 1
+            continue
+        counts[pain_point] += 1
+        matched_samples += 1
+    if matched_samples <= 0:
+        return []
+    return _pain_distribution_rows_from_counts(counts)
+
+
+def _normalize_pain_distribution_label(label: Any) -> str:
+    normalized = str(label or "").strip()
+    if not normalized or normalized == "未明确痛点":
+        return "其他"
+    return normalized
+
+
+def _pain_distribution_rows_from_counts(counts: Counter[str]) -> list[dict[str, Any]]:
+    ranked = [
+        (str(label).strip(), int(value))
+        for label, value in counts.items()
+        if str(label).strip() and int(value) > 0
+    ]
+    if not ranked:
+        return []
+    ranked.sort(key=lambda item: (-item[1], item[0]))
+    total = sum(value for _, value in ranked) or 1
+    rows: list[dict[str, Any]] = []
+    for index, (label, count) in enumerate(ranked):
         rows.append(
             {
                 "label": label,
@@ -1367,6 +1506,97 @@ def _build_risks(
 ) -> list[dict[str, Any]]:
     counts: Counter[str] = Counter()
     details: dict[str, str] = {}
+    evidence_by_title: dict[str, dict[str, Any]] = {}
+    for item in opportunities:
+        for tag in item.get("risk_tags") or []:
+            label = RISK_LABELS.get(tag, str(tag))
+            counts[label] += 1
+            details.setdefault(label, _risk_detail(tag))
+            evidence_by_title[label] = _merge_risk_evidence(
+                evidence_by_title.get(label),
+                _risk_evidence(sources=["opportunity_risk_tag"]),
+            )
+    for diagnostic in dashboard.get("diagnostics") or []:
+        title = str(diagnostic.get("title") or "诊断提醒")
+        body = str(diagnostic.get("body") or "需要复核当前数据质量。")
+        counts[title] += 1
+        details.setdefault(title, body)
+        evidence_by_title[title] = _merge_risk_evidence(
+            evidence_by_title.get(title),
+            _risk_evidence(
+                sources=["dashboard_diagnostic"],
+                notes=[body],
+            ),
+        )
+    for snapshot in content_snapshots:
+        hot_post_rate = float(snapshot.get("hot_post_rate") or 0)
+        total_content_count = int(snapshot.get("total_content_count") or 0)
+        metric_summary = _format_hot_post_metric_summary(snapshot)
+        platform = str(snapshot.get("platform") or "all")
+        platform_note = f"{PLATFORM_LABELS.get(platform, platform)} 样本 {total_content_count} 条"
+        if total_content_count >= 20 and hot_post_rate <= 0.05:
+            counts["内容扩散效率不足"] += 1
+            details.setdefault(
+                "内容扩散效率不足",
+                "内容追踪样本已经开始累积，但热帖率仍然偏低，说明当前内容还没有形成稳定扩散。",
+            )
+            evidence_by_title["内容扩散效率不足"] = _merge_risk_evidence(
+                evidence_by_title.get("内容扩散效率不足"),
+                _risk_evidence(
+                    sources=["content_tracking"],
+                    metric_summary=metric_summary,
+                    notes=[platform_note],
+                ),
+            )
+        if hot_post_rate >= 0.45:
+            counts["同质化风险"] += 1
+            details.setdefault(
+                "同质化风险",
+                "高互动内容集中在少数表达方式，建议增加案例差异化与测试角度。",
+            )
+            evidence_by_title["同质化风险"] = _merge_risk_evidence(
+                evidence_by_title.get("同质化风险"),
+                _risk_evidence(
+                    sources=["content_tracking"],
+                    metric_summary=metric_summary,
+                    notes=[platform_note],
+                ),
+            )
+    for note in _string_list(ai_insights.get("risk_notes")):
+        counts[note] += 1
+        details.setdefault(note, "来自最新 AI 洞察的风险提示。")
+        evidence_by_title[note] = _merge_risk_evidence(
+            evidence_by_title.get(note),
+            _risk_evidence(
+                sources=["ai_note"],
+                notes=[note],
+            ),
+        )
+    if not counts:
+        counts["样本覆盖风险"] = 1
+        details["样本覆盖风险"] = "当前证据样本有限，建议先补齐平台和时间窗样本。"
+        evidence_by_title["样本覆盖风险"] = _risk_evidence(
+            sources=["dashboard_diagnostic"],
+            notes=["当前没有足够的结构化样本支持风险判断。"],
+        )
+    rows = []
+    for title, count in counts.most_common(8):
+        evidence = evidence_by_title.get(title) or {}
+        if "opportunity_risk_tag" in set(evidence.get("sources") or []):
+            evidence = _merge_risk_evidence(
+                evidence,
+                _risk_evidence(notes=[f"命中 {int(count)} 个机会项风险标签"]),
+            )
+        rows.append(
+            {
+                "title": title,
+                "detail": details.get(title) or "需要人工复核后再执行。",
+                "level": "高风险" if count >= 3 else "中风险",
+                "count": int(count),
+                "evidence": evidence,
+            }
+        )
+    return rows
     for item in opportunities:
         for tag in item.get("risk_tags") or []:
             label = RISK_LABELS.get(tag, str(tag))
@@ -1397,6 +1627,77 @@ def _build_risks(
             }
         )
     return rows
+
+def _risk_evidence(
+    *,
+    sources: list[str] | None = None,
+    metric_summary: str | None = None,
+    notes: list[str] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    normalized_sources = [str(item).strip() for item in (sources or []) if str(item).strip()]
+    normalized_notes = [str(item).strip() for item in (notes or []) if str(item).strip()]
+    if normalized_sources:
+        payload["sources"] = normalized_sources
+    if metric_summary and str(metric_summary).strip():
+        payload["metric_summary"] = str(metric_summary).strip()
+    if normalized_notes:
+        payload["notes"] = normalized_notes
+    return payload
+
+
+def _merge_risk_evidence(existing: dict[str, Any] | None, incoming: dict[str, Any] | None) -> dict[str, Any]:
+    current = existing if isinstance(existing, dict) else {}
+    extra = incoming if isinstance(incoming, dict) else {}
+    seen_sources: set[str] = set()
+    sources: list[str] = []
+    for source in [*list(current.get("sources") or []), *list(extra.get("sources") or [])]:
+        normalized = str(source or "").strip()
+        if not normalized or normalized in seen_sources:
+            continue
+        seen_sources.add(normalized)
+        sources.append(normalized)
+    seen_notes: set[str] = set()
+    notes: list[str] = []
+    for note in [*_string_list(current.get("notes")), *_string_list(extra.get("notes"))]:
+        normalized = str(note or "").strip()
+        if not normalized or normalized in seen_notes:
+            continue
+        seen_notes.add(normalized)
+        notes.append(normalized)
+    metric_summary = str(extra.get("metric_summary") or current.get("metric_summary") or "").strip()
+    return _risk_evidence(sources=sources, metric_summary=metric_summary or None, notes=notes)
+
+
+def _normalize_risk_evidence(value: Any, *, fallback: Any = None) -> dict[str, Any]:
+    current = value if isinstance(value, dict) else {}
+    fallback_value = fallback if isinstance(fallback, dict) else {}
+    return _merge_risk_evidence(fallback_value, current)
+
+
+def _snapshot_hot_post_count(snapshot: dict[str, Any]) -> int:
+    explicit = snapshot.get("hot_post_count")
+    try:
+        if explicit is not None:
+            return max(0, int(explicit))
+    except (TypeError, ValueError):
+        pass
+    evidence = snapshot.get("evidence") or {}
+    hot_content = evidence.get("hot_content") if isinstance(evidence, dict) else None
+    if isinstance(hot_content, list):
+        return len(hot_content)
+    total = int(snapshot.get("total_content_count") or 0)
+    rate = float(snapshot.get("hot_post_rate") or 0)
+    return max(0, min(total, round(total * rate)))
+
+
+def _format_hot_post_metric_summary(snapshot: dict[str, Any]) -> str:
+    total = int(snapshot.get("total_content_count") or 0)
+    hot_count = _snapshot_hot_post_count(snapshot)
+    rate = float(snapshot.get("hot_post_rate") or 0)
+    if total <= 0:
+        return "热帖率暂无有效样本（热帖阈值：总互动 >= 100）"
+    return f"热帖率 {hot_count} / {total}（{round(rate * 100, 1)}%，热帖阈值：总互动 >= 100）"
 
 
 def _build_weekly_mix(

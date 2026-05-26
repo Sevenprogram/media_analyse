@@ -155,6 +155,44 @@ export type AiTopicIdeasSummary = {
   topic_ideas: Array<Record<string, unknown>>;
 };
 
+export type TodayIntelligenceSummary = {
+  status: "completed" | "fallback" | "running" | "missing" | "stale" | "error";
+  source: "ai" | "rules" | "none";
+  project_id?: string | null;
+  project?: {
+    id?: string | null;
+    requested_id?: string | null;
+    name?: string | null;
+    primary_goal?: string | null;
+    platforms?: string[];
+    scene_pack_id?: number | null;
+    sample_status?: string | null;
+    recommended_action?: string | null;
+  } | null;
+  generated_at?: string | null;
+  expires_at?: string | null;
+  error?: string | null;
+  provider?: { name?: string | null; model?: string | null } | null;
+  executive_summary?: string;
+  actions?: Array<Record<string, unknown>>;
+  opportunity_explanations?: Array<Record<string, unknown>>;
+  risk_explanations?: Array<Record<string, unknown>>;
+  sample_quality_explanation?: Record<string, unknown>;
+  data_bias_notes?: string[];
+  assumptions?: string[];
+  input_summary?: Record<string, unknown>;
+  ai_status?: {
+    status?: string | null;
+    source?: string | null;
+    generated_at?: string | null;
+    expires_at?: string | null;
+    provider?: { name?: string | null; model?: string | null } | null;
+    error?: string | null;
+  };
+  dashboard: DashboardSummary;
+  database_stats: DatabaseStats;
+};
+
 export type ResearchJob = {
   id: number;
   name: string;
@@ -340,6 +378,7 @@ export type GrowthProjectDetail = {
     refresh_cadence: string;
     custom_interval_value?: number | null;
     custom_interval_unit?: "hours" | "days" | null;
+    refresh_time_utc8?: string | null;
     daily_collection_limit_per_platform?: number | null;
   };
 };
@@ -518,6 +557,7 @@ export type GrowthProjectCreatePayload = {
   keywords: string[];
   collection_depth: "lightweight" | "standard" | "deep";
   refresh_cadence: "off" | "daily" | "three_days" | "weekly";
+  refresh_time_utc8?: string | null;
   daily_collection_limit_per_platform?: number;
   auto_ai_analysis: boolean;
   start_immediately?: boolean;
@@ -533,6 +573,7 @@ export type GrowthProjectUpdatePayload = {
   refresh_cadence?: "off" | "daily" | "three_days" | "weekly" | "custom_hours" | "custom_days";
   custom_interval_value?: number;
   custom_interval_unit?: "hours" | "days";
+  refresh_time_utc8?: string | null;
   daily_collection_limit_per_platform?: number;
   keywords?: Array<{
     keyword: string;

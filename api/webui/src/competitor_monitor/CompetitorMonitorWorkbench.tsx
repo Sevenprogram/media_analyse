@@ -35,11 +35,22 @@ function dateRangeLabel(date: string) {
   return `${format(start)} ~ ${format(end)}`;
 }
 
-export function CompetitorMonitorWorkbench() {
+export function CompetitorMonitorWorkbench({
+  selectedProjectId,
+  selectedProjectRecordId,
+  selectedProjectName,
+}: {
+  selectedProjectId?: string | null;
+  selectedProjectRecordId?: number | null;
+  selectedProjectName?: string | null;
+}) {
   const [activeMonitorType, setActiveMonitorType] = React.useState<MonitorType>("competitor");
+  const projectContextPending = Boolean(selectedProjectId) && !selectedProjectRecordId;
+  const projectQuery = selectedProjectRecordId ? `&project_id=${encodeURIComponent(String(selectedProjectRecordId))}` : "";
   const accountsQuery = useEndpoint<{ competitors: WorkbenchAccount[] }>(
-    `/api/competitors?enabled_only=true&monitor_type=${activeMonitorType}`,
+    `/api/competitors?enabled_only=true&monitor_type=${activeMonitorType}${projectQuery}`,
     { competitors: [] },
+    { enabled: !projectContextPending },
   );
   const [selectedId, setSelectedId] = React.useState<number | null>(null);
   const [date, setDate] = React.useState<string>(todayIso());
@@ -53,9 +64,20 @@ export function CompetitorMonitorWorkbench() {
   const [overviewLoading, setOverviewLoading] = React.useState(false);
 
   const fallbackAccounts = activeMonitorType === "partner_creator" ? mockCreatorAccounts : mockAccounts;
-  const accounts = accountsQuery.data.competitors.length ? accountsQuery.data.competitors : fallbackAccounts;
-  const usingMock = accountsQuery.data.competitors.length === 0;
+  const hasProjectScope = Boolean(selectedProjectRecordId);
+  const accounts = projectContextPending
+    ? []
+    : accountsQuery.data.competitors.length
+      ? accountsQuery.data.competitors
+      : (hasProjectScope ? [] : fallbackAccounts);
+  const usingMock = !projectContextPending && !hasProjectScope && accountsQuery.data.competitors.length === 0;
   const isCreatorMonitor = activeMonitorType === "partner_creator";
+
+  React.useEffect(() => {
+    setSelectedId(null);
+    setCollectionRun(null);
+    setRefreshError(null);
+  }, [selectedProjectRecordId]);
 
   React.useEffect(() => {
     if (accounts.length === 0) {
@@ -73,6 +95,11 @@ export function CompetitorMonitorWorkbench() {
     async function loadOverview() {
       if (usingMock) {
         setOverview(mockOverview);
+        return;
+      }
+      if (projectContextPending) {
+        setOverview({ new_posts_total: 0, interaction_total: 0, new_hot_total: 0, anomaly_total: 0 });
+        setOverviewLoading(false);
         return;
       }
       setOverviewLoading(true);
@@ -101,7 +128,7 @@ export function CompetitorMonitorWorkbench() {
     return () => {
       cancelled = true;
     };
-  }, [accounts, date, usingMock]);
+  }, [accounts, date, projectContextPending, usingMock]);
 
   const selectedAccount = React.useMemo(
     () => accounts.find((account) => account.id === selectedId) || null,
@@ -202,8 +229,8 @@ export function CompetitorMonitorWorkbench() {
           <h1>{isCreatorMonitor ? "达人监控" : "友商监控"}</h1>
           <p>
             {isCreatorMonitor
-              ? "监控合作达人的宣发内容、互动增量与发布节奏，识别复投机会和商务跟进风险。"
-              : "监控竞争对手的内容表现、互动趋势与策略变化，识别机会与风险，形成可执行的跟进动作。"}
+              ? `监控${selectedProjectName ? `「${selectedProjectName}」` : "当前项目"}合作达人的宣发内容、互动增量与发布节奏，识别复投机会和商务跟进风险。`
+              : `监控${selectedProjectName ? `「${selectedProjectName}」` : "当前项目"}竞争对手的内容表现、互动趋势与策略变化，识别机会与风险，形成可执行的跟进动作。`}
           </p>
         </div>
         <div className="cmw-page__hero-tools">
@@ -240,7 +267,7 @@ export function CompetitorMonitorWorkbench() {
             onAddClick={() => setAddOpen(true)}
             onSyncClick={handleRefreshAll}
             syncing={allRefreshing}
-            loading={accountsQuery.loading || overviewLoading}
+            loading={projectContextPending || accountsQuery.loading || overviewLoading}
             overview={overview}
           />
         </div>
@@ -258,7 +285,7 @@ export function CompetitorMonitorWorkbench() {
             />
           ) : (
             <div className="cmw-empty">
-              {accountsQuery.loading
+              {projectContextPending || accountsQuery.loading
                 ? "加载中…"
                 : isCreatorMonitor
                   ? "请先从左侧选择一个合作达人"
@@ -296,6 +323,7 @@ export function CompetitorMonitorWorkbench() {
       <AddCompetitorDrawer
         open={addOpen}
         monitorType={activeMonitorType}
+        projectId={selectedProjectRecordId}
         onOpenChange={setAddOpen}
         onCreated={() => {
           void accountsQuery.reload();

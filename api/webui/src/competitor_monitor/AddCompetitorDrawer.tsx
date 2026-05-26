@@ -7,6 +7,7 @@ import type { MonitorType, WorkbenchAccount } from "./types";
 export interface AddCompetitorDrawerProps {
   open: boolean;
   monitorType: MonitorType;
+  projectId?: number | null;
   onOpenChange: (open: boolean) => void;
   onCreated: () => void;
 }
@@ -27,7 +28,7 @@ const INITIAL: FormState = {
   notes: "",
 };
 
-export function AddCompetitorDrawer({ open, monitorType, onOpenChange, onCreated }: AddCompetitorDrawerProps) {
+export function AddCompetitorDrawer({ open, monitorType, projectId, onOpenChange, onCreated }: AddCompetitorDrawerProps) {
   const [form, setForm] = React.useState<FormState>(INITIAL);
   const [submitting, setSubmitting] = React.useState(false);
   const [message, setMessage] = React.useState<string | null>(null);
@@ -63,6 +64,7 @@ export function AddCompetitorDrawer({ open, monitorType, onOpenChange, onCreated
             platform: form.platform,
             profile_url: profileUrl,
             monitor_type: monitorType,
+            project_id: projectId || undefined,
             display_name: displayName || undefined,
             notes: form.notes.trim() || undefined,
           }),
@@ -74,6 +76,7 @@ export function AddCompetitorDrawer({ open, monitorType, onOpenChange, onCreated
             platform: form.platform,
             creator_id: creatorId,
             monitor_type: monitorType,
+            project_id: projectId || undefined,
             display_name: displayName || undefined,
             notes: form.notes.trim() || undefined,
             enabled: true,

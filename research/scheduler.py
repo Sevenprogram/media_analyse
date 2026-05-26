@@ -6,6 +6,7 @@ from typing import Any
 from research.crawl_units import build_crawl_units_for_job
 from research.enums import JOB_COMPLETED, JOB_PAUSED_BY_PLATFORM_CONFIG, JOB_PENDING, JOB_QUEUED
 from research.repository import ResearchRepository
+from research.schedule_time import next_utc8_daily_run_at
 
 
 class ResearchScheduler:
@@ -61,8 +62,9 @@ class ResearchScheduler:
             "last_scheduled_at": now,
         }
         if job.get("schedule_enabled") and job.get("schedule_interval_minutes"):
-            schedule_payload["next_run_at"] = now + timedelta(
-                minutes=int(job["schedule_interval_minutes"])
+            fixed_refresh_time = (job.get("comment_policy") or {}).get("refresh_time_utc8")
+            schedule_payload["next_run_at"] = next_utc8_daily_run_at(fixed_refresh_time, now=now) or (
+                now + timedelta(minutes=int(job["schedule_interval_minutes"]))
             )
         await self.repository.update_job(job_id, schedule_payload)
         await self.repository.create_event(

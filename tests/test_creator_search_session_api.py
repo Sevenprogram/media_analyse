@@ -40,10 +40,36 @@ async def test_creator_search_session_persist_restore_and_save(
             email="creator-session@example.com",
             organization_name="Creator Session Workspace",
         )
+        project_a_response = await client.post(
+            "/api/research/growth-projects",
+            json={
+                "name": "K12 项目",
+                "primary_goal": "creator_discovery",
+                "platforms": ["xhs", "dy"],
+                "keywords": ["K12"],
+                "start_immediately": False,
+            },
+        )
+        assert project_a_response.status_code == 200, project_a_response.text
+        project_a_id = project_a_response.json()["project_record_id"]
+
+        project_b_response = await client.post(
+            "/api/research/growth-projects",
+            json={
+                "name": "口琴项目",
+                "primary_goal": "creator_discovery",
+                "platforms": ["xhs", "dy"],
+                "keywords": ["口琴"],
+                "start_immediately": False,
+            },
+        )
+        assert project_b_response.status_code == 200, project_b_response.text
+        project_b_id = project_b_response.json()["project_record_id"]
 
         persist_response = await client.post(
             "/api/creator-search/search-sessions",
             json={
+                "project_id": project_a_id,
                 "raw_query": "K12 家长",
                 "selected_vertical_id": None,
                 "search_payload": {
@@ -113,16 +139,48 @@ async def test_creator_search_session_persist_restore_and_save(
         assert persist_response.status_code == 200, persist_response.text
         persisted = persist_response.json()["session"]
         assert persisted["raw_query"] == "K12 家长"
+        assert persisted["project_id"] == project_a_id
         assert persisted["result_count"] == 2
         assert len(persisted["results"]) == 2
         assert persisted["saved"] is False
 
-        latest_response = await client.get("/api/creator-search/search-sessions/latest")
+        second_response = await client.post(
+            "/api/creator-search/search-sessions",
+            json={
+                "project_id": project_b_id,
+                "raw_query": "口琴",
+                "selected_vertical_id": None,
+                "search_payload": {"raw_query": "口琴", "platforms": ["xhs"], "limit": 5},
+                "view_state": {"query": "口琴", "displayLimit": 5, "analysisStatus": "done"},
+                "diagnostics": {"profile_count": 1},
+                "realtime": {"status": "ok", "selected_count": 1},
+                "progress": {"stage": "complete", "percent": 100},
+                "message": "搜索完成",
+                "result_summary": "返回 1 位达人",
+                "results": [
+                    {
+                        "platform": "xhs",
+                        "creator_id": "harmonica-user",
+                        "display_name": "口琴老师",
+                        "match_score": 81,
+                    }
+                ],
+            },
+        )
+        assert second_response.status_code == 200, second_response.text
+
+        latest_response = await client.get(f"/api/creator-search/search-sessions/latest?project_id={project_a_id}")
         assert latest_response.status_code == 200, latest_response.text
         latest = latest_response.json()["session"]
         assert latest["id"] == persisted["id"]
         assert latest["view_state"]["displayLimit"] == 10
         assert latest["results"][0]["creator_id"] == "xhs-user-1"
+
+        latest_b_response = await client.get(f"/api/creator-search/search-sessions/latest?project_id={project_b_id}")
+        assert latest_b_response.status_code == 200, latest_b_response.text
+        latest_b = latest_b_response.json()["session"]
+        assert latest_b["project_id"] == project_b_id
+        assert latest_b["results"][0]["creator_id"] == "harmonica-user"
 
         save_response = await client.post(
             f"/api/creator-search/search-sessions/{persisted['id']}/save",

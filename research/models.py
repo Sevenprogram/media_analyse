@@ -530,6 +530,7 @@ class ResearchCreatorSearchSession(Base):
 
     id = Column(Integer, primary_key=True)
     org_id = Column(Integer, nullable=True, index=True)
+    project_id = Column(Integer, ForeignKey("research_growth_projects.id"), nullable=True, index=True)
     raw_query = Column(Text, nullable=False, default="")
     selected_vertical_id = Column(Integer, ForeignKey("research_verticals.id"), nullable=True, index=True)
     search_payload_json = Column(json_column(), nullable=False, default=dict)
@@ -655,6 +656,7 @@ class ResearchGrowthProject(Base):
     refresh_cadence = Column(String(32), nullable=False, default="off")
     custom_interval_value = Column(Integer, nullable=True)
     custom_interval_unit = Column(String(16), nullable=True)
+    refresh_time_utc8 = Column(String(5), nullable=True)
     daily_collection_limit_per_platform = Column(Integer, nullable=False, default=50)
     sample_status = Column(String(64), nullable=False, default="sample_insufficient")
     recommended_action = Column(String(64), nullable=False, default="start_collection")
@@ -1048,6 +1050,7 @@ class ResearchContentTracker(Base):
 
     id = Column(Integer, primary_key=True)
     org_id = Column(Integer, nullable=True, index=True)
+    project_id = Column(Integer, ForeignKey("research_growth_projects.id"), nullable=True, index=True)
     name = Column(String(128), nullable=False, index=True)
     description = Column(Text, nullable=True)
     source_content_sample_id = Column(
@@ -1289,6 +1292,7 @@ class ResearchCompetitorAccount(Base):
     platform = Column(String(32), nullable=False, index=True)
     creator_id = Column(String(255), nullable=False, index=True)
     monitor_type = Column(String(32), nullable=False, default="competitor", index=True)
+    project_ids_json = Column(json_column(), nullable=False, default=list)
     display_name = Column(Text, nullable=True)
     profile_url = Column(Text, nullable=True)
     vertical_id = Column(Integer, ForeignKey("research_verticals.id"), nullable=True, index=True)
