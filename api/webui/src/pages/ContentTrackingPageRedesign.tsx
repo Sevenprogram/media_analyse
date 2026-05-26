@@ -1025,26 +1025,61 @@ export function ContentTrackingPage({
     });
   }, [selectedTracker]);
 
-  async function rerunAnalysis() {
-    if (!selectedTrackerId) return;
+  const queueTrackerAnalysis = React.useCallback(async (
+    tracker: ContentTracker | NormalizedTracker,
+    options: {
+      resetLatestAnalysis?: boolean;
+      refreshTrackers?: boolean;
+    } = {},
+  ) => {
+    const trackerId = tracker.id;
+    if (!trackerId) return;
+    if (options.resetLatestAnalysis) {
+      setLatestAnalysis(null);
+      setHistory([]);
+    }
     setRunning(true);
     try {
       const queued = await api<AnalysisEnqueueResponse>(
-        `/api/content-tracking/trackers/${selectedTrackerId}/analysis`,
+        `/api/content-tracking/trackers/${trackerId}/analysis`,
         {
           method: "POST",
         },
       );
-      upsertTrackerInState(queued.tracker);
-      TRACKER_ANALYSIS_RUN_CACHE.set(selectedTrackerId, queued.run);
-      setAnalysisRun(queued.run);
-      void followAnalysisRun(queued.run, selectedTrackerId);
+      const nextTracker = queued.tracker
+        ? {
+            ...queued.tracker,
+            project_id: queued.tracker.project_id ?? selectedProjectRecordId ?? null,
+            latest_analysis_run_id: queued.run.id,
+          }
+        : {
+            ...(tracker as ContentTracker),
+            project_id: (tracker as ContentTracker).project_id ?? selectedProjectRecordId ?? null,
+            latest_analysis_run_id: queued.run.id,
+          };
+      upsertTrackerInState(nextTracker);
+      TRACKER_ANALYSIS_RUN_CACHE.set(trackerId, queued.run);
+      if (mountedRef.current && selectedTrackerIdRef.current === trackerId) {
+        setAnalysisRun(queued.run);
+      }
+      if (options.refreshTrackers) {
+        void loadTrackers();
+      }
+      void followAnalysisRun(queued.run, trackerId);
       setError(null);
     } catch (err) {
-      setError(readErrorMessage(err, "运行分析失败"));
-    } finally {
-      setRunning(false);
+      if (mountedRef.current && selectedTrackerIdRef.current === trackerId) {
+        setRunning(false);
+      }
+      setError(readErrorMessage(err, "启动首轮分析失败"));
     }
+  }, [followAnalysisRun, loadTrackers, selectedProjectRecordId, upsertTrackerInState]);
+
+  async function rerunAnalysis() {
+    if (!selectedTrackerId) return;
+    const tracker = selectedTracker || normalizedTrackers.find((item) => item.id === selectedTrackerId);
+    if (!tracker) return;
+    await queueTrackerAnalysis(tracker, { resetLatestAnalysis: !hasAnalysis });
   }
 
   function toggleCollectionPlatform(platform: string, checked: boolean) {
@@ -1193,19 +1228,20 @@ export function ContentTrackingPage({
             project_id: selectedProjectRecordId ?? null,
           }),
         });
-        await loadTrackers();
-        setSelectedTrackerId(created.id);
-        setRunning(true);
-        const queued = await api<AnalysisEnqueueResponse>(
-          `/api/content-tracking/trackers/${created.id}/analysis`,
-          {
-            method: "POST",
-          },
-        );
-        upsertTrackerInState(queued.tracker);
-        TRACKER_ANALYSIS_RUN_CACHE.set(created.id, queued.run);
-        setAnalysisRun(queued.run);
-        void followAnalysisRun(queued.run, created.id);
+        const createdTracker: ContentTracker = {
+          ...created,
+          project_id: created.project_id ?? selectedProjectRecordId ?? null,
+        };
+        upsertTrackerInState(createdTracker);
+        setSelectedTrackerId(createdTracker.id);
+        setLatestAnalysis(null);
+        setAnalysisRun(null);
+        setHistory([]);
+        setTrackerEditorOpen(false);
+        setError(null);
+        void loadTrackers();
+        void queueTrackerAnalysis(createdTracker);
+        return;
       } else {
         if (!editingTrackerId) {
           setError("请先选择要编辑的追踪器。");
@@ -1233,7 +1269,6 @@ export function ContentTrackingPage({
       setError(readErrorMessage(err, mode === "create" ? "创建追踪器失败" : "保存追踪器失败"));
     } finally {
       setSavingTracker(false);
-      setRunning(false);
     }
   }
 

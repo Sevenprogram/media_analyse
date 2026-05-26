@@ -442,6 +442,10 @@ function aiStatusTone(todayIntelligence: TodayIntelligenceSummary | null) {
   return "is-pending";
 }
 
+function stringList(value: unknown) {
+  return Array.isArray(value) ? value.map((item) => String(item || "").trim()).filter(Boolean) : [];
+}
+
 function normalizeAiActions(actions: Array<Record<string, unknown>>) {
   return actions.slice(0, 8).map((item, index) => {
     const action = stringValue(item.action, "view_detail");
@@ -457,6 +461,11 @@ function normalizeAiActions(actions: Array<Record<string, unknown>>) {
       deadline: isHigh ? "2 小时内" : "今天",
       btnText: action === "collect_more" ? "去补采" : action === "contact_creator" ? "去跟进" : "去处理",
       actionKind: action,
+      targetType: stringValue(item.target_type, "system"),
+      priorityExplanation: stringValue(item.priority_explanation),
+      riskNotes: stringList(item.risk_notes),
+      evidenceRefs: stringList(item.evidence_refs),
+      payload: recordValue(item.payload),
       rawOpportunity: undefined,
     };
   });
@@ -476,6 +485,11 @@ function normalizeDashboardActions(actions: Array<DashboardAction & { bucket: st
       deadline: isHigh ? "2 小时内" : "今天",
       btnText: isHigh ? "去处理" : "去查看",
       actionKind: a.action || "view_detail",
+      targetType: a.target_type || "system",
+      priorityExplanation: "",
+      riskNotes: [],
+      evidenceRefs: [],
+      payload: a.payload || {},
       rawOpportunity: undefined,
     };
   });
@@ -507,6 +521,7 @@ export function TodayIntelligencePage({
   const [sortBy, setSortBy] = React.useState<string>("score");
   const [loading, setLoading] = React.useState<boolean>(false);
   const [regenerating, setRegenerating] = React.useState<boolean>(false);
+  const [actionDrawerOpen, setActionDrawerOpen] = React.useState<boolean>(false);
 
   const failedJobs = jobs.filter((job) => job.status === "failed").length;
   const runningJobs = jobs.filter((job) => job.status === "running").length;
@@ -549,11 +564,32 @@ export function TodayIntelligencePage({
         deadline: "今天",
         btnText: "去创建",
         actionKind: "start_collection",
+        targetType: "collection",
+        priorityExplanation: "当前没有可用于研判的真实样本，先完成采集。",
+        riskNotes: [],
+        evidenceRefs: [],
+        payload: {},
         rawOpportunity: undefined,
       }];
     }
     return [];
   }, [dashboard, databaseStats.total_collected, todayIntelligence]);
+
+  const previewActions = React.useMemo(() => blendedActions.slice(0, 3), [blendedActions]);
+
+  const actionGroups = React.useMemo(() => {
+    const groups: Array<{ title: string; items: typeof blendedActions }> = [];
+    for (const action of blendedActions) {
+      const title = action.bucket || action.priority || "其他任务";
+      let group = groups.find((item) => item.title === title);
+      if (!group) {
+        group = { title, items: [] };
+        groups.push(group);
+      }
+      group.items.push(action);
+    }
+    return groups;
+  }, [blendedActions]);
 
   const opportunityExplanations = React.useMemo(
     () => explanationMap((todayIntelligence?.opportunity_explanations || []).map(recordValue), "opportunity_id"),
@@ -761,6 +797,65 @@ export function TodayIntelligencePage({
     }
   };
 
+  const renderActionCard = (action: any, mode: "preview" | "drawer" = "preview") => {
+    const deadlineClass =
+      action.tagClass === "p-high" ? "deadline-high" :
+      action.tagClass === "p-medium" ? "deadline-medium" :
+      (action.tagClass === "p-opportunity" || action.tagClass === "p-publish") ? "deadline-opportunity" :
+      "deadline-default";
+    return (
+      <div className={`action-item-card-optimized ${mode === "drawer" ? "is-drawer" : ""}`} key={action.id}>
+        <div className="action-item-top">
+          <div className="action-item-top-left">
+            <div className="action-priority-tag">
+              <span className={`action-priority-dot ${action.tagClass}`}></span>
+              <span className={`action-priority-text ${action.tagClass}`}>{action.priority}</span>
+            </div>
+            <h3 title={action.title}>{action.title}</h3>
+          </div>
+          <span className={`action-deadline ${deadlineClass}`}>
+            <Clock size={12} />
+            <span>{action.deadline}</span>
+          </span>
+        </div>
+        <div className="action-item-inner-box">
+          <p>{action.reason}</p>
+          {mode === "drawer" && (
+            <div className="action-detail-meta">
+              {action.priorityExplanation && (
+                <div>
+                  <strong>优先级依据</strong>
+                  <span>{action.priorityExplanation}</span>
+                </div>
+              )}
+              {action.riskNotes?.length ? (
+                <div>
+                  <strong>风险备注</strong>
+                  <ul className="action-detail-list">
+                    {action.riskNotes.map((note: string) => <li key={note}>{note}</li>)}
+                  </ul>
+                </div>
+              ) : null}
+              {action.evidenceRefs?.length ? (
+                <div>
+                  <strong>关联证据</strong>
+                  <ul className="action-detail-list">
+                    {action.evidenceRefs.map((ref: string) => <li key={ref}>{ref}</li>)}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
+          )}
+          <div className="action-btn-row">
+            <button className="action-btn" type="button" onClick={() => handleActionClick(action)}>
+              {action.btnText}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const handleExecuteOpportunity = (opp: any) => {
     if (opp.rawOpportunity) {
       onExecute(opp.rawOpportunity);
@@ -860,40 +955,7 @@ export function TodayIntelligencePage({
           </div>
 
           <div className="action-list-holder">
-            {blendedActions.length ? blendedActions.map((action) => (
-              <div className="action-item-card-optimized" key={action.id}>
-                <div className="action-item-top">
-                  <div className="action-item-top-left">
-                    <div className="action-priority-tag">
-                      <span className={`action-priority-dot ${action.tagClass}`}></span>
-                      <span className={`action-priority-text ${action.tagClass}`}>{action.priority}</span>
-                    </div>
-                    <h3>{action.title}</h3>
-                  </div>
-                  {(() => {
-                    const deadlineClass = 
-                      action.tagClass === "p-high" ? "deadline-high" :
-                      action.tagClass === "p-medium" ? "deadline-medium" :
-                      (action.tagClass === "p-opportunity" || action.tagClass === "p-publish") ? "deadline-opportunity" :
-                      "deadline-default";
-                    return (
-                      <span className={`action-deadline ${deadlineClass}`} style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                        <Clock size={12} />
-                        <span>{action.deadline}</span>
-                      </span>
-                    );
-                  })()}
-                </div>
-                <div className="action-item-inner-box">
-                  <p>{action.reason}</p>
-                  <div className="action-btn-row">
-                    <button className="action-btn" type="button" onClick={() => handleActionClick(action)}>
-                      {action.btnText}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )) : (
+            {previewActions.length ? previewActions.map((action) => renderActionCard(action)) : (
               <div className="gi-empty-panel">
                 <strong>暂无今日动作</strong>
                 <p>真实数据还没有形成可执行动作，重新生成 AI 分析或先补采样本。</p>
@@ -901,9 +963,14 @@ export function TodayIntelligencePage({
             )}
           </div>
 
-          <a href="#all-actions" className="checklist-bottom-link" onClick={(e) => { e.preventDefault(); alert("暂无更多行动，日常任务已全部列出。"); }}>
-            查看全部任务 (12) &gt;
-          </a>
+          <button
+            type="button"
+            className="checklist-bottom-link action-drawer-trigger"
+            onClick={() => setActionDrawerOpen(true)}
+            disabled={!blendedActions.length}
+          >
+            查看全部任务 ({blendedActions.length}) &gt;
+          </button>
         </div>
 
         {/* Middle Column: Opportunity Queue */}
@@ -1248,6 +1315,44 @@ export function TodayIntelligencePage({
         </div>
 
       </div>
+
+      <Drawer
+        open={actionDrawerOpen}
+        onOpenChange={setActionDrawerOpen}
+        title={`全部任务（${blendedActions.length}）`}
+        description="今日情报生成的完整行动任务列表"
+      >
+        <div className="action-drawer-body">
+          <div className="action-drawer-summary">
+            <div>
+              <span>今日行动</span>
+              <strong>{blendedActions.length}</strong>
+            </div>
+            <p>{summaryText}</p>
+          </div>
+
+          {actionGroups.length ? (
+            <div className="action-drawer-groups">
+              {actionGroups.map((group) => (
+                <section className="action-drawer-section" key={group.title}>
+                  <div className="action-drawer-section-head">
+                    <strong>{group.title}</strong>
+                    <span>{group.items.length} 个任务</span>
+                  </div>
+                  <div className="action-drawer-list">
+                    {group.items.map((action) => renderActionCard(action, "drawer"))}
+                  </div>
+                </section>
+              ))}
+            </div>
+          ) : (
+            <div className="gi-empty-panel">
+              <strong>暂无今日动作</strong>
+              <p>真实数据还没有形成可执行动作，重新生成 AI 分析或先补采样本。</p>
+            </div>
+          )}
+        </div>
+      </Drawer>
 
       {/* Slide Drawer for Opportunity Details (Keeping absolute functional integration) */}
       <Drawer open={!!selected} onOpenChange={(open) => !open && setSelected(null)} title={selected?.name || "机会详情"}>

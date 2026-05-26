@@ -5762,6 +5762,7 @@ class ResearchRepository:
         self, payload: dict[str, Any], *, partial: bool = False
     ) -> dict[str, Any]:
         mapping = {
+            "project_id": "project_id",
             "name": "name",
             "description": "description",
             "source_content_sample_id": "source_content_sample_id",
@@ -5811,6 +5812,7 @@ class ResearchRepository:
     def _content_tracker_to_dict(self, item: ResearchContentTracker) -> dict[str, Any]:
         return {
             "id": item.id,
+            "project_id": item.project_id,
             "name": item.name,
             "description": item.description,
             "source_content_sample_id": item.source_content_sample_id,
