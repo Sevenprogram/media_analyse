@@ -129,6 +129,70 @@ def test_build_content_strategy_summary_combines_ai_topics_and_local_evidence() 
     assert result["evidence_pack"]["total"] > 0
 
 
+def test_competitor_samples_hydrate_legacy_snapshot_engagement_from_posts() -> None:
+    filters = normalize_strategy_filters(
+        platform="xhs",
+        time_range="30d",
+        goal="conversion",
+        audience="all",
+        stage="boost",
+    )
+
+    result = build_content_strategy_summary(
+        filters=filters,
+        dashboard={
+            "decision": {},
+            "opportunities": [],
+            "top_opportunities": [],
+            "watchlist": [],
+            "diagnostics": [],
+        },
+        posts=[
+            {
+                "id": 1,
+                "platform": "xhs",
+                "platform_post_id": "legacy-note-1",
+                "title": "Legacy competitor sample",
+                "content": "The original post still has detailed engagement.",
+                "url": "https://example.com/legacy-note-1",
+                "publish_time": datetime.now(timezone.utc),
+                "engagement_json": {
+                    "liked_count": "21",
+                    "comment_count": "5",
+                    "collected_count": "4",
+                    "share_count": "7",
+                },
+            }
+        ],
+        keyword_heat_snapshots=[],
+        content_snapshots=[],
+        competitor_compositions=[
+            {
+                "platform": "xhs",
+                "total_flow_count": 37,
+                "evidence": {
+                    "top_posts": [
+                        {
+                            "platform_post_id": "legacy-note-1",
+                            "title": "Legacy competitor sample",
+                            "engagement_total": 37,
+                            "url": "https://example.com/legacy-note-1",
+                        }
+                    ]
+                },
+            }
+        ],
+        ai_insights={"run": None, "risk_notes": []},
+        ai_topic_ideas=[],
+    )
+
+    sample = result["competitor_samples"][0]
+    assert sample["interaction"] == "37"
+    assert sample["likes"] == "21"
+    assert sample["comments"] == "5"
+    assert sample["favorites"] == "4"
+
+
 def test_build_content_strategy_summary_prefers_sample_pain_distribution_from_post_fingerprints() -> None:
     filters = normalize_strategy_filters(
         platform="xhs",

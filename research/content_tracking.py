@@ -10,6 +10,7 @@ KEYWORD_HIGH_VALUE_MIN_SCORE = 55.0
 KEYWORD_HIGH_VALUE_MAX_NOISE_RATE = 0.45
 KEYWORD_NOISE_MIN_RATE = 0.5
 KEYWORD_EXCLUDE_MIN_RATE = 0.6
+REPRESENTATIVE_SAMPLE_MIN_ENGAGEMENT = 20
 
 
 def extract_content_keywords(
@@ -238,7 +239,7 @@ def build_tracker_ai_enhancement_prompt(
             "Return JSON only.",
             "Do not change, fabricate, or reinterpret raw numbers such as engagement, sample counts, publish time, author, or platform.",
             "Use only sample_key values present in candidates.",
-            "Put low-engagement high-fit items into early_signal_samples rather than representative_samples when enough engaged samples exist.",
+            f"Put items with engagement_total lower than {REPRESENTATIVE_SAMPLE_MIN_ENGAGEMENT} into early_signal_samples rather than representative_samples.",
             "Keyword suggestions must be practical platform search terms, not broad category labels.",
             "keyword_strategy.high_value_keywords, recommended_include_keywords, noise_keywords, and recommended_exclude_keywords must each contain at least one evidence-backed term when candidates are present.",
             "Keep the four keyword lists distinct; do not put current included_keywords in recommended_include_keywords or recommended_exclude_keywords.",
@@ -333,7 +334,7 @@ def build_tracker_sample_selection_ai_prompt(
             "Return JSON only.",
             "Use only sample_key values present in candidates.",
             "representative_samples should be on-topic, market-validated, diverse across platforms/authors/patterns, and useful for human audit.",
-            "For representative_samples, prefer candidates with engagement_total greater than 0. Only use zero-engagement samples when there are not enough relevant engaged samples.",
+            f"For representative_samples, only use candidates with engagement_total >= {REPRESENTATIVE_SAMPLE_MIN_ENGAGEMENT}.",
             "hot_samples should be both relevant and high-engagement; do not select noisy high-engagement samples.",
             "early_signal_samples should be highly relevant but not necessarily high-engagement yet; low-engagement high-fit samples belong here instead of representative_samples.",
             "noise_samples should contain keyword hits that are likely off-topic, ads, giveaways, or misleading matches.",
@@ -573,7 +574,11 @@ def apply_tracker_ai_sample_selection(
             fallback=fallback,
             limit=limit,
             source=source,
-            minimum_engagement=1 if section == "representative_samples" else None,
+            minimum_engagement=(
+                REPRESENTATIVE_SAMPLE_MIN_ENGAGEMENT
+                if section == "representative_samples"
+                else None
+            ),
         )
         samples[section] = selected
     noise_samples = _selected_samples_from_ai(
@@ -1867,18 +1872,12 @@ def _diverse_samples(rows: list[dict[str, Any]], *, limit: int) -> list[dict[str
 
 def _representative_samples(rows: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
     ranked_rows = _rank_representative_rows(rows)
-    engaged_rows = [row for row in ranked_rows if _sample_engagement(row) > 0]
-    pending_rows = [row for row in ranked_rows if _sample_engagement(row) <= 0]
-    selected = _diverse_samples(engaged_rows, limit=limit)
-    if len(selected) < limit:
-        selected_keys = {str(row.get("sample_key") or "") for row in selected}
-        pending_fillers = [
-            _mark_pending_validation(row)
-            for row in pending_rows
-            if str(row.get("sample_key") or "") not in selected_keys
-        ]
-        selected.extend(_diverse_samples(pending_fillers, limit=limit - len(selected)))
-    return selected[:limit]
+    validated_rows = [
+        row
+        for row in ranked_rows
+        if _sample_engagement(row) >= REPRESENTATIVE_SAMPLE_MIN_ENGAGEMENT
+    ]
+    return _diverse_samples(validated_rows, limit=limit)
 
 
 def _rank_representative_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1925,7 +1924,12 @@ def _representative_rank_score(
             0.55 * similarity_score
             + 0.30 * engagement_score
             + 0.10 * recency_score
-            + 0.05 * (1.0 if _sample_engagement(row) > 0 else 0.0)
+            + 0.05
+            * (
+                1.0
+                if _sample_engagement(row) >= REPRESENTATIVE_SAMPLE_MIN_ENGAGEMENT
+                else 0.0
+            )
         )
         * 100.0,
         4,
@@ -1955,16 +1959,11 @@ def _sample_engagement(row: dict[str, Any]) -> int:
 
 
 def _market_validation_status(value: Any) -> str:
-    return "validated" if int(value or 0) > 0 else "pending_validation"
-
-
-def _mark_pending_validation(row: dict[str, Any]) -> dict[str, Any]:
-    marked = dict(row)
-    marked["market_validation_status"] = "pending_validation"
-    evidence = dict(marked.get("evidence") or {})
-    evidence["sample_note"] = "low_engagement_filler"
-    marked["evidence"] = evidence
-    return marked
+    return (
+        "validated"
+        if int(value or 0) >= REPRESENTATIVE_SAMPLE_MIN_ENGAGEMENT
+        else "pending_validation"
+    )
 
 
 def _hot_samples(rows: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
@@ -2291,17 +2290,6 @@ def _selected_samples_from_ai(
 ) -> list[dict[str, Any]]:
     selected: list[dict[str, Any]] = []
     selected_keys: set[str] = set()
-    enough_engaged_samples = (
-        minimum_engagement is not None
-        and len(
-            [
-                sample
-                for sample in sample_lookup.values()
-                if _sample_engagement(sample) >= minimum_engagement
-            ]
-        )
-        >= limit
-    )
     ordered_selected_items = selected_items
     if minimum_engagement is not None:
         ordered_selected_items = sorted(
@@ -2317,7 +2305,7 @@ def _selected_samples_from_ai(
         sample = sample_lookup.get(sample_key)
         if not sample or sample_key in selected_keys:
             continue
-        if enough_engaged_samples and _sample_engagement(sample) < int(minimum_engagement or 0):
+        if minimum_engagement is not None and _sample_engagement(sample) < minimum_engagement:
             continue
         selected.append(_annotate_ai_selected_sample(sample, item, source=source))
         selected_keys.add(sample_key)
@@ -2327,7 +2315,7 @@ def _selected_samples_from_ai(
         for sample in fallback:
             sample_key = str(sample.get("sample_key") or _sample_key(sample))
             if sample_key and sample_key not in selected_keys:
-                if enough_engaged_samples and _sample_engagement(sample) < int(minimum_engagement or 0):
+                if minimum_engagement is not None and _sample_engagement(sample) < minimum_engagement:
                     continue
                 selected.append(sample)
                 selected_keys.add(sample_key)

@@ -307,10 +307,36 @@ def _top_post_evidence(posts: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "content_type": _resolved_content_type(post),
             "publish_time": _json_safe_time(post.get("publish_time")),
             "engagement_total": _post_engagement(post),
+            "engagement": _public_engagement_metrics(post),
             "url": post.get("url"),
         }
         for post in sorted(posts, key=_post_engagement, reverse=True)[:10]
     ]
+
+
+def _public_engagement_metrics(post: dict[str, Any]) -> dict[str, Any]:
+    engagement = post.get("engagement_json") or post.get("engagement") or {}
+    if not isinstance(engagement, dict):
+        return {}
+    public_metric_keys = (
+        "like_count",
+        "liked_count",
+        "likes",
+        "digg_count",
+        "comment_count",
+        "comments_count",
+        "comments",
+        "collect_count",
+        "collected_count",
+        "favorite_count",
+        "favorites",
+        "share_count",
+        "shared_count",
+        "shares",
+        "play_count",
+        "view_count",
+    )
+    return {key: engagement[key] for key in public_metric_keys if engagement.get(key) not in {None, ""}}
 
 
 def _json_safe_time(value: Any) -> Any:

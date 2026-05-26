@@ -120,7 +120,7 @@ def build_content_strategy_summary(
         filters=filters,
     )
     frameworks = _build_frameworks(posts, opportunities)
-    competitor_samples = _build_competitor_samples(competitor_compositions, opportunities)
+    competitor_samples = _build_competitor_samples(competitor_compositions, opportunities, posts=posts)
     pain_distribution, pain_distribution_source = _build_pain_distribution_enhanced(
         posts,
         suggestions,
@@ -1469,8 +1469,11 @@ def _build_frameworks(posts: list[dict[str, Any]], opportunities: list[dict[str,
 def _build_competitor_samples(
     competitor_compositions: list[dict[str, Any]],
     opportunities: list[dict[str, Any]],
+    *,
+    posts: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    post_engagement_lookup = _build_post_engagement_lookup(posts or [])
     for item in competitor_compositions:
         evidence = item.get("evidence") or {}
         top_posts = evidence.get("top_posts") if isinstance(evidence, dict) else None
@@ -1479,12 +1482,12 @@ def _build_competitor_samples(
         for post in top_posts[:4]:
             if not isinstance(post, dict):
                 continue
-            rows.append(_competitor_sample_row(post, item))
+            rows.append(_competitor_sample_row(post, item, post_engagement_lookup=post_engagement_lookup))
     for opportunity in opportunities:
         if opportunity.get("type") != "competitor":
             continue
         for sample in opportunity.get("samples") or []:
-            rows.append(_competitor_sample_row(sample, opportunity))
+            rows.append(_competitor_sample_row(sample, opportunity, post_engagement_lookup=post_engagement_lookup))
     unique = []
     seen: set[str] = set()
     for row in rows:
@@ -1906,10 +1909,17 @@ def _classify_framework(title: str) -> tuple[str, list[str]]:
     return "问题解决型", ["痛点", "方法", "泛用模板"]
 
 
-def _competitor_sample_row(sample: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
+def _competitor_sample_row(
+    sample: dict[str, Any],
+    source: dict[str, Any],
+    *,
+    post_engagement_lookup: dict[tuple[str, str, str], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     platform = sample.get("platform") or source.get("platform")
-    engagement = sample.get("engagement") or sample.get("engagement_json") or {}
+    engagement = _sample_engagement(sample, source, post_engagement_lookup or {})
     total = _engagement_total(engagement)
+    if total <= 0:
+        total = _sample_engagement_total(sample)
     title = sample.get("title") or sample.get("body") or sample.get("text") or source.get("display_title") or "未命名样本"
     return {
         "platform": PLATFORM_LABELS.get(platform, platform or "未知平台"),
@@ -1918,11 +1928,68 @@ def _competitor_sample_row(sample: dict[str, Any], source: dict[str, Any]) -> di
         "title": str(title),
         "interaction": _format_number(total),
         "likes": _format_number(_first_number(engagement, ["like_count", "liked_count", "likes", "digg_count"])),
-        "comments": _format_number(_first_number(engagement, ["comment_count", "comments"])),
-        "favorites": _format_number(_first_number(engagement, ["collect_count", "favorite_count", "favorites"])),
+        "comments": _format_number(_first_number(engagement, ["comment_count", "comments_count", "comments"])),
+        "favorites": _format_number(_first_number(engagement, ["collect_count", "collected_count", "favorite_count", "favorites"])),
         "url": sample.get("url") or source.get("target_url"),
         "publish_time": sample.get("publish_time"),
     }
+
+
+def _sample_engagement(
+    sample: dict[str, Any],
+    source: dict[str, Any],
+    post_engagement_lookup: dict[tuple[str, str, str], dict[str, Any]],
+) -> dict[str, Any]:
+    engagement = sample.get("engagement") or sample.get("engagement_json")
+    if isinstance(engagement, dict) and engagement:
+        return engagement
+    for key in _sample_lookup_keys(sample, fallback_platform=source.get("platform")):
+        matched = post_engagement_lookup.get(key)
+        if matched:
+            return matched
+    return {}
+
+
+def _sample_engagement_total(sample: dict[str, Any]) -> int:
+    for candidate in (
+        sample.get("engagement_total"),
+        sample.get("total_interaction"),
+        sample.get("delta_total"),
+        (sample.get("delta") or {}).get("total_interaction") if isinstance(sample.get("delta"), dict) else None,
+    ):
+        if candidate in {None, ""}:
+            continue
+        try:
+            return max(0, int(round(float(candidate))))
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _build_post_engagement_lookup(posts: list[dict[str, Any]]) -> dict[tuple[str, str, str], dict[str, Any]]:
+    lookup: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for post in posts:
+        engagement = post.get("engagement_json") or post.get("engagement")
+        if not isinstance(engagement, dict) or not engagement:
+            continue
+        for key in _sample_lookup_keys(post):
+            lookup.setdefault(key, engagement)
+    return lookup
+
+
+def _sample_lookup_keys(item: dict[str, Any], *, fallback_platform: Any = None) -> list[tuple[str, str, str]]:
+    platform = str(item.get("platform") or fallback_platform or "").strip()
+    candidates = [
+        ("post_id", item.get("platform_post_id") or item.get("post_id")),
+        ("url", item.get("url") or item.get("source_url")),
+        ("title", item.get("title")),
+    ]
+    keys: list[tuple[str, str, str]] = []
+    for kind, value in candidates:
+        normalized = " ".join(str(value or "").strip().lower().split())
+        if normalized:
+            keys.append((kind, platform, normalized))
+    return keys
 
 
 def _topic_title_from_opportunity(title: str, opportunity_type: str | None) -> str:
@@ -2075,6 +2142,7 @@ def _engagement_total(engagement: dict[str, Any]) -> int:
         "share_count",
         "shares",
         "collect_count",
+        "collected_count",
         "favorite_count",
         "favorites",
         "play_count",
@@ -2084,6 +2152,8 @@ def _engagement_total(engagement: dict[str, Any]) -> int:
             total += int(float(engagement.get(key) or 0))
         except (TypeError, ValueError):
             continue
+    if total <= 0:
+        total = _sample_engagement_total(engagement)
     return total
 
 

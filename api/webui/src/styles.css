@@ -8422,7 +8422,7 @@ fieldset {
 .ct-top-content-grid {
   grid-template-columns: minmax(0, 1.16fr) minmax(320px, 0.84fr);
   gap: 16px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .ct-input-card,
@@ -8466,11 +8466,24 @@ fieldset {
   height: 100%;
 }
 
-.ct-current-tracker-card,
-.ct-collection-card,
 .ct-keyword-summary-card {
   height: auto;
   align-self: start;
+}
+
+.ct-current-tracker-card,
+.ct-collection-card {
+  align-self: stretch;
+}
+
+.ct-current-tracker-card .ct-input-footer,
+.ct-collection-card .ct-input-footer {
+  margin-top: auto;
+}
+
+.ct-collection-card {
+  display: flex;
+  flex-direction: column;
 }
 
 .ct-keyword-summary-card {

@@ -23,6 +23,7 @@ from database.db_session import close_engines, create_tables, get_session
 from saas_test_utils import authenticate_test_client
 from research.models import ResearchJob, ResearchPost
 from research.content_tracking import (
+    apply_tracker_ai_sample_selection,
     build_tracker_ai_enhancement_prompt,
     build_tracker_analysis_snapshot,
     normalize_tracker_ai_enhancement_output,
@@ -197,7 +198,7 @@ async def _seed_duplicate_tracking_posts() -> None:
         )
 
 
-def test_representative_samples_prioritize_market_validated_content() -> None:
+def test_representative_samples_require_market_validation_threshold() -> None:
     now = datetime.now(timezone.utc)
     tracker = {
         "id": 100,
@@ -231,13 +232,23 @@ def test_representative_samples_prioritize_market_validated_content() -> None:
         },
         {
             "platform": "dy",
-            "platform_post_id": "engaged-2",
+            "platform_post_id": "threshold-20",
             "author_hash": "author-two",
             "title": "single mom k12 education budget",
             "content": "single mom education cost and school choice",
             "url": "https://example.com/engaged-2",
             "publish_time": now - timedelta(hours=5),
-            "engagement_json": {"nickname": "engaged author 2", "like_count": 12, "share_count": 2},
+            "engagement_json": {"nickname": "engaged author 2", "like_count": 18, "share_count": 2},
+        },
+        {
+            "platform": "dy",
+            "platform_post_id": "below-threshold",
+            "author_hash": "author-three",
+            "title": "single mom k12 education daily plan",
+            "content": "single mom education plan and school choice",
+            "url": "https://example.com/below-threshold",
+            "publish_time": now - timedelta(hours=2),
+            "engagement_json": {"nickname": "below threshold author", "like_count": 12, "share_count": 7},
         },
     ]
 
@@ -247,16 +258,93 @@ def test_representative_samples_prioritize_market_validated_content() -> None:
         for item in analysis["samples"]["representative_samples"]
     ]
 
-    assert representative_ids[:2] == ["engaged-1", "engaged-2"]
-    assert representative_ids.index("zero-high-fit") > representative_ids.index("engaged-2")
-    zero_sample = next(
+    assert "engaged-1" in representative_ids
+    assert "threshold-20" in representative_ids
+    assert "zero-high-fit" not in representative_ids
+    assert "below-threshold" not in representative_ids
+    threshold_sample = next(
         item
         for item in analysis["samples"]["representative_samples"]
-        if item["platform_post_id"] == "zero-high-fit"
+        if item["platform_post_id"] == "threshold-20"
     )
-    assert zero_sample["market_validation_status"] == "pending_validation"
-    assert zero_sample["evidence"]["sample_note"] == "low_engagement_filler"
-    assert zero_sample["url"] == "https://example.com/zero"
+    assert threshold_sample["market_validation_status"] == "validated"
+    below_threshold_sample = next(
+        item
+        for item in analysis["samples"]["all_samples"]
+        if item["platform_post_id"] == "below-threshold"
+    )
+    assert below_threshold_sample["market_validation_status"] == "pending_validation"
+
+
+def test_ai_sample_selection_filters_representatives_below_market_threshold() -> None:
+    analysis_bundle = {
+        "samples": {
+            "representative_samples": [
+                {
+                    "sample_key": "xhs:high",
+                    "platform": "xhs",
+                    "platform_post_id": "high",
+                    "engagement_total": 20,
+                    "evidence": {},
+                },
+                {
+                    "sample_key": "xhs:low",
+                    "platform": "xhs",
+                    "platform_post_id": "low",
+                    "engagement_total": 19,
+                    "evidence": {},
+                },
+            ],
+            "hot_samples": [],
+            "early_signal_samples": [],
+            "all_samples": [
+                {
+                    "sample_key": "xhs:high",
+                    "platform": "xhs",
+                    "platform_post_id": "high",
+                    "engagement_total": 20,
+                    "evidence": {},
+                },
+                {
+                    "sample_key": "xhs:low",
+                    "platform": "xhs",
+                    "platform_post_id": "low",
+                    "engagement_total": 19,
+                    "evidence": {},
+                },
+            ],
+        },
+        "meta": {},
+    }
+
+    result = apply_tracker_ai_sample_selection(
+        analysis_bundle,
+        {
+            "representative_samples": [
+                {
+                    "sample_key": "xhs:low",
+                    "relevance_score": 99,
+                    "reason": "High semantic fit but too little engagement.",
+                },
+                {
+                    "sample_key": "xhs:high",
+                    "relevance_score": 90,
+                    "reason": "Meets the market validation threshold.",
+                },
+            ],
+            "hot_samples": [],
+            "early_signal_samples": [],
+            "noise_samples": [],
+        },
+        source="ai_gateway",
+    )
+
+    representative_ids = [
+        item["platform_post_id"]
+        for item in result["samples"]["representative_samples"]
+    ]
+    assert representative_ids == ["high"]
+    assert result["samples"]["representative_samples"][0]["selection_source"] == "ai_gateway"
 
 
 def test_keyword_groups_do_not_classify_tracker_terms_as_noise_or_excludes() -> None:
