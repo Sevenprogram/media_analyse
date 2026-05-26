@@ -9928,36 +9928,6 @@ fieldset {
   -webkit-line-clamp: 3;
 }
 
-.action-item-inner-box .action-btn-row {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.action-item-card-optimized .action-btn {
-  font-size: 13px;
-  font-weight: 600;
-  padding: 4px 12px;
-  min-height: 26px;
-  border-radius: 6px;
-  background: #ffffff;
-  border: 1px solid rgba(4, 120, 111, 0.25);
-  color: var(--accent);
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  cursor: pointer;
-}
-
-.action-item-card-optimized .action-btn:hover {
-  background: var(--accent-soft);
-  border-color: var(--accent);
-  color: var(--accent);
-  transform: translateY(-1px);
-  box-shadow: 0 2px 4px rgba(4, 120, 111, 0.05);
-}
-
-.action-item-card-optimized .action-btn:active {
-  transform: translateY(0.5px) scale(0.98);
-}
-
 .checklist-bottom-link, .opp-bottom-link, .right-card-bottom-link {
   display: flex;
   justify-content: center;
@@ -10429,33 +10399,6 @@ fieldset {
 }
 
 .opp-btn-secondary:active {
-  transform: translateY(0.5px) scale(0.98);
-}
-
-.opp-btn-primary {
-  font-size: 13px;
-  font-weight: 600;
-  padding: 4px 12px;
-  min-height: 28px;
-  border: 1px solid var(--accent);
-  background: var(--accent);
-  color: #ffffff;
-  border-radius: 6px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.opp-btn-primary:hover {
-  background: var(--accent-strong);
-  border-color: var(--accent-strong);
-  transform: translateY(-1px);
-  box-shadow: 0 4px 6px rgba(4, 120, 111, 0.2);
-}
-
-.opp-btn-primary:active {
   transform: translateY(0.5px) scale(0.98);
 }
 

@@ -72,7 +72,6 @@ type TodayIntelligencePageProps = {
   aiInsights: AiInsightSummary;
   aiTopicIdeas: AiTopicIdeasSummary;
   todayIntelligence: TodayIntelligenceSummary | null;
-  jobs: ResearchJob[];
   onRefresh: () => Promise<void>;
   onRegenerate: () => Promise<void>;
   onExecute: (opportunity: DashboardOpportunity) => void;
@@ -245,7 +244,6 @@ const mockActions = [
     dotColor: "green",
     tagClass: "p-publish",
     deadline: "今天",
-    btnText: "查看话题",
     actionKind: "create_post"
   },
   {
@@ -510,7 +508,6 @@ export function TodayIntelligencePage({
   aiInsights,
   aiTopicIdeas,
   todayIntelligence,
-  jobs,
   onRefresh,
   onRegenerate,
   onExecute,
@@ -522,9 +519,6 @@ export function TodayIntelligencePage({
   const [loading, setLoading] = React.useState<boolean>(false);
   const [regenerating, setRegenerating] = React.useState<boolean>(false);
   const [actionDrawerOpen, setActionDrawerOpen] = React.useState<boolean>(false);
-
-  const failedJobs = jobs.filter((job) => job.status === "failed").length;
-  const runningJobs = jobs.filter((job) => job.status === "running").length;
 
   // Manual Trigger Refresh with Visual Rotation
   const triggerRefresh = async () => {
@@ -593,11 +587,6 @@ export function TodayIntelligencePage({
 
   const opportunityExplanations = React.useMemo(
     () => explanationMap((todayIntelligence?.opportunity_explanations || []).map(recordValue), "opportunity_id"),
-    [todayIntelligence],
-  );
-
-  const riskExplanations = React.useMemo(
-    () => explanationMap((todayIntelligence?.risk_explanations || []).map(recordValue), "risk_id"),
     [todayIntelligence],
   );
 
@@ -686,54 +675,6 @@ export function TodayIntelligencePage({
     }
   }, [mergedOpportunities, effectiveOpportunityTab, sortBy]);
 
-  // Blended Risk Tasks
-  const activeRisks = React.useMemo(() => {
-    const list: any[] = [];
-    if (dashboard.decision.risk_notes?.length) {
-      dashboard.decision.risk_notes.forEach((note, index) => {
-        const id = `decision-risk-${index}`;
-        const aiRisk = riskExplanations.get(id);
-        list.push({
-          id,
-          platform: "sys",
-          title: stringValue(aiRisk?.recommended_action, "系统研判警示"),
-          statusLabel: "影响数据",
-          isRed: true,
-          desc: stringValue(aiRisk?.business_impact, note),
-          time: "刚刚",
-        });
-      });
-    }
-    (dashboard.diagnostics || []).forEach((item) => {
-      const id = `diagnostic-${item.code}`;
-      const aiRisk = riskExplanations.get(id);
-      list.push({
-        id,
-        platform: "sys",
-        title: stringValue(aiRisk?.recommended_action, item.title),
-        statusLabel: item.code?.includes("error") ? "影响数据" : "待确认",
-        isRed: item.code?.includes("error") || item.code?.includes("failed"),
-        desc: stringValue(aiRisk?.business_impact, item.body),
-        time: "刚刚",
-      });
-    });
-    if (failedJobs > 0) {
-      const id = "monitoring-failed-jobs";
-      const aiRisk = riskExplanations.get(id);
-      list.push({
-        id,
-        platform: "sys",
-        title: stringValue(aiRisk?.recommended_action, "采集任务失败"),
-        statusLabel: "影响数据",
-        isRed: true,
-        desc: stringValue(aiRisk?.business_impact, `${failedJobs} 个采集任务失败，需要先查看任务日志。`),
-        time: "刚刚",
-      });
-    }
-
-    return list;
-  }, [dashboard, failedJobs, riskExplanations]);
-
   // Donut Quality Chart Stats
   const donutStats = React.useMemo(() => {
     const valid = Math.max(0, number(databaseStats.research_posts));
@@ -778,24 +719,6 @@ export function TodayIntelligencePage({
       };
     });
   }, [databaseStats]);
-
-  const handleActionClick = (action: any) => {
-    if (action.rawOpportunity) {
-      onExecute(action.rawOpportunity);
-    } else {
-      onExecute({
-        id: action.id,
-        name: action.title,
-        type: "content",
-        platform: "xhs",
-        score: 80,
-        reason: action.reason,
-        evidence_summary: [action.reason],
-        payload: { action_kind: action.actionKind },
-        confidence: "high"
-      } as any);
-    }
-  };
 
   const renderActionCard = (action: any, mode: "preview" | "drawer" = "preview") => {
     const deadlineClass =
@@ -846,11 +769,6 @@ export function TodayIntelligencePage({
               ) : null}
             </div>
           )}
-          <div className="action-btn-row">
-            <button className="action-btn" type="button" onClick={() => handleActionClick(action)}>
-              {action.btnText}
-            </button>
-          </div>
         </div>
       </div>
     );
@@ -884,8 +802,6 @@ export function TodayIntelligencePage({
     );
   };
 
-  const provider = todayIntelligence?.ai_status?.provider || todayIntelligence?.provider;
-  const providerText = provider ? [provider.name, provider.model].filter(Boolean).join(" / ") : "AI Gateway";
   const generatedAt = todayIntelligence?.ai_status?.generated_at || todayIntelligence?.generated_at || dashboard.monitoring.last_updated_at;
   const summaryText = todayIntelligence?.executive_summary || dashboard.decision.headline;
   const sampleQualityExplanation = recordValue(todayIntelligence?.sample_quality_explanation);
@@ -919,25 +835,6 @@ export function TodayIntelligencePage({
             <Bot size={13} className={regenerating ? "spin" : ""} />
             <span>重新生成</span>
           </button>
-        </div>
-      </div>
-
-      <div className={`gi-ai-summary-strip ${aiStatusTone(todayIntelligence)}`}>
-        <div className="gi-ai-summary-main">
-          <Bot size={17} />
-          <div>
-            <strong>{summaryText}</strong>
-            <p>
-              {providerText}
-              {todayIntelligence?.error ? ` · ${todayIntelligence.error}` : ""}
-              {runningJobs > 0 ? ` · ${runningJobs} 个任务运行中` : ""}
-              {failedJobs > 0 ? ` · ${failedJobs} 个任务失败` : ""}
-            </p>
-          </div>
-        </div>
-        <div className="gi-ai-summary-meta">
-          <span>基于真实采集数据</span>
-          <span>{dashboard.decision.sample_summary}</span>
         </div>
       </div>
 
@@ -1120,9 +1017,6 @@ export function TodayIntelligencePage({
                     <button className="opp-btn-secondary" type="button" onClick={() => setSelected(opp)}>
                       详情
                     </button>
-                    <button className="opp-btn-primary" type="button" onClick={() => handleExecuteOpportunity(opp)}>
-                      {opp.type === "creator" ? "加入邀约" : opp.type === "topic" ? "查看话题" : "加入排期"}
-                    </button>
                   </div>
                 </div>
               </div>
@@ -1139,52 +1033,9 @@ export function TodayIntelligencePage({
           </a>
         </div>
 
-        {/* Right Column: Risks, Quality & Platform evidence Grid */}
+        {/* Right Column: Quality & Platform evidence Grid */}
         <div className="right-panel-stack">
-          
-          {/* Card 1: Risk Tasks */}
-          <div className="right-card-optimized">
-            <div className="card-header-opt">
-              <h2>
-                <AlertTriangle size={17} style={{ color: "var(--danger)" }} />
-                <span>采集与任务风险</span>
-              </h2>
-              <span className="badge-danger-pill">异常任务 {activeRisks.length}</span>
-            </div>
-
-            <div className="risk-list-optimized">
-              {activeRisks.length ? activeRisks.map((risk) => (
-                <div className="risk-item-row" key={risk.id}>
-                  <div className={`risk-icon-holder ${risk.isRed ? "red" : "orange"}`}>
-                    <AlertTriangle size={14} />
-                  </div>
-                  <div className="risk-item-right-block">
-                    <div className="risk-item-header">
-                      <div className="risk-platform-title" style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                        <strong>{risk.title}</strong>
-                        <span className={`risk-status-pill ${risk.isRed ? "red" : "orange"}`}>
-                          {risk.statusLabel}
-                        </span>
-                      </div>
-                      <span className="risk-timestamp">{risk.time}</span>
-                    </div>
-                    <p style={{ margin: 0, fontSize: "12px", color: "var(--muted)", lineHeight: 1.4 }}>{risk.desc}</p>
-                  </div>
-                </div>
-              )) : (
-                <div className="gi-empty-panel compact">
-                  <strong>暂无影响判断的风险</strong>
-                  <p>规则和 AI 未发现需要优先处理的采集或样本风险。</p>
-                </div>
-              )}
-            </div>
-
-            <a href="#all-risks" className="right-card-bottom-link" onClick={(e) => { e.preventDefault(); alert("暂无其他系统与任务异常，当前运行状态平稳。"); }}>
-              查看全部风险 ({activeRisks.length}) &gt;
-            </a>
-          </div>
-
-          {/* Card 2: Sample Quality Overview with Donut Chart */}
+          {/* Sample Quality Overview with Donut Chart */}
           <div className="right-card-optimized">
             <div className="card-header-opt">
               <h2>

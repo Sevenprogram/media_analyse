@@ -671,7 +671,6 @@ function App({ session, onLogout }: { session: AuthSession; onLogout: () => void
                 aiInsights={aiInsights}
                 aiTopicIdeas={aiTopicIdeas}
                 todayIntelligence={todayIntelligence}
-                jobs={jobs}
                 onRefresh={refreshAll}
                 onRegenerate={regenerateTodayIntelligence}
                 onExecute={requestOpportunityExecution}
