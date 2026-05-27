@@ -25,6 +25,7 @@ from research.models import (
     RawRecord,
     ResearchAuthor,
     ResearchComment,
+    ResearchEntityTag,
     ResearchGrowthProject,
     ResearchGrowthProjectCollectionPlan,
     ResearchGrowthProjectKeyword,
@@ -949,6 +950,141 @@ async def test_research_upserts_claim_legacy_tenant_rows_before_insert(
     assert post_rows[0].title == "updated title"
     assert comment_rows[0].org_id == org_id
     assert comment_rows[0].content == "updated comment"
+
+
+@pytest.mark.asyncio
+async def test_entity_tag_upsert_is_idempotent_for_concurrent_duplicates(
+    growth_project_client: AsyncClient,
+) -> None:
+    created = await _create_project(growth_project_client)
+    org_id = int(created["job"]["org_id"])
+    repository = ResearchRepository(org_id=org_id)
+    vertical = await repository.create_vertical(
+        {"code": "entity_tag_concurrency", "name": "Entity Tag Concurrency"}
+    )
+    group = await repository.create_tag_group(
+        {"vertical_id": int(vertical["id"]), "name": "Audience"}
+    )
+    tag = await repository.create_tag_definition(
+        {
+            "vertical_id": int(vertical["id"]),
+            "group_id": int(group["id"]),
+            "tag_name": "K12教育",
+            "keywords": ["K12"],
+            "synonyms": [],
+            "negative_keywords": [],
+            "weight": 1,
+            "enabled": True,
+        }
+    )
+    payload = {
+        "entity_type": "creator",
+        "entity_id": "creator_xhs_concurrent",
+        "platform": "xhs",
+        "vertical_id": int(vertical["id"]),
+        "tag_id": int(tag["id"]),
+        "confidence": 0.7,
+        "source": "rule",
+        "evidence_json": {"matches": [{"field": "title", "matched_text": "K12"}]},
+        "analysis_version": "v1",
+    }
+
+    results = await asyncio.gather(
+        *(repository.upsert_entity_tag(dict(payload)) for _ in range(8))
+    )
+
+    assert {int(result["id"]) for result in results}
+    assert len({int(result["id"]) for result in results}) == 1
+    async with get_session() as session:
+        rows = (
+            await session.execute(
+                select(ResearchEntityTag).where(
+                    ResearchEntityTag.org_id == org_id,
+                    ResearchEntityTag.entity_type == "creator",
+                    ResearchEntityTag.entity_id == "creator_xhs_concurrent",
+                    ResearchEntityTag.platform == "xhs",
+                    ResearchEntityTag.vertical_id == int(vertical["id"]),
+                    ResearchEntityTag.tag_id == int(tag["id"]),
+                    ResearchEntityTag.source == "rule",
+                    ResearchEntityTag.analysis_version == "v1",
+                )
+            )
+        ).scalars().all()
+
+    assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_bulk_entity_tag_upsert_deduplicates_same_batch(
+    growth_project_client: AsyncClient,
+) -> None:
+    created = await _create_project(growth_project_client)
+    org_id = int(created["job"]["org_id"])
+    repository = ResearchRepository(org_id=org_id)
+    vertical = await repository.create_vertical(
+        {"code": "entity_tag_batch", "name": "Entity Tag Batch"}
+    )
+    group = await repository.create_tag_group(
+        {"vertical_id": int(vertical["id"]), "name": "Audience"}
+    )
+    tag = await repository.create_tag_definition(
+        {
+            "vertical_id": int(vertical["id"]),
+            "group_id": int(group["id"]),
+            "tag_name": "升学规划",
+            "keywords": ["升学"],
+            "synonyms": [],
+            "negative_keywords": [],
+            "weight": 1,
+            "enabled": True,
+        }
+    )
+    base_payload = {
+        "entity_type": "creator",
+        "entity_id": "creator_dy_batch",
+        "platform": "dy",
+        "vertical_id": int(vertical["id"]),
+        "tag_id": int(tag["id"]),
+        "source": "rule",
+        "analysis_version": "v1",
+    }
+
+    results = await repository.bulk_upsert_entity_tags(
+        [
+            {
+                **base_payload,
+                "confidence": 0.4,
+                "evidence_json": {"matches": [{"matched_text": "early"}]},
+            },
+            {
+                **base_payload,
+                "confidence": 0.9,
+                "evidence_json": {"matches": [{"matched_text": "strong"}]},
+            },
+        ]
+    )
+
+    assert len(results) == 1
+    assert results[0]["confidence"] == 0.9
+    async with get_session() as session:
+        rows = (
+            await session.execute(
+                select(ResearchEntityTag).where(
+                    ResearchEntityTag.org_id == org_id,
+                    ResearchEntityTag.entity_type == "creator",
+                    ResearchEntityTag.entity_id == "creator_dy_batch",
+                    ResearchEntityTag.platform == "dy",
+                    ResearchEntityTag.vertical_id == int(vertical["id"]),
+                    ResearchEntityTag.tag_id == int(tag["id"]),
+                    ResearchEntityTag.source == "rule",
+                    ResearchEntityTag.analysis_version == "v1",
+                )
+            )
+        ).scalars().all()
+
+    assert len(rows) == 1
+    assert rows[0].confidence == 0.9
+    assert rows[0].evidence_json == {"matches": [{"matched_text": "strong"}]}
 
 
 @pytest.mark.asyncio

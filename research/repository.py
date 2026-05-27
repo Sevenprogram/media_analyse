@@ -1,7 +1,7 @@
 import hashlib
 import json
 from datetime import date, datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from sqlalchemy import bindparam, delete, func, or_, select, text, update
@@ -215,13 +215,20 @@ class ResearchRepository:
         model: Any,
         payload: dict[str, Any],
         key_fields: tuple[str, ...],
+        *,
+        claim_legacy: bool = True,
     ) -> Any | None:
         key_conditions = self._unique_key_conditions(model, payload, key_fields)
         result = await session.execute(
             self._apply_tenant(select(model), model).where(*key_conditions)
         )
         item = result.scalar_one_or_none()
-        if item is not None or self.org_id is None or not hasattr(model, "org_id"):
+        if (
+            item is not None
+            or not claim_legacy
+            or self.org_id is None
+            or not hasattr(model, "org_id")
+        ):
             return item
 
         legacy_result = await session.execute(
@@ -231,8 +238,16 @@ class ResearchRepository:
         self._claim_legacy_tenant_item(legacy_item)
         return legacy_item
 
-    def _apply_payload_to_model(self, item: Any, payload: dict[str, Any]) -> None:
+    def _apply_payload_to_model(
+        self,
+        item: Any,
+        payload: dict[str, Any],
+        *,
+        skip_empty: bool = False,
+    ) -> None:
         for key, value in payload.items():
+            if skip_empty and value in (None, "", [], {}):
+                continue
             if hasattr(item, key):
                 setattr(item, key, value)
 
@@ -243,6 +258,9 @@ class ResearchRepository:
         *,
         key_fields: tuple[str, ...],
         return_fields: tuple[str, ...],
+        return_mapper: Callable[[Any], dict[str, Any]] | None = None,
+        claim_legacy: bool = True,
+        skip_empty_updates: bool = False,
     ) -> dict[str, Any]:
         async with get_session() as session:
             item = await self._select_unique_for_upsert(
@@ -250,12 +268,17 @@ class ResearchRepository:
                 model,
                 payload,
                 key_fields,
+                claim_legacy=claim_legacy,
             )
             if item is None:
                 item = model(**self._tenant_payload(model, payload))
                 session.add(item)
             else:
-                self._apply_payload_to_model(item, payload)
+                self._apply_payload_to_model(
+                    item,
+                    payload,
+                    skip_empty=skip_empty_updates,
+                )
 
             try:
                 await session.flush()
@@ -266,13 +289,20 @@ class ResearchRepository:
                     model,
                     payload,
                     key_fields,
+                    claim_legacy=claim_legacy,
                 )
                 if item is None:
                     raise
-                self._apply_payload_to_model(item, payload)
+                self._apply_payload_to_model(
+                    item,
+                    payload,
+                    skip_empty=skip_empty_updates,
+                )
                 await session.flush()
 
             await session.refresh(item)
+            if return_mapper is not None:
+                return return_mapper(item)
             return {field: getattr(item, field) for field in return_fields}
 
     async def create_job(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1561,31 +1591,59 @@ class ResearchRepository:
             await session.refresh(item)
             return self._tag_definition_to_dict(item)
 
+    def _normalize_entity_tag_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **payload,
+            "analysis_version": str(payload.get("analysis_version") or "v1"),
+            "evidence_json": payload.get("evidence_json") or {},
+        }
+
+    def _entity_tag_upsert_key(self, payload: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            self.org_id if self.org_id is not None else payload.get("org_id"),
+            payload["entity_type"],
+            payload["entity_id"],
+            payload["platform"],
+            payload["vertical_id"],
+            payload["tag_id"],
+            payload["source"],
+            payload["analysis_version"],
+        )
+
+    def _entity_tag_confidence(self, payload: dict[str, Any]) -> float:
+        try:
+            return float(payload.get("confidence") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
     async def upsert_entity_tag(self, payload: dict[str, Any]) -> dict[str, Any]:
-        async with get_session() as session:
-            stmt = self._apply_tenant(select(ResearchEntityTag), ResearchEntityTag).where(
-                ResearchEntityTag.entity_type == payload["entity_type"],
-                ResearchEntityTag.entity_id == payload["entity_id"],
-                ResearchEntityTag.platform == payload["platform"],
-                ResearchEntityTag.vertical_id == payload["vertical_id"],
-                ResearchEntityTag.tag_id == payload["tag_id"],
-                ResearchEntityTag.source == payload["source"],
-                ResearchEntityTag.analysis_version == payload.get("analysis_version", "v1"),
-            )
-            result = await session.execute(stmt)
-            item = result.scalar_one_or_none()
-            if item is None:
-                item = ResearchEntityTag(**self._tenant_payload(ResearchEntityTag, payload))
-                session.add(item)
-            else:
-                item.confidence = payload["confidence"]
-                item.evidence_json = payload.get("evidence_json") or {}
-            await session.flush()
-            await session.refresh(item)
-            return self._entity_tag_to_dict(item)
+        normalized = self._normalize_entity_tag_payload(payload)
+        return await self._upsert_unique_model(
+            ResearchEntityTag,
+            normalized,
+            key_fields=(
+                "entity_type",
+                "entity_id",
+                "platform",
+                "vertical_id",
+                "tag_id",
+                "source",
+                "analysis_version",
+            ),
+            return_fields=("id",),
+            return_mapper=self._entity_tag_to_dict,
+            claim_legacy=False,
+        )
 
     async def bulk_upsert_entity_tags(self, payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [await self.upsert_entity_tag(payload) for payload in payloads]
+        deduped: dict[tuple[Any, ...], dict[str, Any]] = {}
+        for payload in payloads:
+            normalized = self._normalize_entity_tag_payload(payload)
+            key = self._entity_tag_upsert_key(normalized)
+            existing = deduped.get(key)
+            if existing is None or self._entity_tag_confidence(normalized) >= self._entity_tag_confidence(existing):
+                deduped[key] = normalized
+        return [await self.upsert_entity_tag(payload) for payload in deduped.values()]
 
     async def list_entity_tags(
         self,
@@ -1637,25 +1695,15 @@ class ResearchRepository:
             return [self._entity_tag_to_dict(item) for item in result.scalars().all()]
 
     async def upsert_creator_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
-        async with get_session() as session:
-            stmt = self._apply_tenant(select(ResearchCreatorProfile), ResearchCreatorProfile).where(
-                ResearchCreatorProfile.platform == payload["platform"],
-                ResearchCreatorProfile.creator_id == payload["creator_id"],
-            )
-            result = await session.execute(stmt)
-            item = result.scalar_one_or_none()
-            if item is None:
-                item = ResearchCreatorProfile(
-                    **self._tenant_payload(ResearchCreatorProfile, payload)
-                )
-                session.add(item)
-            else:
-                for key, value in payload.items():
-                    if hasattr(item, key) and value not in (None, "", [], {}):
-                        setattr(item, key, value)
-            await session.flush()
-            await session.refresh(item)
-            return self._creator_profile_to_dict(item)
+        return await self._upsert_unique_model(
+            ResearchCreatorProfile,
+            payload,
+            key_fields=("platform", "creator_id"),
+            return_fields=("id",),
+            return_mapper=self._creator_profile_to_dict,
+            claim_legacy=False,
+            skip_empty_updates=True,
+        )
 
     async def list_creator_profiles(
         self, *, platforms: list[str] | None = None, limit: int | None = None
@@ -1682,29 +1730,14 @@ class ResearchRepository:
             return self._creator_profile_to_dict(item) if item else None
 
     async def upsert_creator_daily_snapshot(self, payload: dict[str, Any]) -> dict[str, Any]:
-        async with get_session() as session:
-            stmt = self._apply_tenant(
-                select(ResearchCreatorDailySnapshot),
-                ResearchCreatorDailySnapshot,
-            ).where(
-                ResearchCreatorDailySnapshot.platform == payload["platform"],
-                ResearchCreatorDailySnapshot.creator_id == payload["creator_id"],
-                ResearchCreatorDailySnapshot.snapshot_date == payload["snapshot_date"],
-            )
-            result = await session.execute(stmt)
-            item = result.scalar_one_or_none()
-            if item is None:
-                item = ResearchCreatorDailySnapshot(
-                    **self._tenant_payload(ResearchCreatorDailySnapshot, payload)
-                )
-                session.add(item)
-            else:
-                for key, value in payload.items():
-                    if hasattr(item, key):
-                        setattr(item, key, value)
-            await session.flush()
-            await session.refresh(item)
-            return self._creator_daily_snapshot_to_dict(item)
+        return await self._upsert_unique_model(
+            ResearchCreatorDailySnapshot,
+            payload,
+            key_fields=("platform", "creator_id", "snapshot_date"),
+            return_fields=("id",),
+            return_mapper=self._creator_daily_snapshot_to_dict,
+            claim_legacy=False,
+        )
 
     async def list_creator_daily_snapshots(
         self, *, platform: str | None = None, creator_id: str | None = None
@@ -1725,29 +1758,14 @@ class ResearchRepository:
 
     async def upsert_creator_candidate(self, payload: dict[str, Any]) -> dict[str, Any]:
         payload.setdefault("pool_name", "default")
-        async with get_session() as session:
-            stmt = self._apply_tenant(
-                select(ResearchCreatorCandidate),
-                ResearchCreatorCandidate,
-            ).where(
-                ResearchCreatorCandidate.platform == payload["platform"],
-                ResearchCreatorCandidate.creator_id == payload["creator_id"],
-                ResearchCreatorCandidate.pool_name == payload["pool_name"],
-            )
-            result = await session.execute(stmt)
-            item = result.scalar_one_or_none()
-            if item is None:
-                item = ResearchCreatorCandidate(
-                    **self._tenant_payload(ResearchCreatorCandidate, payload)
-                )
-                session.add(item)
-            else:
-                for key, value in payload.items():
-                    if hasattr(item, key):
-                        setattr(item, key, value)
-            await session.flush()
-            await session.refresh(item)
-            return self._creator_candidate_to_dict(item)
+        return await self._upsert_unique_model(
+            ResearchCreatorCandidate,
+            payload,
+            key_fields=("platform", "creator_id", "pool_name"),
+            return_fields=("id",),
+            return_mapper=self._creator_candidate_to_dict,
+            claim_legacy=False,
+        )
 
     async def list_creator_candidates(
         self,
@@ -2781,24 +2799,14 @@ class ResearchRepository:
             return [self._monitor_pool_creator_to_dict(item) for item in result.scalars().all()]
 
     async def upsert_content_sample(self, payload: dict[str, Any]) -> dict[str, Any]:
-        async with get_session() as session:
-            stmt = self._apply_tenant(select(ResearchContentSample), ResearchContentSample).where(
-                ResearchContentSample.platform == payload["platform"],
-                ResearchContentSample.content_id == payload["content_id"],
-            )
-            item = (await session.execute(stmt)).scalar_one_or_none()
-            if item is None:
-                item = ResearchContentSample(
-                    **self._tenant_payload(ResearchContentSample, payload)
-                )
-                session.add(item)
-            else:
-                for key, value in payload.items():
-                    if hasattr(item, key):
-                        setattr(item, key, value)
-            await session.flush()
-            await session.refresh(item)
-            return self._content_sample_to_dict(item)
+        return await self._upsert_unique_model(
+            ResearchContentSample,
+            payload,
+            key_fields=("platform", "content_id"),
+            return_fields=("id",),
+            return_mapper=self._content_sample_to_dict,
+            claim_legacy=False,
+        )
 
     async def create_extracted_content_keywords(
         self, payloads: list[dict[str, Any]]
@@ -3586,46 +3594,36 @@ class ResearchRepository:
             return self._competitor_account_to_dict(item) if item else None
 
     async def upsert_account_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
-        async with get_session() as session:
-            stmt = self._apply_tenant(select(ResearchAccountProfile), ResearchAccountProfile).where(
-                ResearchAccountProfile.platform == payload["platform"],
-                ResearchAccountProfile.account_id == payload["account_id"],
-            )
-            item = (await session.execute(stmt)).scalar_one_or_none()
-            item_payload = {
-                "platform": payload["platform"],
-                "account_id": payload["account_id"],
-                "sec_account_id": payload.get("sec_account_id"),
-                "display_name": payload.get("display_name"),
-                "avatar_url": payload.get("avatar_url"),
-                "profile_url": payload.get("profile_url"),
-                "bio": payload.get("bio"),
-                "verified": bool(payload.get("verified", False)),
-                "region": payload.get("region"),
-                "follower_count": payload.get("follower_count"),
-                "following_count": payload.get("following_count"),
-                "post_count": payload.get("post_count"),
-                "avg_engagement_rate": payload.get("avg_engagement_rate"),
-                "hot_post_rate": payload.get("hot_post_rate"),
-                "recent_post_count_30d": payload.get("recent_post_count_30d"),
-                "latest_post_time": payload.get("latest_post_time"),
-                "contact_clues_json": payload.get("contact_clues") or [],
-                "tag_summary_json": payload.get("tag_summary") or {},
-                "last_crawled_at": payload.get("last_crawled_at"),
-            }
-            if item is None:
-                item = ResearchAccountProfile(
-                    **item_payload,
-                    **self._tenant_kwargs(ResearchAccountProfile),
-                )
-                session.add(item)
-            else:
-                for key, value in item_payload.items():
-                    if value not in (None, "", [], {}):
-                        setattr(item, key, value)
-            await session.flush()
-            await session.refresh(item)
-            return self._account_profile_to_dict(item)
+        item_payload = {
+            "platform": payload["platform"],
+            "account_id": payload["account_id"],
+            "sec_account_id": payload.get("sec_account_id"),
+            "display_name": payload.get("display_name"),
+            "avatar_url": payload.get("avatar_url"),
+            "profile_url": payload.get("profile_url"),
+            "bio": payload.get("bio"),
+            "verified": bool(payload.get("verified", False)),
+            "region": payload.get("region"),
+            "follower_count": payload.get("follower_count"),
+            "following_count": payload.get("following_count"),
+            "post_count": payload.get("post_count"),
+            "avg_engagement_rate": payload.get("avg_engagement_rate"),
+            "hot_post_rate": payload.get("hot_post_rate"),
+            "recent_post_count_30d": payload.get("recent_post_count_30d"),
+            "latest_post_time": payload.get("latest_post_time"),
+            "contact_clues_json": payload.get("contact_clues") or [],
+            "tag_summary_json": payload.get("tag_summary") or {},
+            "last_crawled_at": payload.get("last_crawled_at"),
+        }
+        return await self._upsert_unique_model(
+            ResearchAccountProfile,
+            item_payload,
+            key_fields=("platform", "account_id"),
+            return_fields=("id",),
+            return_mapper=self._account_profile_to_dict,
+            claim_legacy=False,
+            skip_empty_updates=True,
+        )
 
     async def get_account_profile(self, profile_id: int) -> dict[str, Any] | None:
         async with get_session() as session:
