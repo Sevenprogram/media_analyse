@@ -103,6 +103,46 @@ TENANT_SCOPED_TABLES = {
     "research_auth_profiles",
 }
 
+POSTGRES_TENANT_UNIQUE_CONSTRAINTS = {
+    "uq_research_account_profile": (
+        "research_account_profiles",
+        ("org_id", "platform", "account_id"),
+    ),
+    "uq_research_competitor_account": (
+        "research_competitor_accounts",
+        ("org_id", "platform", "creator_id"),
+    ),
+    "uq_research_content_sample": (
+        "research_content_samples",
+        ("org_id", "platform", "content_id"),
+    ),
+    "uq_research_creator_candidate": (
+        "research_creator_candidates",
+        ("org_id", "platform", "creator_id", "pool_name"),
+    ),
+    "uq_research_creator_daily_snapshot": (
+        "research_creator_daily_snapshots",
+        ("org_id", "platform", "creator_id", "snapshot_date"),
+    ),
+    "uq_research_creator_profile": (
+        "research_creator_profiles",
+        ("org_id", "platform", "creator_id"),
+    ),
+    "uq_research_entity_tag": (
+        "research_entity_tags",
+        (
+            "org_id",
+            "entity_type",
+            "entity_id",
+            "platform",
+            "vertical_id",
+            "tag_id",
+            "source",
+            "analysis_version",
+        ),
+    ),
+}
+
 
 async def ensure_research_schema(conn) -> None:
     dialect = conn.dialect.name
@@ -197,6 +237,8 @@ async def ensure_research_schema(conn) -> None:
             ),
             dialect=dialect,
         )
+    if dialect == "postgresql":
+        await _ensure_postgres_tenant_unique_constraints(conn)
 
 
 async def _ensure_columns(conn, *, table_name, required, statement_builder, dialect) -> None:
@@ -248,6 +290,62 @@ async def _get_table_columns(conn, table_name: str) -> set[str]:
         )
         return {str(row[0]) for row in result.fetchall()}
     return set()
+
+
+async def _ensure_postgres_tenant_unique_constraints(conn) -> None:
+    for constraint_name, (table_name, expected_columns) in POSTGRES_TENANT_UNIQUE_CONSTRAINTS.items():
+        existing_columns = await _get_postgres_unique_constraint_columns(
+            conn,
+            table_name=table_name,
+            constraint_name=constraint_name,
+        )
+        if existing_columns == expected_columns:
+            continue
+
+        quoted_table = _quote_postgres_identifier(table_name)
+        quoted_constraint = _quote_postgres_identifier(constraint_name)
+        quoted_columns = ", ".join(_quote_postgres_identifier(column) for column in expected_columns)
+        await conn.execute(
+            text(f"ALTER TABLE {quoted_table} DROP CONSTRAINT IF EXISTS {quoted_constraint}")
+        )
+        await conn.execute(
+            text(
+                f"ALTER TABLE {quoted_table} "
+                f"ADD CONSTRAINT {quoted_constraint} UNIQUE ({quoted_columns})"
+            )
+        )
+
+
+async def _get_postgres_unique_constraint_columns(
+    conn,
+    *,
+    table_name: str,
+    constraint_name: str,
+) -> tuple[str, ...] | None:
+    result = await conn.execute(
+        text(
+            """
+            SELECT array_agg(att.attname ORDER BY cols.ordinality) AS columns
+            FROM pg_constraint con
+            JOIN pg_class rel ON rel.oid = con.conrelid
+            JOIN unnest(con.conkey) WITH ORDINALITY AS cols(attnum, ordinality) ON true
+            JOIN pg_attribute att ON att.attrelid = rel.oid AND att.attnum = cols.attnum
+            WHERE rel.relname = :table_name
+              AND con.conname = :constraint_name
+              AND con.contype = 'u'
+            GROUP BY con.oid
+            """
+        ),
+        {"table_name": table_name, "constraint_name": constraint_name},
+    )
+    row = result.first()
+    if row is None:
+        return None
+    return tuple(str(column) for column in (row._mapping["columns"] or []))
+
+
+def _quote_postgres_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
 
 
 def _alter_research_jobs_statement(dialect: str, column: str) -> str | None:
