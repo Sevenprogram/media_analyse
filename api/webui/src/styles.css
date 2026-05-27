@@ -8495,6 +8495,296 @@ fieldset {
   gap: 12px 16px;
 }
 
+.ct-tracker-identity-panel {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+  min-height: 40px;
+  padding: 9px 12px;
+  border: 1px solid #e7edf3;
+  border-radius: 12px;
+  background: #fbfdff;
+}
+
+.ct-tracker-identity-panel span {
+  color: #4b627b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ct-tracker-identity-panel strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #172b42;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ct-tracker-keyword-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #d7ece9;
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(237, 249, 247, 0.9), rgba(255, 255, 255, 0.94)),
+    #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+.ct-tracker-keyword-panel-head,
+.ct-keyword-insight-tabs,
+.ct-tracker-keyword-row,
+.ct-keyword-insight-row,
+.ct-tracker-keyword-label,
+.ct-keyword-insight-label,
+.ct-keyword-chip-rail,
+.ct-keyword-insight-tab,
+.ct-keyword-filter-indicator {
+  display: flex;
+  align-items: center;
+}
+
+.ct-tracker-keyword-panel-head {
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(187, 216, 214, 0.74);
+}
+
+.ct-tracker-keyword-panel-head div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ct-tracker-keyword-panel-head strong {
+  color: #12263f;
+  font-size: 13px;
+}
+
+.ct-tracker-keyword-panel-head span {
+  color: #74869b;
+  font-size: 12px;
+}
+
+.ct-tracker-keyword-panel-head em {
+  flex: 0 0 auto;
+  min-height: 24px;
+  padding: 3px 9px;
+  border: 1px solid #bfe2df;
+  border-radius: 999px;
+  background: #f3fbfa;
+  color: #0f766e;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.ct-tracker-keyword-row {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.ct-tracker-keyword-label,
+.ct-keyword-insight-label {
+  min-width: 0;
+  color: #445b74;
+}
+
+.ct-tracker-keyword-label {
+  justify-content: space-between;
+  gap: 6px;
+  padding-top: 4px;
+}
+
+.ct-tracker-keyword-label span {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ct-tracker-keyword-label em,
+.ct-keyword-insight-label em {
+  flex: 0 0 auto;
+  min-width: 22px;
+  min-height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #eef6f8;
+  color: #517085;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.ct-keyword-chip-rail {
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.ct-keyword-chip {
+  display: inline-flex;
+  max-width: min(180px, 100%);
+  min-height: 28px;
+  align-items: center;
+  padding: 0 10px;
+  overflow: hidden;
+  border: 1px solid #d7e6ee;
+  border-radius: 8px;
+  background: #f7fbfd;
+  color: #29445c;
+  font-size: 12px;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ct-keyword-chip.primary {
+  border-color: #cde6f4;
+  background: #f2f9fd;
+  color: #24556d;
+}
+
+.ct-keyword-chip.muted {
+  border-style: dashed;
+  border-color: #d5e0ea;
+  background: #fff;
+  color: #6b7f95;
+}
+
+.ct-keyword-chip.empty {
+  max-width: none;
+}
+
+.ct-keyword-chip.overflow {
+  border-color: #bfdedb;
+  background: #ecf8f6;
+  color: #0f766e;
+  font-weight: 800;
+}
+
+.ct-keyword-insight-panel {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #e2ebf2;
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, #fbfdff, #f7fbfc),
+    #fff;
+}
+
+.ct-keyword-insight-tabs {
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ct-keyword-insight-tab {
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid #dfe9f0;
+  border-radius: 999px;
+  background: #fff;
+  color: #52677e;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ct-keyword-insight-tab.active {
+  border-color: #bfe2df;
+  background: #eaf8f6;
+  color: #08756c;
+}
+
+.ct-keyword-insight-tab em {
+  min-width: 20px;
+  min-height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(8, 117, 108, 0.09);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.ct-keyword-filter-indicator {
+  width: 30px;
+  height: 30px;
+  justify-content: center;
+  margin-left: auto;
+  border: 1px solid #dfe9f0;
+  border-radius: 8px;
+  background: #fff;
+  color: #6b7f95;
+}
+
+.ct-keyword-insight-rows {
+  display: grid;
+  gap: 9px;
+}
+
+.ct-keyword-insight-row {
+  display: grid;
+  grid-template-columns: 156px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #e7edf3;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.ct-keyword-insight-row.primary {
+  background: linear-gradient(90deg, rgba(238, 248, 253, 0.88), #fff 42%);
+}
+
+.ct-keyword-insight-row.muted {
+  background: linear-gradient(90deg, rgba(250, 252, 253, 0.92), #fff 42%);
+}
+
+.ct-keyword-insight-label {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  align-items: center;
+}
+
+.ct-keyword-insight-label strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #172b42;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ct-keyword-insight-label span {
+  grid-column: 1 / 2;
+  color: #7a8b9e;
+  font-size: 11px;
+}
+
+.ct-keyword-insight-label em {
+  grid-column: 2 / 3;
+  grid-row: 1 / 3;
+}
+
 .ct-material-tabs button {
   border: 1px solid #e4ebf3;
   border-bottom-width: 1px;
@@ -9060,6 +9350,20 @@ fieldset {
   .ct-keyword-summary-card .ct-keyword-groups,
   .ct-form-grid {
     grid-template-columns: 1fr;
+  }
+
+  .ct-tracker-identity-panel,
+  .ct-tracker-keyword-row,
+  .ct-keyword-insight-row {
+    grid-template-columns: 1fr;
+  }
+
+  .ct-tracker-keyword-label {
+    justify-content: flex-start;
+  }
+
+  .ct-keyword-filter-indicator {
+    margin-left: 0;
   }
 
   .ct-editor-status-row,

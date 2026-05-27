@@ -326,6 +326,8 @@ const TRACKER_ANALYSIS_CACHE = new Map<number, AnalysisCacheEntry>();
 const TRACKER_ANALYSIS_RUN_CACHE = new Map<number, TrackerAnalysisRun | null>();
 const TRACKER_COLLECTION_RUN_CACHE = new Map<number, CollectionRun | null>();
 const TRACKER_ANALYSIS_CACHE_TTL_MS = 5 * 60 * 1000;
+const TRACKER_KEYWORD_PREVIEW_LIMIT = 6;
+const KEYWORD_INSIGHT_PREVIEW_LIMIT = 8;
 let LAST_SELECTED_TRACKER_ID: number | null = null;
 let LAST_CONTENT_TRACKING_SUBTAB: SubTab = "input";
 
@@ -1489,56 +1491,36 @@ export function ContentTrackingPage({
                 </div>
                 {selectedTracker ? (
                   <>
-                    <div className="ct-keyword-group">
+                    <div className="ct-tracker-identity-panel">
                       <span>名称</span>
-                      <div className="ct-chip-list">
-                        <span className="ct-chip passive">{selectedTracker.name}</span>
-                      </div>
+                      <strong title={selectedTracker.name}>{selectedTracker.name}</strong>
                     </div>
-                    <div className="ct-keyword-group">
-                      <span>平台</span>
-                      <div className="ct-chip-list">
-                        {selectedTracker.platforms.length > 0 ? (
-                          selectedTracker.platforms.map((platform) => (
-                            <span
-                              key={platform}
-                              className={`ct-platform-badge ${platformBadgeClass(platform)}`}
-                            >
-                              {platformLabel(platform)}
-                            </span>
-                          ))
-                        ) : (
-                          <span className="ct-chip passive">未配置平台</span>
-                        )}
+                    <div className="ct-tracker-keyword-panel">
+                      <div className="ct-tracker-keyword-panel-head">
+                        <div>
+                          <strong>关键词组合</strong>
+                          <span>按采集平台、种子词和排除词分组</span>
+                        </div>
+                        <em>
+                          {selectedTracker.platforms.length +
+                            selectedTracker.includedKeywords.length +
+                            selectedTracker.excludedKeywords.length}{" "}
+                          项
+                        </em>
                       </div>
-                    </div>
-                    <div className="ct-keyword-group">
-                      <span>包含关键词</span>
-                      <div className="ct-chip-list">
-                        {selectedTracker.includedKeywords.length > 0 ? (
-                          selectedTracker.includedKeywords.map((keyword) => (
-                            <button type="button" key={keyword} className="ct-chip">
-                              {keyword}
-                            </button>
-                          ))
-                        ) : (
-                          <span className="ct-chip passive">未配置关键词</span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="ct-keyword-group">
-                      <span>排除关键词</span>
-                      <div className="ct-chip-list">
-                        {selectedTracker.excludedKeywords.length > 0 ? (
-                          selectedTracker.excludedKeywords.map((keyword) => (
-                            <button type="button" key={keyword} className="ct-chip passive">
-                              {keyword}
-                            </button>
-                          ))
-                        ) : (
-                          <span className="ct-chip passive">暂无排除关键词</span>
-                        )}
-                      </div>
+                      {renderTrackerPlatformRow(selectedTracker.platforms)}
+                      {renderTrackerKeywordRow({
+                        label: "包含关键词",
+                        values: selectedTracker.includedKeywords,
+                        emptyLabel: "未配置关键词",
+                        tone: "primary",
+                      })}
+                      {renderTrackerKeywordRow({
+                        label: "排除关键词",
+                        values: selectedTracker.excludedKeywords,
+                        emptyLabel: "暂无排除关键词",
+                        tone: "muted",
+                      })}
                     </div>
                     <div className="ct-input-footer">
                       <span>
@@ -1695,30 +1677,45 @@ export function ContentTrackingPage({
                     刷新分析
                   </button>
                 </div>
-                <div className="ct-keyword-groups">
-                  <div className="ct-keyword-group">
-                    <span>高价值关键词</span>
-                    <div className="ct-chip-list">
-                      {renderChipList(snapshotView.highValueKeywords, "暂无高价值关键词")}
-                    </div>
+                <div className="ct-keyword-insight-panel">
+                  <div className="ct-keyword-insight-tabs" aria-label="关键词分析分类">
+                    {renderKeywordInsightTab("高价值关键词", snapshotView.highValueKeywords.length, true)}
+                    {renderKeywordInsightTab("推荐词", snapshotView.recommendedIncludeKeywords.length)}
+                    {renderKeywordInsightTab("噪音词", snapshotView.noiseKeywords.length)}
+                    {renderKeywordInsightTab("排除候选", snapshotView.recommendedExcludeKeywords.length)}
+                    <span className="ct-keyword-filter-indicator" title="关键词筛选">
+                      <Search size={13} aria-hidden="true" />
+                    </span>
                   </div>
-                  <div className="ct-keyword-group">
-                    <span>推荐扩词</span>
-                    <div className="ct-chip-list">
-                      {renderChipList(snapshotView.recommendedIncludeKeywords, "暂无扩词建议")}
-                    </div>
-                  </div>
-                  <div className="ct-keyword-group">
-                    <span>噪音词</span>
-                    <div className="ct-chip-list">
-                      {renderChipList(snapshotView.noiseKeywords, "当前未识别到明显噪音词", true)}
-                    </div>
-                  </div>
-                  <div className="ct-keyword-group">
-                    <span>推荐排除词</span>
-                    <div className="ct-chip-list">
-                      {renderChipList(snapshotView.recommendedExcludeKeywords, "暂无排除词建议", true)}
-                    </div>
+                  <div className="ct-keyword-insight-rows">
+                    {renderKeywordInsightRow({
+                      label: "高价值关键词",
+                      hint: "优先观察",
+                      values: snapshotView.highValueKeywords,
+                      emptyLabel: "暂无高价值关键词",
+                      tone: "primary",
+                    })}
+                    {renderKeywordInsightRow({
+                      label: "推荐词",
+                      hint: "可用于扩词",
+                      values: snapshotView.recommendedIncludeKeywords,
+                      emptyLabel: "暂无扩词建议",
+                      tone: "primary",
+                    })}
+                    {renderKeywordInsightRow({
+                      label: "噪音词",
+                      hint: "降低误采集",
+                      values: snapshotView.noiseKeywords,
+                      emptyLabel: "当前未识别到明显噪音词",
+                      tone: "muted",
+                    })}
+                    {renderKeywordInsightRow({
+                      label: "排除候选",
+                      hint: "建议排除",
+                      values: snapshotView.recommendedExcludeKeywords,
+                      emptyLabel: "暂无排除词建议",
+                      tone: "muted",
+                    })}
                   </div>
                 </div>
                 {snapshotView.aiKeywordNotes.length > 0 || snapshotView.aiTrackerSuggestions.length > 0 ? (
@@ -2439,6 +2436,127 @@ function normalizeSamples(samples: SampleRow[] | null | undefined): NormalizedSa
       marketValidationStatus: sample.market_validation_status?.trim() || "",
     };
   });
+}
+
+function renderKeywordInsightTab(label: string, count: number, active = false) {
+  return (
+    <span className={`ct-keyword-insight-tab${active ? " active" : ""}`}>
+      {label}
+      <em>{count}</em>
+    </span>
+  );
+}
+
+function renderTrackerPlatformRow(platforms: string[]) {
+  return (
+    <div className="ct-tracker-keyword-row">
+      <div className="ct-tracker-keyword-label">
+        <span>采集平台</span>
+        <em>{platforms.length}</em>
+      </div>
+      <div className="ct-keyword-chip-rail">
+        {platforms.length > 0 ? (
+          platforms.map((platform) => (
+            <span key={platform} className={`ct-platform-badge ${platformBadgeClass(platform)}`}>
+              {platformLabel(platform)}
+            </span>
+          ))
+        ) : (
+          <span className="ct-keyword-chip muted">未配置平台</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function renderTrackerKeywordRow({
+  label,
+  values,
+  emptyLabel,
+  tone = "primary",
+}: {
+  label: string;
+  values: string[];
+  emptyLabel: string;
+  tone?: "primary" | "muted";
+}) {
+  return (
+    <div className="ct-tracker-keyword-row">
+      <div className="ct-tracker-keyword-label">
+        <span>{label}</span>
+        <em>{values.length}</em>
+      </div>
+      <div className="ct-keyword-chip-rail">
+        {renderLimitedKeywordChips(values, emptyLabel, {
+          limit: TRACKER_KEYWORD_PREVIEW_LIMIT,
+          tone,
+        })}
+      </div>
+    </div>
+  );
+}
+
+function renderKeywordInsightRow({
+  label,
+  hint,
+  values,
+  emptyLabel,
+  tone = "primary",
+}: {
+  label: string;
+  hint: string;
+  values: string[];
+  emptyLabel: string;
+  tone?: "primary" | "muted";
+}) {
+  return (
+    <div className={`ct-keyword-insight-row ${tone}`}>
+      <div className="ct-keyword-insight-label">
+        <strong>{label}</strong>
+        <span>{hint}</span>
+        <em>{values.length}</em>
+      </div>
+      <div className="ct-keyword-chip-rail">
+        {renderLimitedKeywordChips(values, emptyLabel, {
+          limit: KEYWORD_INSIGHT_PREVIEW_LIMIT,
+          tone,
+        })}
+      </div>
+    </div>
+  );
+}
+
+function renderLimitedKeywordChips(
+  values: string[],
+  emptyLabel: string,
+  {
+    limit,
+    tone,
+  }: {
+    limit: number;
+    tone: "primary" | "muted";
+  },
+) {
+  if (values.length === 0) {
+    return <span className="ct-keyword-chip muted empty">{emptyLabel}</span>;
+  }
+
+  const visibleValues = values.slice(0, limit);
+  const overflowCount = Math.max(values.length - visibleValues.length, 0);
+  return (
+    <>
+      {visibleValues.map((item) => (
+        <span key={item} className={`ct-keyword-chip ${tone}`} title={item}>
+          {item}
+        </span>
+      ))}
+      {overflowCount > 0 ? (
+        <span className="ct-keyword-chip overflow" title={values.join("、")}>
+          +{overflowCount}
+        </span>
+      ) : null}
+    </>
+  );
 }
 
 function renderChipList(values: string[], emptyLabel: string, passive = false) {
