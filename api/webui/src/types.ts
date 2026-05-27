@@ -205,6 +205,12 @@ export type ResearchJob = {
     max_posts_per_job?: number | null;
     [key: string]: unknown;
   };
+  schedule_enabled?: boolean;
+  schedule_interval_minutes?: number | null;
+  next_run_at?: string | null;
+  last_scheduled_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
 };
 
 export type PostRecord = {
@@ -368,6 +374,11 @@ export type GrowthProjectDetail = {
     posts: number;
     comments: number;
     raw_records: number;
+    schedule_enabled?: boolean;
+    schedule_interval_minutes?: number | null;
+    next_run_at?: string | null;
+    last_scheduled_at?: string | null;
+    created_at?: string | null;
     updated_at?: string | null;
   }>;
   settings: {

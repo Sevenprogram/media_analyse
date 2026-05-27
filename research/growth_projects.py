@@ -253,6 +253,11 @@ def _collection_record(
         "posts": _int(stats.get("posts")),
         "comments": _int(stats.get("comments")),
         "raw_records": _int(stats.get("raw_records")),
+        "schedule_enabled": bool(job.get("schedule_enabled")),
+        "schedule_interval_minutes": job.get("schedule_interval_minutes"),
+        "next_run_at": job.get("next_run_at"),
+        "last_scheduled_at": job.get("last_scheduled_at"),
+        "created_at": job.get("created_at"),
         "updated_at": job.get("updated_at"),
     }
 

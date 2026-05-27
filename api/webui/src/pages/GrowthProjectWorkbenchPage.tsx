@@ -469,6 +469,29 @@ function sortCollectionRecords(records: GrowthProjectDetail["collection_records"
   });
 }
 
+function collectionRecordSource(record: GrowthProjectDetail["collection_records"][number]) {
+  const name = String(record.name || "").toLowerCase();
+  const hasScheduleSignal =
+    Boolean(record.schedule_enabled)
+    || Boolean(record.last_scheduled_at)
+    || Boolean(record.next_run_at)
+    || typeof record.schedule_interval_minutes === "number";
+
+  if (hasScheduleSignal || name.includes("scheduled refresh")) {
+    return {
+      kind: "auto",
+      label: "自动爬取",
+      note: "每日刷新自动触发",
+    };
+  }
+
+  return {
+    kind: "manual",
+    label: "手动采集",
+    note: "用户手动创建",
+  };
+}
+
 export function GrowthProjectWorkbenchPage({
   projects,
   selectedProjectId,
@@ -1256,6 +1279,11 @@ function ProjectHistoryPanel({
           posts: progress.progress.sample_counts.posts || 0,
           comments: progress.progress.sample_counts.comments || 0,
           raw_records: progress.progress.sample_counts.raw_records || 0,
+          schedule_enabled: progress.progress.job.schedule_enabled,
+          schedule_interval_minutes: progress.progress.job.schedule_interval_minutes,
+          next_run_at: progress.progress.job.next_run_at,
+          last_scheduled_at: progress.progress.job.last_scheduled_at,
+          created_at: progress.progress.job.created_at,
           updated_at: progress.progress.latest_event?.created_at || null,
         }
       : null);
@@ -1437,11 +1465,15 @@ function ProjectHistoryPanel({
                 {historyRecords.map((record, index) => {
                   const status = projectStatus(record.id === currentJobId ? currentStatusValue : record.status);
                   const isCurrent = record.id === currentJobId;
+                  const source = collectionRecordSource(record);
                   return (
                     <div key={record.id} className={`task-history-row ${isCurrent ? "is-current" : ""}`}>
                       <div className="task-history-row-head">
                         <div>
-                          <strong>{record.name || `采集任务 #${record.id}`}</strong>
+                          <div className="task-history-title-line">
+                            <strong>{record.name || `采集任务 #${record.id}`}</strong>
+                            <span className={`task-source-badge task-source-badge-${source.kind}`}>{source.label}</span>
+                          </div>
                           <span>{`任务 #${record.id}${record.updated_at ? ` · ${formatDateTime(record.updated_at).slice(0, 16)}` : ""}`}</span>
                         </div>
                         <div className="task-history-row-status">
@@ -1455,6 +1487,7 @@ function ProjectHistoryPanel({
                         <span>{record.keywords.length ? `${record.keywords.length} 个关键词` : "无关键词"}</span>
                         <span>{`${formatNumber(record.posts)} 帖 / ${formatNumber(record.comments)} 评 / ${formatNumber(record.raw_records)} 原始`}</span>
                         <span>{record.collection_mode || "search"}</span>
+                        <span>{source.note}</span>
                       </div>
                     </div>
                   );
