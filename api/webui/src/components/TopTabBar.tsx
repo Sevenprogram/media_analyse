@@ -35,7 +35,7 @@ export interface TopTabBarProps {
   unreadCount?: number;
 }
 
-export function TopTabBar({ tab, onChange, loading, onRefresh, unreadCount = 12 }: TopTabBarProps) {
+export function TopTabBar({ tab, onChange, loading, onRefresh, unreadCount = 0 }: TopTabBarProps) {
   const [searchQuery, setSearchQuery] = React.useState("");
   const [scope, setScope] = React.useState<"all" | "responsible" | "participated">("all");
 

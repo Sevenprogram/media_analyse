@@ -23,7 +23,7 @@ RETRYABLE_TERMINAL_STATUSES = {
     JOB_CANCELLED,
     JOB_PAUSED_BY_PLATFORM_CONFIG,
 }
-EnqueueJob = Callable[[int, str | None], Awaitable[dict[str, Any]]]
+EnqueueJob = Callable[[int, str | None, int | None], Awaitable[dict[str, Any]]]
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -85,6 +85,16 @@ def _project_id_for_job(job: dict[str, Any]) -> str | None:
     return topic or None
 
 
+def _org_id_for_job(job: dict[str, Any]) -> int | None:
+    raw = job.get("org_id")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 class ResearchAutomationDaemon:
     def __init__(
         self,
@@ -129,11 +139,13 @@ class ResearchAutomationDaemon:
         enqueued: list[dict[str, Any]] = []
         for job in due_jobs:
             job_id = int(job["id"])
-            result = await self.enqueue_job(job_id, _project_id_for_job(job))
+            org_id = _org_id_for_job(job)
+            result = await self.enqueue_job(job_id, _project_id_for_job(job), org_id)
             enqueued.append(
                 {
                     "job_id": job_id,
                     "project_id": result.get("project_id"),
+                    "org_id": org_id,
                     "queue_position": result.get("queue_position"),
                 }
             )

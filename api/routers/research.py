@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from api.deps.auth import require_current_user
+from saas.tenant_context import get_current_org_id
 from api.schemas import SaveDataOptionEnum
 from research.ai_analysis import AIAnalysisRunner
 from research.ai_provider import OpenAICompatibleProvider
@@ -274,6 +275,30 @@ def set_research_execution_concurrency(value: int) -> dict:
     return get_research_execution_concurrency()
 
 
+def _coerce_org_id(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _repository_for_org(org_id: int | None) -> ResearchRepository:
+    return ResearchRepository(org_id=org_id) if org_id is not None else ResearchRepository()
+
+
+async def _resolve_research_job_org_id(job_id: int, org_id: int | None = None) -> int | None:
+    explicit_org_id = _coerce_org_id(org_id)
+    if explicit_org_id is not None:
+        return explicit_org_id
+    current_org_id = _coerce_org_id(get_current_org_id())
+    if current_org_id is not None:
+        return current_org_id
+    job = await ResearchRepository.global_scope().get_job(job_id)
+    return _coerce_org_id((job or {}).get("org_id"))
+
+
 def _execution_busy() -> bool:
     current = asyncio.current_task()
     return any(record.get("task") is not current for record in _live_research_executions().values())
@@ -284,6 +309,7 @@ async def schedule_and_execute_research_job(
     *,
     background: bool = True,
     force_schedule: bool = True,
+    org_id: int | None = None,
 ) -> dict:
     global _research_execution_job_id, _research_execution_task
     require_research_database()
@@ -294,7 +320,8 @@ async def schedule_and_execute_research_job(
             "running_job_ids": _running_research_job_ids(),
             "message": "Research execution concurrency limit reached",
         }
-    repository = ResearchRepository()
+    resolved_org_id = await _resolve_research_job_org_id(job_id, org_id)
+    repository = _repository_for_org(resolved_org_id)
     scheduler = ResearchScheduler(repository)
     schedule = await scheduler.schedule_job(job_id, force=force_schedule)
     job = await repository.get_job(job_id)
@@ -314,11 +341,18 @@ async def schedule_and_execute_research_job(
     if background:
         local_crawler_manager = CrawlerManager()
         task = asyncio.create_task(
-            _run_research_execution_background(job=job, options=options, salt=salt, crawler=local_crawler_manager)
+            _run_research_execution_background(
+                job=job,
+                options=options,
+                salt=salt,
+                crawler=local_crawler_manager,
+                org_id=resolved_org_id,
+            )
         )
         _research_executions[job_id] = {
             "task": task,
             "crawler_manager": local_crawler_manager,
+            "org_id": resolved_org_id,
             "started_at": date.today().isoformat(),
         }
         _sync_legacy_execution_pointer()
@@ -328,11 +362,18 @@ async def schedule_and_execute_research_job(
     _research_executions[job_id] = {
         "task": task,
         "crawler_manager": local_crawler_manager,
+        "org_id": resolved_org_id,
         "started_at": date.today().isoformat(),
     }
     _sync_legacy_execution_pointer()
     try:
-        await _run_research_execution_background(job=job, options=options, salt=salt, crawler=local_crawler_manager)
+        await _run_research_execution_background(
+            job=job,
+            options=options,
+            salt=salt,
+            crawler=local_crawler_manager,
+            org_id=resolved_org_id,
+        )
     finally:
         _research_executions.pop(job_id, None)
         _sync_legacy_execution_pointer()
@@ -363,22 +404,43 @@ async def cancel_active_research_execution_job(job_id: int) -> dict:
     }
 
 
-async def enqueue_research_collection_job(job_id: int, *, project_id: str | None = None) -> dict:
+async def enqueue_research_collection_job(
+    job_id: int,
+    *,
+    project_id: str | None = None,
+    org_id: int | None = None,
+) -> dict:
     global _research_queue_worker_task
     require_research_database()
+    resolved_org_id = await _resolve_research_job_org_id(job_id, org_id)
+    if job_id in _running_research_job_ids():
+        return {
+            "status": "running",
+            "job_id": job_id,
+            "project_id": project_id,
+            "org_id": resolved_org_id,
+            "queue_position": 0,
+            "queue": _collection_queue_snapshot(),
+        }
     queued = {
         "job_id": job_id,
         "project_id": project_id,
+        "org_id": resolved_org_id,
         "enqueued_at": date.today().isoformat(),
     }
-    if not any(item["job_id"] == job_id for item in _research_execution_queue):
+    existing = next((item for item in _research_execution_queue if item["job_id"] == job_id), None)
+    if existing is None:
         _research_execution_queue.append(queued)
-        await ResearchRepository().update_job(job_id, {"status": JOB_QUEUED})
+        await _repository_for_org(resolved_org_id).update_job(job_id, {"status": JOB_QUEUED})
+    elif existing.get("org_id") is None and resolved_org_id is not None:
+        existing["org_id"] = resolved_org_id
     if _research_queue_worker_task is None or _research_queue_worker_task.done():
         _research_queue_worker_task = asyncio.create_task(_run_research_execution_queue())
     return {
         "status": "queued",
         "job_id": job_id,
+        "project_id": project_id,
+        "org_id": resolved_org_id,
         "queue_position": _queue_position(job_id),
         "queue": _collection_queue_snapshot(),
     }
@@ -391,12 +453,13 @@ async def _run_research_execution_queue() -> None:
             continue
         queued = _research_execution_queue.pop(0)
         job_id = int(queued["job_id"])
-        repository = ResearchRepository()
+        org_id = _coerce_org_id(queued.get("org_id")) or await _resolve_research_job_org_id(job_id)
+        repository = _repository_for_org(org_id)
         try:
             job = await repository.get_job(job_id)
             if job and job.get("status") in {JOB_CANCELLED, JOB_FAILED, JOB_COMPLETED}:
                 continue
-            execution = await schedule_and_execute_research_job(job_id, background=True)
+            execution = await schedule_and_execute_research_job(job_id, background=True, org_id=org_id)
             if execution.get("status") == "busy":
                 _research_execution_queue.insert(0, queued)
                 await asyncio.sleep(1)
@@ -407,7 +470,7 @@ async def _run_research_execution_queue() -> None:
                 platform=None,
                 event_type="queue_execution_failed",
                 message=str(exc),
-                stats={"project_id": queued.get("project_id")},
+                stats={"project_id": queued.get("project_id"), "org_id": org_id},
             )
 
 
@@ -421,6 +484,7 @@ def _collection_queue_snapshot() -> dict:
             {
                 "job_id": item["job_id"],
                 "project_id": item.get("project_id"),
+                "org_id": item.get("org_id"),
                 "queue_position": index + 1,
                 "enqueued_at": item.get("enqueued_at"),
             }
@@ -2887,9 +2951,11 @@ async def _run_research_execution_background(
     options: ResearchExecutionOptions,
     salt: str | None,
     crawler: CrawlerManager | None = None,
+    org_id: int | None = None,
 ):
     global _research_execution_job_id, _research_execution_task
-    repository = ResearchRepository()
+    resolved_org_id = _coerce_org_id(org_id) or _coerce_org_id(job.get("org_id"))
+    repository = _repository_for_org(resolved_org_id)
     backfill = (
         ExistingPlatformBackfill(repository, author_hash_salt=salt)
         if options.backfill_after_crawl and salt

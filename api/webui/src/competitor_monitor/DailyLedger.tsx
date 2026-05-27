@@ -95,7 +95,6 @@ export function DailyLedger({
     diagnostics?.stats.author_verified_posts ??
     eligiblePosts;
   const invalidUrlPosts = diagnostics?.stats.invalid_url_posts ?? 0;
-  const missingTokenPosts = diagnostics?.stats.missing_token_posts ?? 0;
   const isCreatorMonitor = monitorType === "partner_creator";
 
   const cards: MetricCard[] = [
@@ -156,7 +155,6 @@ export function DailyLedger({
     sampledPosts: metrics.deduped_post_count,
     displayablePosts,
     interactionDelta: metrics.interaction_delta,
-    missingTokenPosts,
     unmatchedPosts: data.unmatched_post_count,
   });
 
@@ -296,7 +294,6 @@ function buildLedgerNotices(input: {
   sampledPosts: number;
   displayablePosts: number;
   interactionDelta: number;
-  missingTokenPosts: number;
   unmatchedPosts: number;
 }) {
   const notices: Array<{ tone: "info" | "warn"; message: string }> = [];
@@ -315,12 +312,7 @@ function buildLedgerNotices(input: {
     });
   }
 
-  if (input.missingTokenPosts > 0) {
-    notices.push({
-      tone: "warn",
-      message: `${input.missingTokenPosts} 条帖子缺少 xsec_token，已降级展示，可尝试打开原始链接；补全后可直达。`,
-    });
-  } else if (input.sampledPosts > 0 && input.displayablePosts === 0) {
+  if (input.sampledPosts > 0 && input.displayablePosts === 0) {
     notices.push({
       tone: "warn",
       message: "当前快照没有可展示帖子，贡献榜和异常分析会为空。",

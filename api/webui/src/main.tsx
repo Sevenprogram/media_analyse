@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
 import { AlertTriangle, Play, X, Construction } from "lucide-react";
 import { SideNav } from "./components/SideNav";
-import { AppHeader, type AppHeaderProject } from "./components/AppHeader";
+import { AppHeader, type AppHeaderNotification, type AppHeaderProject } from "./components/AppHeader";
 import { Button, ConfirmDialog } from "./components/ui";
 import { AuthPage, type AuthMode } from "./pages/AuthPage";
 import { api, ApiError } from "./utils/api";
@@ -31,6 +31,7 @@ import type {
   AIResult,
   AiInsightSummary,
   AiTopicIdeasSummary,
+  BackgroundTaskItem,
   CommentRecord,
   DatabaseStats,
   DashboardOpportunity,
@@ -199,6 +200,39 @@ const DEFAULT_COLLECTION_RUN_PAYLOAD: GrowthProjectCollectionRunPayload = {
   max_extra_pages: 3,
 };
 
+const NOTIFICATION_TASK_STATUSES = new Set(["queued", "pending", "running", "stopping", "failed", "error"]);
+
+function shouldNotifyForBackgroundTask(task: BackgroundTaskItem) {
+  return NOTIFICATION_TASK_STATUSES.has(String(task.status || "").toLowerCase());
+}
+
+function labelBackgroundTaskSource(task: BackgroundTaskItem) {
+  const source = task.source || task.type;
+  const labels: Record<string, string> = {
+    crawler: "爬虫任务",
+    research: "研究任务",
+    growth_project: "项目采集",
+    creator_search: "达人搜索",
+    content_search: "内容搜索",
+    ai_analysis: "AI 分析",
+    research_execution: "采集执行",
+    research_queue: "采集队列",
+  };
+  return labels[source] || source || "后台任务";
+}
+
+function notificationFromBackgroundTask(task: BackgroundTaskItem): AppHeaderNotification {
+  return {
+    id: task.id,
+    title: task.title,
+    body: task.progress?.label || task.progress?.stage || "等待状态更新",
+    status: String(task.status || "unknown").toLowerCase(),
+    source: labelBackgroundTaskSource(task),
+    updatedAt: task.updated_at || task.started_at || null,
+    progress: typeof task.progress?.percent === "number" ? task.progress.percent : null,
+  };
+}
+
 function normalizeCollectionRunPayload(
   targetOrPayload?: number | GrowthProjectCollectionRunPayload,
   collectionWindowDays?: number | null,
@@ -228,6 +262,9 @@ function App({ session, onLogout }: { session: AuthSession; onLogout: () => void
   const [aiInsights, setAiInsights] = React.useState<AiInsightSummary>(fallbackAiInsights);
   const [aiTopicIdeas, setAiTopicIdeas] = React.useState<AiTopicIdeasSummary>({ topic_ideas: [] });
   const [jobs, setJobs] = React.useState<ResearchJob[]>([]);
+  const [backgroundTasks, setBackgroundTasks] = React.useState<BackgroundTaskItem[]>([]);
+  const [backgroundTasksLoading, setBackgroundTasksLoading] = React.useState(true);
+  const [backgroundTaskError, setBackgroundTaskError] = React.useState<string | null>(null);
   const [growthProjects, setGrowthProjects] = React.useState<GrowthProjectSummary[]>([]);
   const [selectedProjectId, setSelectedProjectId] = React.useState<string | null>(initialUrlStateRef.current.projectId);
   const [strategySourceTrackerId, setStrategySourceTrackerId] = React.useState<number | null>(
@@ -254,6 +291,7 @@ function App({ session, onLogout }: { session: AuthSession; onLogout: () => void
   const todayIntelligenceRequestIdRef = React.useRef(0);
   const projectDetailAbortRef = React.useRef<AbortController | null>(null);
   const projectProgressAbortRef = React.useRef<AbortController | null>(null);
+  const backgroundTasksLoadedRef = React.useRef(false);
   const selectedJob = jobs.find((job) => job.id === selectedJobId) || null;
   const selectedProjectSummary =
     growthProjects.find((project) => project.id === selectedProjectId) || selectedProjectDetail?.project || null;
@@ -269,6 +307,13 @@ function App({ session, onLogout }: { session: AuthSession; onLogout: () => void
         platforms: project.platforms,
       })),
     [growthProjects],
+  );
+  const headerNotifications = React.useMemo<AppHeaderNotification[]>(
+    () =>
+      backgroundTasks
+        .filter(shouldNotifyForBackgroundTask)
+        .map(notificationFromBackgroundTask),
+    [backgroundTasks],
   );
   const shouldLoadProjectContext =
     tab === "projects"
@@ -426,6 +471,23 @@ function App({ session, onLogout }: { session: AuthSession; onLogout: () => void
     }
   }, []);
 
+  const loadBackgroundTasks = React.useCallback(async () => {
+    if (!backgroundTasksLoadedRef.current) {
+      setBackgroundTasksLoading(true);
+    }
+    try {
+      const data = await api<{ tasks: BackgroundTaskItem[] }>("/api/background-tasks");
+      setBackgroundTasks(data.tasks || []);
+      setBackgroundTaskError(null);
+    } catch (err) {
+      setBackgroundTasks([]);
+      setBackgroundTaskError(err instanceof Error ? err.message : String(err));
+    } finally {
+      backgroundTasksLoadedRef.current = true;
+      setBackgroundTasksLoading(false);
+    }
+  }, []);
+
   const loadSelectedProjectProgress = React.useCallback(async (projectId: string | null) => {
     if (!projectId) {
       projectProgressAbortRef.current?.abort();
@@ -494,6 +556,13 @@ function App({ session, onLogout }: { session: AuthSession; onLogout: () => void
 
   React.useEffect(() => { void refreshAll(); }, [refreshAll]);
   React.useEffect(() => { void loadSideNavConfig(); }, [loadSideNavConfig]);
+  React.useEffect(() => {
+    void loadBackgroundTasks();
+    const interval = window.setInterval(() => {
+      void loadBackgroundTasks();
+    }, 5000);
+    return () => window.clearInterval(interval);
+  }, [loadBackgroundTasks]);
   React.useEffect(() => {
     const handleSideNavConfigUpdated = (event: Event) => {
       const detail = (event as CustomEvent<SideNavConfigValue>).detail;
@@ -649,6 +718,9 @@ function App({ session, onLogout }: { session: AuthSession; onLogout: () => void
           title={selectedProjectSummary?.name || (growthProjects.length ? "选择项目" : TAB_TITLES[tab] || "暂无项目")}
           loading={loading}
           onRefresh={refreshAll}
+          notifications={headerNotifications}
+          notificationsLoading={backgroundTasksLoading}
+          notificationError={backgroundTaskError}
           projects={headerProjects}
           selectedProjectId={selectedProjectId}
           onSelectProject={setSelectedProjectId}

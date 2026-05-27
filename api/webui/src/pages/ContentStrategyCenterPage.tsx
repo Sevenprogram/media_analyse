@@ -1238,6 +1238,10 @@ export function ContentStrategyCenterPage({
   const aiProviderText = aiProviderLabel(summary);
   const aiDetailText = aiStatusDetail(summary);
   const aiError = summary?.ai_status.error;
+  const showAiStatusStrip = !(
+    summary?.ai_status.status === "partial" ||
+    summary?.ai_status.strategy_summary_source === "partial_ai"
+  );
   const showAiFallbackWarning = Boolean(
     aiError &&
       summary?.ai_status.status !== "partial" &&
@@ -1649,10 +1653,12 @@ export function ContentStrategyCenterPage({
             <strong>{formatDate(refreshStatus?.ai_insights?.generated_at)}</strong>
           </div>
         </div>
-        <div className={`ks-ai-status-strip ${aiError ? "is-warning" : ""}`}>
-          <Bot size={15} />
-          <span>{aiDetailText}</span>
-        </div>
+        {showAiStatusStrip && (
+          <div className={`ks-ai-status-strip ${aiError ? "is-warning" : ""}`}>
+            <Bot size={15} />
+            <span>{aiDetailText}</span>
+          </div>
+        )}
         {aiSectionItems.length > 0 && (
           <div className="ks-ai-section-strip">
             {aiSectionItems.map((item) => (

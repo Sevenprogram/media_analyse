@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import sys
@@ -660,11 +661,12 @@ async def test_research_automation_daemon_enqueues_due_scheduled_job(
 
     enqueued: list[dict[str, int | str | None]] = []
 
-    async def fake_enqueue(scheduled_job_id: int, project_id: str | None) -> dict:
+    async def fake_enqueue(scheduled_job_id: int, project_id: str | None, org_id: int | None) -> dict:
         job = await repository.get_job(scheduled_job_id)
         payload = {
             "job_id": scheduled_job_id,
             "project_id": project_id or (job.get("topic") if job else None),
+            "org_id": org_id,
             "queue_position": len(enqueued) + 1,
         }
         enqueued.append(payload)
@@ -680,6 +682,90 @@ async def test_research_automation_daemon_enqueues_due_scheduled_job(
     assert result["due_job_ids"] == [job_id]
     assert [item["job_id"] for item in result["enqueued"]] == [job_id]
     assert [item["job_id"] for item in daemon.last_enqueued_jobs] == [job_id]
+    assert enqueued[0]["org_id"] == int(created["job"]["org_id"])
+
+
+@pytest.mark.asyncio
+async def test_collection_queue_resolves_org_for_scheduled_job_without_request_context(
+    growth_project_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from api.routers import research as research_router
+
+    response = await growth_project_client.post(
+        "/api/research/growth-projects",
+        json={
+            "name": "Queued Tenant Project",
+            "primary_goal": "mixed_research",
+            "platforms": ["xhs"],
+            "keywords": ["queued tenant"],
+            "collection_depth": "standard",
+            "auto_ai_analysis": False,
+            "start_immediately": False,
+        },
+    )
+    assert response.status_code == 200, response.text
+    created = response.json()
+    job_id = int(created["job"]["id"])
+    org_id = int(created["job"]["org_id"])
+
+    async def noop_queue_worker() -> None:
+        return None
+
+    monkeypatch.setattr(research_router, "_run_research_execution_queue", noop_queue_worker)
+    research_router._research_execution_queue.clear()
+    research_router._research_queue_worker_task = None
+
+    try:
+        queue = await research_router.enqueue_research_collection_job(
+            job_id,
+            project_id=created["project_id"],
+        )
+        await asyncio.sleep(0)
+
+        assert queue["org_id"] == org_id
+        assert queue["queue"]["queued_jobs"][0]["org_id"] == org_id
+        queued_job = await ResearchRepository(org_id=org_id).get_job(job_id)
+        assert queued_job is not None
+        assert queued_job["status"] == "queued"
+    finally:
+        research_router._research_execution_queue.clear()
+        research_router._research_queue_worker_task = None
+
+
+@pytest.mark.asyncio
+async def test_scheduled_job_schedule_outputs_stay_in_project_org(
+    growth_project_client: AsyncClient,
+) -> None:
+    response = await growth_project_client.post(
+        "/api/research/growth-projects",
+        json={
+            "name": "Scheduled Tenant Project",
+            "primary_goal": "mixed_research",
+            "platforms": ["xhs"],
+            "keywords": ["scheduled tenant"],
+            "collection_depth": "standard",
+            "auto_ai_analysis": False,
+            "start_immediately": False,
+        },
+    )
+    assert response.status_code == 200, response.text
+    created = response.json()
+    job_id = int(created["job"]["id"])
+    org_id = int(created["job"]["org_id"])
+
+    repository = ResearchRepository(org_id=org_id)
+    scheduler = ResearchScheduler(repository)
+    schedule = await scheduler.schedule_job(job_id, force=True)
+
+    assert schedule["created"] == 1
+    units = await repository.list_crawl_units(job_id)
+    events = await repository.list_events(job_id)
+    assert len(units) == 1
+    assert {unit["org_id"] for unit in units} == {org_id}
+    scheduled_events = [event for event in events if event["event_type"] == "crawl_units_scheduled"]
+    assert scheduled_events
+    assert {event["org_id"] for event in scheduled_events} == {org_id}
 
 
 @pytest.mark.asyncio

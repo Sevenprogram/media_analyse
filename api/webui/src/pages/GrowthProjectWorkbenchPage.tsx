@@ -283,6 +283,8 @@ function sortCandidatesByType(candidates: KeywordCandidateDraft[]) {
 function projectStatus(status: string) {
   if (status === "paused" || status === "idle") return { label: "已暂停", dot: "paused" };
   if (status === "completed") return { label: "已完成", dot: "completed" };
+  if (status === "empty") return { label: "待采集", dot: "planned" };
+  if (status === "cancelled") return { label: "已终止", dot: "paused" };
   if (status === "planned" || status === "queued") return { label: "排队中", dot: "planned" };
   if (status === "failed") return { label: "异常", dot: "danger" };
   return { label: "运行中", dot: "active" };
@@ -409,9 +411,49 @@ function collectionLiveLabel(
     const percent = progress?.progress.sample_percent ?? progress?.progress.percent ?? 0;
     return `爬虫运行中 · ${percent}%`;
   }
+  if (statusValue === "empty") return "尚未采集到样本";
   if (statusValue === "failed") return "最近任务异常";
   if (statusValue === "completed") return "最近任务已完成";
   return projectStatus(statusValue).label;
+}
+
+function crawlerDisplayStatus(
+  progress: GrowthProjectCollectionProgress | null,
+  fallbackStatus: string,
+) {
+  const liveStatus = progress?.progress.crawler?.status;
+  if (liveStatus && liveStatus !== "idle") {
+    return liveStatus === "running" ? "运行中" : liveStatus;
+  }
+
+  const statusValue = progress?.status || fallbackStatus;
+  const jobStatus = progress?.progress.job?.status || fallbackStatus;
+  if (statusValue === "empty") return "未采集";
+  if (statusValue === "running" || jobStatus === "running") return "处理中";
+  if (statusValue === "queued" || jobStatus === "queued" || jobStatus === "pending") return "等待执行";
+  if (statusValue === "completed" || jobStatus === "completed") return "已完成";
+  if (statusValue === "failed" || jobStatus === "failed") return "异常";
+  if (statusValue === "cancelled" || jobStatus === "cancelled") return "已终止";
+  return "空闲";
+}
+
+function crawlerDisplayNote(
+  progress: GrowthProjectCollectionProgress | null,
+  fallbackStatus: string,
+) {
+  const crawler = progress?.progress.crawler;
+  if (crawler?.platform) {
+    return `${labelPlatform(crawler.platform)} / ${crawler.crawler_type || "crawler"}`;
+  }
+
+  const statusValue = progress?.status || fallbackStatus;
+  const jobStatus = progress?.progress.job?.status || fallbackStatus;
+  if (statusValue === "empty") return "定时已配置，等待下次触发或手动启动";
+  if (statusValue === "running" || jobStatus === "running") return "采集回填或分析中";
+  if (statusValue === "queued" || jobStatus === "queued" || jobStatus === "pending") return "等待队列调度";
+  if (statusValue === "completed" || jobStatus === "completed") return "本次采集已结束";
+  if (statusValue === "failed" || jobStatus === "failed") return "查看最新任务事件";
+  return "暂无活跃爬虫进程";
 }
 
 function sortCollectionRecords(records: GrowthProjectDetail["collection_records"]) {
@@ -1239,6 +1281,20 @@ function ProjectHistoryPanel({
   const latestEvent = progress?.progress.latest_event || progress?.progress.events?.[0] || null;
   const recentEvents = progress?.progress.events?.slice(0, 6) || [];
   const crawler = progress?.progress.crawler || null;
+  const latestCrawlerEvent = recentEvents.find((event) =>
+    event.event_type === "crawler_output_captured" || event.event_type === "crawler_heartbeat"
+  ) || null;
+  const crawlerStatus = crawlerDisplayStatus(progress, currentStatusValue);
+  const crawlerNote = crawlerDisplayNote(progress, currentStatusValue);
+  const crawlerLogLabel = crawler?.latest_log?.level
+    || (latestCrawlerEvent ? collectionEventLabel(latestCrawlerEvent.event_type) : "暂无日志");
+  const crawlerLogMessage = crawler?.latest_log?.message
+    || (latestCrawlerEvent ? collectionEventMessage(latestCrawlerEvent) : "任务进入队列后，会在这里显示最近一条爬虫日志。");
+  const crawlerLogTime = crawler?.latest_log?.timestamp
+    ? formatDateTime(crawler.latest_log.timestamp).slice(0, 16)
+    : latestCrawlerEvent?.created_at
+      ? formatDateTime(latestCrawlerEvent.created_at).slice(0, 16)
+      : "等待日志";
   const targetPosts = progress?.progress.target_counts?.posts || 0;
   const automation = progress?.automation || null;
   const automationDaemon = automation?.daemon || null;
@@ -1282,7 +1338,7 @@ function ProjectHistoryPanel({
                   <span>{`执行 ${stepPercent}%`}</span>
                   <span>{currentPlatforms.length ? currentPlatforms.map(labelPlatform).join(" / ") : "未配置平台"}</span>
                   <span>{currentKeywords.length ? `${currentKeywords.length} 个关键词` : "未设置关键词"}</span>
-                  <span>{crawler?.status || "离线"}</span>
+                  <span>{crawlerStatus}</span>
                 </div>
 
                 <div className="task-current-metrics">
@@ -1303,8 +1359,8 @@ function ProjectHistoryPanel({
                   </div>
                   <div className="task-current-metric">
                     <span>爬虫状态</span>
-                    <strong>{crawler?.status || "离线"}</strong>
-                    <small>{crawler?.platform ? `${labelPlatform(crawler.platform)} / ${crawler.crawler_type || "crawler"}` : "等待执行"}</small>
+                    <strong>{crawlerStatus}</strong>
+                    <small>{crawlerNote}</small>
                   </div>
                 </div>
 
@@ -1340,10 +1396,10 @@ function ProjectHistoryPanel({
                   </div>
                   <div className="history-live-panel">
                     <span>最新爬虫日志</span>
-                    <strong>{crawler?.latest_log?.level || "暂无日志"}</strong>
-                    <p>{crawler?.latest_log?.message || "任务进入队列后，会在这里显示最近一条爬虫日志。"}</p>
+                    <strong>{crawlerLogLabel}</strong>
+                    <p>{crawlerLogMessage}</p>
                     <small>
-                      {crawler?.latest_log?.timestamp ? formatDateTime(crawler.latest_log.timestamp).slice(0, 16) : "等待日志"}
+                      {crawlerLogTime}
                       {typeof crawler?.log_count === "number" ? ` · 共 ${crawler.log_count} 条` : ""}
                     </small>
                   </div>

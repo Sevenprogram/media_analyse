@@ -287,6 +287,7 @@ class ResearchRepository:
             return [
                 {
                     "id": event.id,
+                    "org_id": event.org_id,
                     "job_id": event.job_id,
                     "platform": event.platform,
                     "event_type": event.event_type,
@@ -5031,6 +5032,7 @@ class ResearchRepository:
     def _job_to_dict(self, job: ResearchJob) -> dict[str, Any]:
         return {
             "id": job.id,
+            "org_id": job.org_id,
             "name": job.name,
             "topic": job.topic,
             "platforms": job.platforms,
@@ -5113,6 +5115,7 @@ class ResearchRepository:
     def _crawl_unit_to_dict(self, unit: ResearchCrawlUnit) -> dict[str, Any]:
         return {
             "id": unit.id,
+            "org_id": unit.org_id,
             "job_id": unit.job_id,
             "run_key": unit.run_key,
             "unit_key": unit.unit_key,

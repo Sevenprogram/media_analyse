@@ -60,9 +60,10 @@ async def lifespan(app: FastAPI):
     if is_research_database_enabled():
         await create_tables()
         await ensure_research_automation_daemon_started(
-            enqueue_job=lambda job_id, project_id: research_module.enqueue_research_collection_job(
+            enqueue_job=lambda job_id, project_id, org_id: research_module.enqueue_research_collection_job(
                 job_id,
                 project_id=project_id,
+                org_id=org_id,
             )
         )
     try:
