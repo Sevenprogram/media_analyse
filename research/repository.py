@@ -5,6 +5,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from sqlalchemy import bindparam, delete, func, or_, select, text, update
+from sqlalchemy.exc import IntegrityError
 
 from database.db_session import get_session
 from database.models import XhsNote
@@ -199,6 +200,80 @@ class ResearchRepository:
             return False
         item.org_id = self.org_id
         return True
+
+    def _unique_key_conditions(
+        self,
+        model: Any,
+        payload: dict[str, Any],
+        key_fields: tuple[str, ...],
+    ) -> list[Any]:
+        return [getattr(model, field) == payload[field] for field in key_fields]
+
+    async def _select_unique_for_upsert(
+        self,
+        session,
+        model: Any,
+        payload: dict[str, Any],
+        key_fields: tuple[str, ...],
+    ) -> Any | None:
+        key_conditions = self._unique_key_conditions(model, payload, key_fields)
+        result = await session.execute(
+            self._apply_tenant(select(model), model).where(*key_conditions)
+        )
+        item = result.scalar_one_or_none()
+        if item is not None or self.org_id is None or not hasattr(model, "org_id"):
+            return item
+
+        legacy_result = await session.execute(
+            select(model).where(*key_conditions, model.org_id.is_(None))
+        )
+        legacy_item = legacy_result.scalar_one_or_none()
+        self._claim_legacy_tenant_item(legacy_item)
+        return legacy_item
+
+    def _apply_payload_to_model(self, item: Any, payload: dict[str, Any]) -> None:
+        for key, value in payload.items():
+            if hasattr(item, key):
+                setattr(item, key, value)
+
+    async def _upsert_unique_model(
+        self,
+        model: Any,
+        payload: dict[str, Any],
+        *,
+        key_fields: tuple[str, ...],
+        return_fields: tuple[str, ...],
+    ) -> dict[str, Any]:
+        async with get_session() as session:
+            item = await self._select_unique_for_upsert(
+                session,
+                model,
+                payload,
+                key_fields,
+            )
+            if item is None:
+                item = model(**self._tenant_payload(model, payload))
+                session.add(item)
+            else:
+                self._apply_payload_to_model(item, payload)
+
+            try:
+                await session.flush()
+            except IntegrityError:
+                await session.rollback()
+                item = await self._select_unique_for_upsert(
+                    session,
+                    model,
+                    payload,
+                    key_fields,
+                )
+                if item is None:
+                    raise
+                self._apply_payload_to_model(item, payload)
+                await session.flush()
+
+            await session.refresh(item)
+            return {field: getattr(item, field) for field in return_fields}
 
     async def create_job(self, payload: dict[str, Any]) -> dict[str, Any]:
         async with get_session() as session:
@@ -4969,65 +5044,28 @@ class ResearchRepository:
             }
 
     async def upsert_author(self, payload: dict[str, Any]) -> dict[str, Any]:
-        async with get_session() as session:
-            stmt = select(ResearchAuthor).where(
-                ResearchAuthor.job_id == payload["job_id"],
-                ResearchAuthor.platform == payload["platform"],
-                ResearchAuthor.author_hash == payload["author_hash"],
-            )
-            stmt = self._apply_tenant(stmt, ResearchAuthor)
-            result = await session.execute(stmt)
-            author = result.scalar_one_or_none()
-            if author is None:
-                author = ResearchAuthor(**self._tenant_payload(ResearchAuthor, payload))
-                session.add(author)
-            else:
-                for key, value in payload.items():
-                    if hasattr(author, key):
-                        setattr(author, key, value)
-            await session.flush()
-            await session.refresh(author)
-            return {"id": author.id, "author_hash": author.author_hash}
+        return await self._upsert_unique_model(
+            ResearchAuthor,
+            payload,
+            key_fields=("job_id", "platform", "author_hash"),
+            return_fields=("id", "author_hash"),
+        )
 
     async def upsert_post(self, payload: dict[str, Any]) -> dict[str, Any]:
-        async with get_session() as session:
-            stmt = self._apply_tenant(select(ResearchPost), ResearchPost).where(
-                ResearchPost.job_id == payload["job_id"],
-                ResearchPost.platform == payload["platform"],
-                ResearchPost.platform_post_id == payload["platform_post_id"],
-            )
-            result = await session.execute(stmt)
-            post = result.scalar_one_or_none()
-            if post is None:
-                post = ResearchPost(**self._tenant_payload(ResearchPost, payload))
-                session.add(post)
-            else:
-                for key, value in payload.items():
-                    if hasattr(post, key):
-                        setattr(post, key, value)
-            await session.flush()
-            await session.refresh(post)
-            return {"id": post.id, "platform_post_id": post.platform_post_id}
+        return await self._upsert_unique_model(
+            ResearchPost,
+            payload,
+            key_fields=("job_id", "platform", "platform_post_id"),
+            return_fields=("id", "platform_post_id"),
+        )
 
     async def upsert_comment(self, payload: dict[str, Any]) -> dict[str, Any]:
-        async with get_session() as session:
-            stmt = self._apply_tenant(select(ResearchComment), ResearchComment).where(
-                ResearchComment.job_id == payload["job_id"],
-                ResearchComment.platform == payload["platform"],
-                ResearchComment.platform_comment_id == payload["platform_comment_id"],
-            )
-            result = await session.execute(stmt)
-            comment = result.scalar_one_or_none()
-            if comment is None:
-                comment = ResearchComment(**self._tenant_payload(ResearchComment, payload))
-                session.add(comment)
-            else:
-                for key, value in payload.items():
-                    if hasattr(comment, key):
-                        setattr(comment, key, value)
-            await session.flush()
-            await session.refresh(comment)
-            return {"id": comment.id, "platform_comment_id": comment.platform_comment_id}
+        return await self._upsert_unique_model(
+            ResearchComment,
+            payload,
+            key_fields=("job_id", "platform", "platform_comment_id"),
+            return_fields=("id", "platform_comment_id"),
+        )
 
     def _job_to_dict(self, job: ResearchJob) -> dict[str, Any]:
         return {

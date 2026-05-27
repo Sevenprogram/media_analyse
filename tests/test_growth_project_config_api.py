@@ -23,6 +23,8 @@ from database.db_session import close_engines, create_tables, get_session
 from research.automation_daemon import ResearchAutomationDaemon
 from research.models import (
     RawRecord,
+    ResearchAuthor,
+    ResearchComment,
     ResearchGrowthProject,
     ResearchGrowthProjectCollectionPlan,
     ResearchGrowthProjectKeyword,
@@ -815,6 +817,138 @@ async def test_create_raw_record_is_idempotent_for_same_payload(
             select(func.count()).select_from(RawRecord).where(RawRecord.job_id == int(job["id"]))
         )
     assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_research_upserts_claim_legacy_tenant_rows_before_insert(
+    growth_project_client: AsyncClient,
+) -> None:
+    created = await _create_project(growth_project_client)
+    job_id = int(created["job"]["id"])
+    org_id = int(created["job"]["org_id"])
+
+    async with get_session() as session:
+        author = ResearchAuthor(
+            org_id=None,
+            job_id=job_id,
+            platform="dy",
+            author_hash="legacy-author",
+            metrics_json={"followers": 1},
+        )
+        post = ResearchPost(
+            org_id=None,
+            job_id=job_id,
+            platform="dy",
+            platform_post_id="legacy-dy-post",
+            author_hash="legacy-author",
+            title="legacy title",
+            content="legacy content",
+            url="https://example.com/dy/legacy-dy-post",
+            publish_time=datetime.now(timezone.utc) - timedelta(hours=1),
+            engagement_json={"like_count": 1},
+        )
+        comment = ResearchComment(
+            org_id=None,
+            job_id=job_id,
+            platform="dy",
+            platform_comment_id="legacy-comment",
+            platform_post_id="legacy-dy-post",
+            author_hash="legacy-author",
+            content="legacy comment",
+            publish_time=datetime.now(timezone.utc) - timedelta(minutes=30),
+            like_count=1,
+        )
+        session.add_all([author, post, comment])
+        await session.flush()
+        legacy_ids = {
+            "author": int(author.id),
+            "post": int(post.id),
+            "comment": int(comment.id),
+        }
+
+    repository = ResearchRepository(org_id=org_id)
+    updated_author = await repository.upsert_author(
+        {
+            "job_id": job_id,
+            "platform": "dy",
+            "author_hash": "legacy-author",
+            "raw_author_id_encrypted": None,
+            "display_name_hash": "updated-name",
+            "profile_url_hash": None,
+            "metrics_json": {"followers": 2},
+        }
+    )
+    updated_post = await repository.upsert_post(
+        {
+            "job_id": job_id,
+            "platform": "dy",
+            "platform_post_id": "legacy-dy-post",
+            "author_hash": "legacy-author",
+            "title": "updated title",
+            "content": "updated content",
+            "url": "https://example.com/dy/legacy-dy-post-updated",
+            "publish_time": datetime.now(timezone.utc),
+            "engagement_json": {"like_count": 2},
+            "raw_record_id": None,
+        }
+    )
+    updated_comment = await repository.upsert_comment(
+        {
+            "job_id": job_id,
+            "platform": "dy",
+            "platform_comment_id": "legacy-comment",
+            "platform_post_id": "legacy-dy-post",
+            "parent_comment_id": None,
+            "author_hash": "legacy-author",
+            "content": "updated comment",
+            "publish_time": datetime.now(timezone.utc),
+            "like_count": 2,
+            "raw_record_id": None,
+        }
+    )
+
+    assert updated_author["id"] == legacy_ids["author"]
+    assert updated_post["id"] == legacy_ids["post"]
+    assert updated_comment["id"] == legacy_ids["comment"]
+
+    async with get_session() as session:
+        author_rows = (
+            await session.execute(
+                select(ResearchAuthor).where(
+                    ResearchAuthor.job_id == job_id,
+                    ResearchAuthor.platform == "dy",
+                    ResearchAuthor.author_hash == "legacy-author",
+                )
+            )
+        ).scalars().all()
+        post_rows = (
+            await session.execute(
+                select(ResearchPost).where(
+                    ResearchPost.job_id == job_id,
+                    ResearchPost.platform == "dy",
+                    ResearchPost.platform_post_id == "legacy-dy-post",
+                )
+            )
+        ).scalars().all()
+        comment_rows = (
+            await session.execute(
+                select(ResearchComment).where(
+                    ResearchComment.job_id == job_id,
+                    ResearchComment.platform == "dy",
+                    ResearchComment.platform_comment_id == "legacy-comment",
+                )
+            )
+        ).scalars().all()
+
+    assert len(author_rows) == 1
+    assert len(post_rows) == 1
+    assert len(comment_rows) == 1
+    assert author_rows[0].org_id == org_id
+    assert author_rows[0].metrics_json == {"followers": 2}
+    assert post_rows[0].org_id == org_id
+    assert post_rows[0].title == "updated title"
+    assert comment_rows[0].org_id == org_id
+    assert comment_rows[0].content == "updated comment"
 
 
 @pytest.mark.asyncio
